@@ -1,0 +1,14 @@
+[24-Jun-2026 15:27:11 America/Sao_Paulo] PHP Warning:  include(views/login.php): Failed to open stream: No such file or directory in C:\xampp\htdocs\manutencao\controllers\AuthController.php on line 45
+[24-Jun-2026 15:27:11 America/Sao_Paulo] PHP Warning:  include(): Failed opening 'views/login.php' for inclusion (include_path='C:\xampp\php\PEAR') in C:\xampp\htdocs\manutencao\controllers\AuthController.php on line 45
+[24-Jun-2026 15:27:31 America/Sao_Paulo] PHP Warning:  include(views/login.php): Failed to open stream: No such file or directory in C:\xampp\htdocs\manutencao\controllers\AuthController.php on line 45
+[24-Jun-2026 15:27:31 America/Sao_Paulo] PHP Warning:  include(): Failed opening 'views/login.php' for inclusion (include_path='C:\xampp\php\PEAR') in C:\xampp\htdocs\manutencao\controllers\AuthController.php on line 45
+[24-Jun-2026 15:27:32 America/Sao_Paulo] PHP Warning:  include(views/login.php): Failed to open stream: No such file or directory in C:\xampp\htdocs\manutencao\controllers\AuthController.php on line 45
+[24-Jun-2026 15:27:32 America/Sao_Paulo] PHP Warning:  include(): Failed opening 'views/login.php' for inclusion (include_path='C:\xampp\php\PEAR') in C:\xampp\htdocs\manutencao\controllers\AuthController.php on line 45
+[24-Jun-2026 15:27:32 America/Sao_Paulo] PHP Warning:  include(views/login.php): Failed to open stream: No such file or directory in C:\xampp\htdocs\manutencao\controllers\AuthController.php on line 45
+[24-Jun-2026 15:27:32 America/Sao_Paulo] PHP Warning:  include(): Failed opening 'views/login.php' for inclusion (include_path='C:\xampp\php\PEAR') in C:\xampp\htdocs\manutencao\controllers\AuthController.php on line 45
+[24-Jun-2026 15:27:33 America/Sao_Paulo] PHP Warning:  include(views/login.php): Failed to open stream: No such file or directory in C:\xampp\htdocs\manutencao\controllers\AuthController.php on line 45
+[24-Jun-2026 15:27:33 America/Sao_Paulo] PHP Warning:  include(): Failed opening 'views/login.php' for inclusion (include_path='C:\xampp\php\PEAR') in C:\xampp\htdocs\manutencao\controllers\AuthController.php on line 45
+[24-Jun-2026 15:53:44 America/Sao_Paulo] PHP Warning:  include(views/login.php): Failed to open stream: No such file or directory in C:\xampp\htdocs\manutencao\controllers\AuthController.php on line 45
+[24-Jun-2026 15:53:44 America/Sao_Paulo] PHP Warning:  include(): Failed opening 'views/login.php' for inclusion (include_path='C:\xampp\php\PEAR') in C:\xampp\htdocs\manutencao\controllers\AuthController.php on line 45
+[24-Jun-2026 15:58:50 America/Sao_Paulo] PHP Warning:  include(views/login.php): Failed to open stream: No such file or directory in C:\xampp\htdocs\manutencao\controllers\AuthController.php on line 45
+[24-Jun-2026 15:58:50 America/Sao_Paulo] PHP Warning:  include(): Failed opening 'views/login.php' for inclusion (include_path='C:\xampp\php\PEAR') in C:\xampp\htdocs\manutencao\controllers\AuthController.php on line 45

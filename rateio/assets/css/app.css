@@ -1,0 +1,31 @@
+/* ---------------------------------------------------------------
+   Estilos da aplicação de Rateio
+--------------------------------------------------------------- */
+
+.context-bar {
+    font-size: .85rem;
+    border-bottom: 1px solid rgba(255, 255, 255, .15);
+}
+
+.area-card {
+    transition: transform .12s ease, box-shadow .12s ease;
+    cursor: pointer;
+    text-decoration: none;
+}
+
+.area-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 .5rem 1rem rgba(0, 0, 0, .12) !important;
+}
+
+.area-card .icone {
+    font-size: 2.6rem;
+}
+
+.table thead.table-dark th {
+    white-space: nowrap;
+}
+
+.filtro-bar .form-control {
+    max-width: 360px;
+}
