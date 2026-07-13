@@ -11,6 +11,12 @@ $permStmt->bindValue(':r', $routerId, PDO::PARAM_INT);
 $permStmt->execute();
 $permittedIds = array_flip($permStmt->fetchAll(PDO::FETCH_COLUMN));
 
+$routerNameStmt = $db->prepare("SELECT name FROM routers WHERE id = :r");
+$routerNameStmt->bindValue(':r', $routerId, PDO::PARAM_INT);
+$routerNameStmt->execute();
+$routerLabel = $routerNameStmt->fetchColumn() ?: "Roteador #{$routerId}";
+$bulkError = '';
+
 // Processa a ativação/desativação da regra se houver um POST
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['id'], $_POST['action']) && in_array($_POST['action'], ['enable', 'disable'])) {
     csrfVerify();
@@ -24,6 +30,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['id'], $_POST['action'
 
     $disabled = $_POST['action'] === 'disable' ? 'yes' : 'no';
     $api->comm('/ip/firewall/filter/set', ['.id' => $targetId, 'disabled' => $disabled]);
+    logActivity('firewall', $_POST['action'] === 'disable' ? 'Desabilitou regra de firewall' : 'Habilitou regra de firewall', "{$routerLabel} — regra {$targetId}");
     header("Location: index.php?page=firewall");
     exit;
 }
@@ -40,14 +47,66 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['id'], $_POST['permiss
         $stmt->bindValue(':id', $targetId);
         $stmt->bindValue(':by', $_SESSION['user_logged_in'] ?? '');
         $stmt->execute();
+        logActivity('firewall', 'Permitiu regra de firewall para Usuário Padrão', "{$routerLabel} — regra {$targetId}");
     } else {
         $stmt = $db->prepare("DELETE FROM rule_permissions WHERE router_id = :r AND rule_type = 'firewall' AND rule_id = :id");
         $stmt->bindValue(':r', $routerId, PDO::PARAM_INT);
         $stmt->bindValue(':id', $targetId);
         $stmt->execute();
+        logActivity('firewall', 'Revogou permissão de regra de firewall do Usuário Padrão', "{$routerLabel} — regra {$targetId}");
     }
     header("Location: index.php?page=firewall");
     exit;
+}
+
+// Ação em massa: habilitar/desabilitar várias regras de uma vez
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_action'], $_POST['ids']) && in_array($_POST['bulk_action'], ['enable', 'disable'])) {
+    csrfVerify();
+    $ids = array_values(array_filter((array)$_POST['ids']));
+
+    // Usuário padrão só pode agir sobre regras explicitamente liberadas pelo Administrador.
+    if ($role !== 'admin') {
+        $ids = array_values(array_intersect($ids, array_keys($permittedIds)));
+    }
+
+    if (empty($ids)) {
+        $bulkError = 'Nenhuma regra válida selecionada.';
+    } else {
+        $disabled = $_POST['bulk_action'] === 'disable' ? 'yes' : 'no';
+        foreach ($ids as $targetId) {
+            $api->comm('/ip/firewall/filter/set', ['.id' => $targetId, 'disabled' => $disabled]);
+        }
+        logActivity('firewall', $_POST['bulk_action'] === 'disable' ? 'Desabilitou regras de firewall em massa' : 'Habilitou regras de firewall em massa', "{$routerLabel} — " . count($ids) . " regra(s): " . implode(', ', $ids));
+        header("Location: index.php?page=firewall");
+        exit;
+    }
+}
+
+// Ação em massa: conceder/revogar visibilidade de várias regras para o Usuário Padrão (Administrador)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_permission_action'], $_POST['ids'])) {
+    csrfVerify();
+    requireAdmin();
+    $ids = array_values(array_filter((array)$_POST['ids']));
+
+    if (empty($ids)) {
+        $bulkError = 'Nenhuma regra válida selecionada.';
+    } else {
+        if ($_POST['bulk_permission_action'] === 'grant') {
+            $stmt = $db->prepare("INSERT IGNORE INTO rule_permissions (router_id, rule_type, rule_id, granted_by) VALUES (:r, 'firewall', :id, :by)");
+            foreach ($ids as $targetId) {
+                $stmt->execute([':r' => $routerId, ':id' => $targetId, ':by' => $_SESSION['user_logged_in'] ?? '']);
+            }
+            logActivity('firewall', 'Permitiu regras de firewall em massa para Usuário Padrão', "{$routerLabel} — " . count($ids) . " regra(s): " . implode(', ', $ids));
+        } else {
+            $stmt = $db->prepare("DELETE FROM rule_permissions WHERE router_id = :r AND rule_type = 'firewall' AND rule_id = :id");
+            foreach ($ids as $targetId) {
+                $stmt->execute([':r' => $routerId, ':id' => $targetId]);
+            }
+            logActivity('firewall', 'Revogou permissão em massa de regras de firewall do Usuário Padrão', "{$routerLabel} — " . count($ids) . " regra(s): " . implode(', ', $ids));
+        }
+        header("Location: index.php?page=firewall");
+        exit;
+    }
 }
 
 // CORREÇÃO: Removido o filtro inválido e aplicada a chamada correta para ler todo o buffer
@@ -76,10 +135,34 @@ if ($role !== 'admin') {
     <div class="alert alert-info py-2">Exibindo apenas as regras liberadas pelo Administrador para o seu perfil.</div>
 <?php endif; ?>
 
+<?php if ($bulkError): ?>
+    <div class="alert alert-danger py-2"><?= htmlspecialchars($bulkError) ?></div>
+<?php endif; ?>
+
+<form method="POST" id="bulkFirewallForm">
+    <?= csrfField() ?>
+</form>
+
+<?php if (!empty($rules)): ?>
+<div class="card mb-3">
+    <div class="card-body py-2 d-flex flex-wrap align-items-center gap-2">
+        <span class="text-muted small me-2"><i class="bi bi-check2-square"></i> Ações em massa:</span>
+        <button type="submit" form="bulkFirewallForm" name="bulk_action" value="enable" class="btn btn-sm btn-outline-success" onclick="return confirm('Habilitar todas as regras selecionadas?');">Habilitar Selecionadas</button>
+        <button type="submit" form="bulkFirewallForm" name="bulk_action" value="disable" class="btn btn-sm btn-outline-danger" onclick="return confirm('Desabilitar todas as regras selecionadas?');">Desabilitar Selecionadas</button>
+        <?php if ($role === 'admin'): ?>
+            <span class="vr mx-1"></span>
+            <button type="submit" form="bulkFirewallForm" name="bulk_permission_action" value="grant" class="btn btn-sm btn-outline-primary">Permitir p/ Padrão</button>
+            <button type="submit" form="bulkFirewallForm" name="bulk_permission_action" value="revoke" class="btn btn-sm btn-outline-secondary">Revogar de Padrão</button>
+        <?php endif; ?>
+    </div>
+</div>
+<?php endif; ?>
+
 <div class="table-responsive">
     <table class="table table-striped table-hover bg-white shadow-sm table-sm align-middle" style="font-size: 0.88rem;">
         <thead class="table-dark">
             <tr>
+                <th style="width: 32px;"><input type="checkbox" class="form-check-input" id="selectAllFirewall"></th>
                 <th>ID</th>
                 <th>Nome da Regra (Comentário)</th>
                 <th>Chain</th>
@@ -97,7 +180,7 @@ if ($role !== 'admin') {
         <tbody>
             <?php if (empty($rules)): ?>
                 <tr>
-                    <td colspan="<?= $role === 'admin' ? 12 : 11 ?>" class="text-center text-muted py-3">Nenhuma regra de firewall filter encontrada<?= $role === 'admin' ? '.' : ' liberada para o seu perfil.' ?></td>
+                    <td colspan="<?= $role === 'admin' ? 13 : 12 ?>" class="text-center text-muted py-3">Nenhuma regra de firewall filter encontrada<?= $role === 'admin' ? '.' : ' liberada para o seu perfil.' ?></td>
                 </tr>
             <?php else: ?>
                 <?php foreach ($rules as $r): ?>
@@ -109,6 +192,7 @@ if ($role !== 'admin') {
                         $isPermitted = isset($permittedIds[$r['.id']]);
                     ?>
                     <tr class="<?= $isDisabled ? 'table-light text-muted' : '' ?>">
+                        <td><input type="checkbox" class="form-check-input firewall-row-check" name="ids[]" value="<?= htmlspecialchars($r['.id']) ?>" form="bulkFirewallForm"></td>
                         <td><strong><?= htmlspecialchars($r['.id']) ?></strong></td>
 
                         <td>
@@ -198,3 +282,8 @@ if ($role !== 'admin') {
         </tbody>
     </table>
 </div>
+<script>
+document.getElementById('selectAllFirewall')?.addEventListener('change', function () {
+    document.querySelectorAll('.firewall-row-check').forEach(function (cb) { cb.checked = this.checked; }, this);
+});
+</script>

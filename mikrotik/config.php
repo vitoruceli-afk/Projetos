@@ -91,6 +91,22 @@ function getDB() {
             UNIQUE KEY uq_rule_perm (router_id, rule_type, rule_id)
         )");
 
+        // Log de auditoria: quem fez o quê, quando. Consultado na área "Logs" (Administradores).
+        $db->exec("CREATE TABLE IF NOT EXISTS activity_log (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            username VARCHAR(100) NOT NULL,
+            auth_type VARCHAR(20) DEFAULT '',
+            role VARCHAR(20) DEFAULT '',
+            category VARCHAR(30) NOT NULL,
+            action VARCHAR(150) NOT NULL,
+            details TEXT,
+            ip_address VARCHAR(64) DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_activity_category (category),
+            INDEX idx_activity_username (username),
+            INDEX idx_activity_created (created_at)
+        )");
+
         return $db;
     } catch (PDOException $e) {
         die("Erro de conexão com o MySQL: " . $e->getMessage());
@@ -193,6 +209,29 @@ function isValidRouterHost($host) {
     if ($host === '') return false;
     if (filter_var($host, FILTER_VALIDATE_IP)) return true;
     return (bool) preg_match('/^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*$/', $host);
+}
+
+// ---- Log de auditoria ----
+
+// Categorias válidas: 'auth', 'hotspot', 'firewall', 'routers', 'users'.
+// $action é um texto curto já pronto para exibição (ex: "Habilitou hotspot").
+// Uma falha ao gravar o log nunca deve impedir a ação principal do usuário.
+function logActivity($category, $action, $details = '') {
+    try {
+        $db = getDB();
+        $stmt = $db->prepare("INSERT INTO activity_log (username, auth_type, role, category, action, details, ip_address)
+            VALUES (:u, :at, :r, :c, :a, :d, :ip)");
+        $stmt->bindValue(':u', $_SESSION['user_logged_in'] ?? 'desconhecido');
+        $stmt->bindValue(':at', $_SESSION['auth_type'] ?? '');
+        $stmt->bindValue(':r', currentUserRole());
+        $stmt->bindValue(':c', $category);
+        $stmt->bindValue(':a', $action);
+        $stmt->bindValue(':d', $details);
+        $stmt->bindValue(':ip', $_SERVER['REMOTE_ADDR'] ?? '');
+        $stmt->execute();
+    } catch (PDOException $e) {
+        // intencionalmente silencioso
+    }
 }
 
 // ---- Configurações LDAP editáveis via tela (aba "Configurações" em Usuários) ----

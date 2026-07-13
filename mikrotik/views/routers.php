@@ -31,6 +31,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $stmt->bindValue(':pass', routerEncrypt($password));
                 $stmt->bindValue(':port', $port, PDO::PARAM_INT);
                 $stmt->execute();
+                logActivity('routers', 'Cadastrou roteador', "{$name} ({$ip}:{$port})");
             } else {
                 $id = (int)($_POST['id'] ?? 0);
                 if ($password !== '') {
@@ -46,15 +47,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $stmt->bindValue(':port', $port, PDO::PARAM_INT);
                 $stmt->bindValue(':id', $id, PDO::PARAM_INT);
                 $stmt->execute();
+                logActivity('routers', 'Editou roteador', "{$name} ({$ip}:{$port})");
             }
             header("Location: index.php?page=routers");
             exit;
         }
     } elseif ($_POST['action'] === 'delete') {
-        $stmt = $db->prepare("DELETE FROM routers WHERE id = :id");
-        $stmt->bindValue(':id', $_POST['id']);
+        $id = (int)($_POST['id'] ?? 0);
+        $stmt = $db->prepare("SELECT name, ip FROM routers WHERE id = :id");
+        $stmt->bindValue(':id', $id, PDO::PARAM_INT);
         $stmt->execute();
-        if (($_SESSION['active_router'] ?? null) == $_POST['id']) unset($_SESSION['active_router']);
+        $target = $stmt->fetch();
+
+        $stmt = $db->prepare("DELETE FROM routers WHERE id = :id");
+        $stmt->bindValue(':id', $id, PDO::PARAM_INT);
+        $stmt->execute();
+        if ($target) {
+            logActivity('routers', 'Excluiu roteador', "{$target['name']} ({$target['ip']})");
+        }
+        if (($_SESSION['active_router'] ?? null) == $id) unset($_SESSION['active_router']);
         header("Location: index.php?page=routers");
         exit;
     }

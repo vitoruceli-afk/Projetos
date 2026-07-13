@@ -31,6 +31,7 @@ $is_admin = isAdmin();
         <?php if ($is_admin): ?>
         <li class="nav-item"><a class="nav-link" href="index.php?page=routers">Gerenciar Roteadores</a></li>
         <li class="nav-item"><a class="nav-link" href="index.php?page=users">Usuários</a></li>
+        <li class="nav-item"><a class="nav-link" href="index.php?page=logs">Logs</a></li>
         <?php endif; ?>
       </ul>
       <form class="d-flex me-3" method="GET" action="index.php">
@@ -54,7 +55,7 @@ $is_admin = isAdmin();
 <div class="container mt-4">
     <?php
     // Permite acessar Dashboard e Gerenciar Roteadores sem selecionar um MikroTik
-    $pages_without_router = ['dashboard', 'routers', 'users'];
+    $pages_without_router = ['dashboard', 'routers', 'users', 'logs'];
 
     if (!$active_router_id && !in_array($page, $pages_without_router)) {
         echo '<div class="alert alert-warning">Por favor, selecione um Mikrotik no menu superior para gerenciar.</div>';

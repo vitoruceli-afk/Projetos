@@ -32,6 +32,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['area'] ?? '') === 'local')
                 $stmt->bindValue(':n', $fullName);
                 $stmt->bindValue(':r', $role);
                 $stmt->execute();
+                logActivity('users', 'Criou usuário local', "{$username} (perfil: " . ($role === 'admin' ? 'Administrador' : 'Usuário Padrão') . ")");
                 header("Location: index.php?page=users&tab=local");
                 exit;
             } catch (PDOException $e) {
@@ -64,6 +65,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['area'] ?? '') === 'local')
             $stmt->bindValue(':r', $role);
             $stmt->bindValue(':id', $id, PDO::PARAM_INT);
             $stmt->execute();
+            logActivity('users', 'Editou usuário local', "{$target['username']} (perfil: " . ($role === 'admin' ? 'Administrador' : 'Usuário Padrão') . ", senha alterada)");
             header("Location: index.php?page=users&tab=local");
             exit;
         } else {
@@ -72,6 +74,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['area'] ?? '') === 'local')
             $stmt->bindValue(':r', $role);
             $stmt->bindValue(':id', $id, PDO::PARAM_INT);
             $stmt->execute();
+            logActivity('users', 'Editou usuário local', "{$target['username']} (perfil: " . ($role === 'admin' ? 'Administrador' : 'Usuário Padrão') . ")");
             header("Location: index.php?page=users&tab=local");
             exit;
         }
@@ -89,6 +92,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['area'] ?? '') === 'local')
             $stmt->bindValue(':e', $action === 'enable' ? 1 : 0, PDO::PARAM_INT);
             $stmt->bindValue(':id', $id, PDO::PARAM_INT);
             $stmt->execute();
+            logActivity('users', $action === 'enable' ? 'Habilitou usuário local' : 'Desabilitou usuário local', $target['username']);
             header("Location: index.php?page=users&tab=local");
             exit;
         }
@@ -105,9 +109,52 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['area'] ?? '') === 'local')
             $stmt = $db->prepare("DELETE FROM local_users WHERE id = :id");
             $stmt->bindValue(':id', $id, PDO::PARAM_INT);
             $stmt->execute();
+            logActivity('users', 'Excluiu usuário local', $target['username']);
             header("Location: index.php?page=users&tab=local");
             exit;
         }
+    }
+}
+
+// ---- Ação em massa: Usuários Locais ----
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['area'] ?? '') === 'local' && isset($_POST['bulk_action'], $_POST['ids'])) {
+    csrfVerify();
+    $ids = array_values(array_unique(array_filter(array_map('intval', (array)$_POST['ids']))));
+    $bulkAction = $_POST['bulk_action'];
+
+    // Nunca inclui a própria conta local logada na ação em massa (evita autobloqueio/auto-exclusão).
+    $selfId = null;
+    if (($_SESSION['auth_type'] ?? '') === 'local') {
+        $stmt = $db->prepare("SELECT id FROM local_users WHERE username = :u");
+        $stmt->bindValue(':u', $_SESSION['user_logged_in'] ?? '');
+        $stmt->execute();
+        $selfId = $stmt->fetchColumn() ?: null;
+    }
+    $skippedSelf = $selfId && in_array($selfId, $ids);
+    $ids = array_values(array_diff($ids, [$selfId]));
+
+    if (empty($ids)) {
+        $localError = 'Nenhum usuário válido selecionado.';
+    } elseif (in_array($bulkAction, ['enable', 'disable', 'delete'])) {
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        $namesStmt = $db->prepare("SELECT username FROM local_users WHERE id IN ({$placeholders})");
+        $namesStmt->execute($ids);
+        $names = $namesStmt->fetchAll(PDO::FETCH_COLUMN);
+        $suffix = $skippedSelf ? ' (sua conta foi ignorada)' : '';
+
+        if ($bulkAction === 'delete') {
+            $stmt = $db->prepare("DELETE FROM local_users WHERE id IN ({$placeholders})");
+            $stmt->execute($ids);
+            logActivity('users', 'Excluiu usuários locais em massa', implode(', ', $names) . $suffix);
+        } else {
+            $stmt = $db->prepare("UPDATE local_users SET enabled = :e WHERE id = :id");
+            foreach ($ids as $id) {
+                $stmt->execute([':e' => $bulkAction === 'enable' ? 1 : 0, ':id' => $id]);
+            }
+            logActivity('users', $bulkAction === 'enable' ? 'Habilitou usuários locais em massa' : 'Desabilitou usuários locais em massa', implode(', ', $names) . $suffix);
+        }
+        header("Location: index.php?page=users&tab=local");
+        exit;
     }
 }
 
@@ -122,12 +169,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['area'] ?? '') === 'ldap') 
         $stmt->bindValue(':u', $username);
         $stmt->bindValue(':by', $_SESSION['user_logged_in'] ?? '');
         $stmt->execute();
+        logActivity('users', 'Bloqueou acesso de usuário LDAP', $username);
         header("Location: index.php?page=users&tab=ldap");
         exit;
     } elseif ($username !== '' && $action === 'unblock') {
         $stmt = $db->prepare("DELETE FROM ldap_blocked_users WHERE username = :u");
         $stmt->bindValue(':u', $username);
         $stmt->execute();
+        logActivity('users', 'Desbloqueou acesso de usuário LDAP', $username);
         header("Location: index.php?page=users&tab=ldap");
         exit;
     } elseif ($username !== '' && in_array($action, ['make_admin', 'make_standard'])) {
@@ -142,9 +191,50 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['area'] ?? '') === 'ldap') 
             $stmt->bindValue(':r', $newRole);
             $stmt->bindValue(':r2', $newRole);
             $stmt->execute();
+            logActivity('users', $newRole === 'admin' ? 'Promoveu usuário LDAP a Administrador' : 'Rebaixou usuário LDAP a Usuário Padrão', $username);
             header("Location: index.php?page=users&tab=ldap");
             exit;
         }
+    }
+}
+
+// ---- Ação em massa: Usuários LDAP ----
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['area'] ?? '') === 'ldap' && isset($_POST['ids']) && (isset($_POST['bulk_action']) || isset($_POST['bulk_role_action']))) {
+    csrfVerify();
+    $usernames = array_values(array_unique(array_filter(array_map('trim', (array)$_POST['ids']))));
+
+    // Nunca inclui o próprio usuário LDAP logado na ação em massa (evita autobloqueio/auto-rebaixamento).
+    $selfUsername = ($_SESSION['auth_type'] ?? '') === 'ldap' ? ($_SESSION['user_logged_in'] ?? null) : null;
+    $skippedSelf = $selfUsername && in_array($selfUsername, $usernames);
+    $usernames = array_values(array_diff($usernames, [$selfUsername]));
+    $suffix = $skippedSelf ? ' (sua conta foi ignorada)' : '';
+
+    if (empty($usernames)) {
+        $ldapMessage = 'Nenhum usuário válido selecionado.';
+    } elseif (isset($_POST['bulk_action']) && in_array($_POST['bulk_action'], ['block', 'unblock'])) {
+        if ($_POST['bulk_action'] === 'block') {
+            $stmt = $db->prepare("INSERT IGNORE INTO ldap_blocked_users (username, blocked_by) VALUES (:u, :by)");
+            foreach ($usernames as $u) {
+                $stmt->execute([':u' => $u, ':by' => $_SESSION['user_logged_in'] ?? '']);
+            }
+            logActivity('users', 'Bloqueou acesso de usuários LDAP em massa', implode(', ', $usernames) . $suffix);
+        } else {
+            $placeholders = implode(',', array_fill(0, count($usernames), '?'));
+            $stmt = $db->prepare("DELETE FROM ldap_blocked_users WHERE username IN ({$placeholders})");
+            $stmt->execute($usernames);
+            logActivity('users', 'Desbloqueou acesso de usuários LDAP em massa', implode(', ', $usernames) . $suffix);
+        }
+        header("Location: index.php?page=users&tab=ldap");
+        exit;
+    } elseif (isset($_POST['bulk_role_action']) && in_array($_POST['bulk_role_action'], ['make_admin', 'make_standard'])) {
+        $newRole = $_POST['bulk_role_action'] === 'make_admin' ? 'admin' : 'standard';
+        $stmt = $db->prepare("INSERT INTO ldap_user_roles (username, role) VALUES (:u, :r) ON DUPLICATE KEY UPDATE role = :r2");
+        foreach ($usernames as $u) {
+            $stmt->execute([':u' => $u, ':r' => $newRole, ':r2' => $newRole]);
+        }
+        logActivity('users', $newRole === 'admin' ? 'Promoveu usuários LDAP a Administrador em massa' : 'Rebaixou usuários LDAP a Usuário Padrão em massa', implode(', ', $usernames) . $suffix);
+        header("Location: index.php?page=users&tab=ldap");
+        exit;
     }
 }
 
@@ -178,6 +268,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['area'] ?? '') === 'setting
             $stmt->bindValue(':bu', $bindUsername);
             $stmt->bindValue(':id', $current['id'], PDO::PARAM_INT);
             $stmt->execute();
+            logActivity('users', 'Atualizou configurações LDAP', "Servidor: {$server}, Grupo: {$group}" . ($bindPassword !== '' ? ' (senha de serviço alterada)' : ''));
             header("Location: index.php?page=users&tab=settings");
             exit;
         }
@@ -319,9 +410,21 @@ $ldapSettings = getLdapSettings();
             </div>
         </div>
         <div class="col-md-8">
+            <form method="POST" id="bulkLocalUsersForm">
+                <?= csrfField() ?>
+                <input type="hidden" name="area" value="local">
+            </form>
+            <div class="card mb-2">
+                <div class="card-body py-2 d-flex flex-wrap align-items-center gap-2">
+                    <span class="text-muted small me-2"><i class="bi bi-check2-square"></i> Ações em massa:</span>
+                    <button type="submit" form="bulkLocalUsersForm" name="bulk_action" value="enable" class="btn btn-sm btn-outline-success">Habilitar Selecionados</button>
+                    <button type="submit" form="bulkLocalUsersForm" name="bulk_action" value="disable" class="btn btn-sm btn-outline-warning">Desabilitar Selecionados</button>
+                    <button type="submit" form="bulkLocalUsersForm" name="bulk_action" value="delete" class="btn btn-sm btn-outline-danger" onclick="return confirm('Excluir todos os usuários locais selecionados?');">Excluir Selecionados</button>
+                </div>
+            </div>
             <table class="table table-bordered bg-white align-middle">
                 <thead class="table-dark">
-                    <tr><th>Usuário</th><th>Nome</th><th>Perfil</th><th>Status</th><th>Criado em</th><th class="text-center">Ações</th></tr>
+                    <tr><th style="width:32px;"><input type="checkbox" class="form-check-input" id="selectAllLocalUsers"></th><th>Usuário</th><th>Nome</th><th>Perfil</th><th>Status</th><th>Criado em</th><th class="text-center">Ações</th></tr>
                 </thead>
                 <tbody>
                     <?php
@@ -332,6 +435,7 @@ $ldapSettings = getLdapSettings();
                         $isSelf = $u['username'] === ($_SESSION['user_logged_in'] ?? null) && ($_SESSION['auth_type'] ?? '') === 'local';
                     ?>
                     <tr>
+                        <td><input type="checkbox" class="form-check-input local-user-check" name="ids[]" value="<?= (int)$u['id'] ?>" form="bulkLocalUsersForm" <?= $isSelf ? 'disabled' : '' ?>></td>
                         <td><?= htmlspecialchars($u['username']) ?> <?php if ($isSelf): ?><span class="badge bg-info">Você</span><?php endif; ?></td>
                         <td><?= htmlspecialchars($u['full_name']) ?></td>
                         <td>
@@ -374,10 +478,15 @@ $ldapSettings = getLdapSettings();
                     </tr>
                     <?php endwhile; ?>
                     <?php if ($count === 0): ?>
-                        <tr><td colspan="6" class="text-center text-muted py-3">Nenhum usuário local cadastrado.</td></tr>
+                        <tr><td colspan="7" class="text-center text-muted py-3">Nenhum usuário local cadastrado.</td></tr>
                     <?php endif; ?>
                 </tbody>
             </table>
+            <script>
+            document.getElementById('selectAllLocalUsers')?.addEventListener('change', function () {
+                document.querySelectorAll('.local-user-check:not(:disabled)').forEach(function (cb) { cb.checked = this.checked; }, this);
+            });
+            </script>
         </div>
     </div>
 
@@ -406,13 +515,30 @@ $ldapSettings = getLdapSettings();
         <p class="text-muted mb-0">Usuários que pertencem ao grupo AD configurado (<code><?= htmlspecialchars($ldapSettings['ldap_group']) ?></code>). Usuários ainda não classificados aqui entram como <strong>Administrador</strong> por padrão. Bloquear/rebaixar aqui não altera a conta no Active Directory — apenas afeta o acesso a esta aplicação.</p>
     </div>
 
+    <form method="POST" id="bulkLdapUsersForm">
+        <?= csrfField() ?>
+        <input type="hidden" name="area" value="ldap">
+    </form>
+    <?php if (!empty($ldapUsers)): ?>
+    <div class="card mb-2">
+        <div class="card-body py-2 d-flex flex-wrap align-items-center gap-2">
+            <span class="text-muted small me-2"><i class="bi bi-check2-square"></i> Ações em massa:</span>
+            <button type="submit" form="bulkLdapUsersForm" name="bulk_action" value="block" class="btn btn-sm btn-outline-danger">Bloquear Selecionados</button>
+            <button type="submit" form="bulkLdapUsersForm" name="bulk_action" value="unblock" class="btn btn-sm btn-outline-success">Desbloquear Selecionados</button>
+            <span class="vr mx-1"></span>
+            <button type="submit" form="bulkLdapUsersForm" name="bulk_role_action" value="make_admin" class="btn btn-sm btn-outline-warning">Tornar Admin (Selecionados)</button>
+            <button type="submit" form="bulkLdapUsersForm" name="bulk_role_action" value="make_standard" class="btn btn-sm btn-outline-secondary">Tornar Padrão (Selecionados)</button>
+        </div>
+    </div>
+    <?php endif; ?>
+
     <table class="table table-bordered bg-white align-middle">
         <thead class="table-dark">
-            <tr><th>Usuário</th><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Status</th><th class="text-center">Ações</th></tr>
+            <tr><th style="width:32px;"><input type="checkbox" class="form-check-input" id="selectAllLdapUsers"></th><th>Usuário</th><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Status</th><th class="text-center">Ações</th></tr>
         </thead>
         <tbody>
             <?php if (empty($ldapUsers)): ?>
-                <tr><td colspan="6" class="text-center text-muted py-3">Nenhum usuário encontrado (ou conta de serviço não configurada).</td></tr>
+                <tr><td colspan="7" class="text-center text-muted py-3">Nenhum usuário encontrado (ou conta de serviço não configurada).</td></tr>
             <?php else: ?>
                 <?php foreach ($ldapUsers as $u): ?>
                     <?php
@@ -421,6 +547,7 @@ $ldapSettings = getLdapSettings();
                         $isSelf = $u['username'] === ($_SESSION['user_logged_in'] ?? null) && ($_SESSION['auth_type'] ?? '') === 'ldap';
                     ?>
                     <tr class="<?= $isBlocked ? 'table-light text-muted' : '' ?>">
+                        <td><input type="checkbox" class="form-check-input ldap-user-check" name="ids[]" value="<?= htmlspecialchars($u['username']) ?>" form="bulkLdapUsersForm" <?= $isSelf ? 'disabled' : '' ?>></td>
                         <td><?= htmlspecialchars($u['username']) ?> <?php if ($isSelf): ?><span class="badge bg-info">Você</span><?php endif; ?></td>
                         <td><?= htmlspecialchars($u['name']) ?></td>
                         <td><?= htmlspecialchars($u['email']) ?></td>
@@ -469,6 +596,11 @@ $ldapSettings = getLdapSettings();
             <?php endif; ?>
         </tbody>
     </table>
+    <script>
+    document.getElementById('selectAllLdapUsers')?.addEventListener('change', function () {
+        document.querySelectorAll('.ldap-user-check:not(:disabled)').forEach(function (cb) { cb.checked = this.checked; }, this);
+    });
+    </script>
 
 <?php elseif ($tab === 'settings'): ?>
 

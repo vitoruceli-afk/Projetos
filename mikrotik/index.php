@@ -4,14 +4,14 @@ require_once 'RouterosAPI.php';
 checkAuth();
 
 $page = $_GET['page'] ?? 'dashboard';
-$allowed_pages = ['dashboard', 'routers', 'hotspot', 'firewall', 'diagnostics', 'users'];
+$allowed_pages = ['dashboard', 'routers', 'hotspot', 'firewall', 'diagnostics', 'users', 'logs'];
 
 if (!in_array($page, $allowed_pages)) {
     $page = 'dashboard';
 }
 
-// Páginas restritas ao perfil Administrador (cadastro de roteadores e gestão de usuários/perfis).
-$admin_only_pages = ['routers', 'users'];
+// Páginas restritas ao perfil Administrador (cadastro de roteadores, gestão de usuários/perfis e logs).
+$admin_only_pages = ['routers', 'users', 'logs'];
 if (in_array($page, $admin_only_pages)) {
     requireAdmin();
 }

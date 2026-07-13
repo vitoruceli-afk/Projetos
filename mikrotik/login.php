@@ -22,6 +22,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } elseif (password_verify($password, $localUser['password_hash'])) {
                 $_SESSION['user_logged_in'] = $localUser['username'];
                 $_SESSION['auth_type'] = 'local';
+                logActivity('auth', 'Login realizado', 'Autenticação local');
                 header("Location: index.php");
                 exit;
             } else {
@@ -53,6 +54,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         } else {
                             $_SESSION['user_logged_in'] = $username;
                             $_SESSION['auth_type'] = 'ldap';
+                            logActivity('auth', 'Login realizado', 'Autenticação via LDAP/AD');
                             header("Location: index.php");
                             exit;
                         }

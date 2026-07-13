@@ -11,6 +11,12 @@ $permStmt->bindValue(':r', $routerId, PDO::PARAM_INT);
 $permStmt->execute();
 $permittedIds = array_flip($permStmt->fetchAll(PDO::FETCH_COLUMN));
 
+$routerNameStmt = $db->prepare("SELECT name FROM routers WHERE id = :r");
+$routerNameStmt->bindValue(':r', $routerId, PDO::PARAM_INT);
+$routerNameStmt->execute();
+$routerLabel = $routerNameStmt->fetchColumn() ?: "Roteador #{$routerId}";
+$bulkError = '';
+
 // Processa a ativação/desativação do Hotspot Server se houver um POST
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['id'], $_POST['action']) && in_array($_POST['action'], ['enable', 'disable'])) {
     csrfVerify();
@@ -25,6 +31,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['id'], $_POST['action'
     $disabled = $_POST['action'] === 'disable' ? 'yes' : 'no';
     // Garante o comando correto de alteração mapeando o ID interno (.id)
     $api->comm('/ip/hotspot/set', ['.id' => $targetId, 'disabled' => $disabled]);
+    logActivity('hotspot', $_POST['action'] === 'disable' ? 'Desabilitou hotspot' : 'Habilitou hotspot', "{$routerLabel} — item {$targetId}");
     header("Location: index.php?page=hotspot");
     exit;
 }
@@ -41,14 +48,66 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['id'], $_POST['permiss
         $stmt->bindValue(':id', $targetId);
         $stmt->bindValue(':by', $_SESSION['user_logged_in'] ?? '');
         $stmt->execute();
+        logActivity('hotspot', 'Permitiu hotspot para Usuário Padrão', "{$routerLabel} — item {$targetId}");
     } else {
         $stmt = $db->prepare("DELETE FROM rule_permissions WHERE router_id = :r AND rule_type = 'hotspot' AND rule_id = :id");
         $stmt->bindValue(':r', $routerId, PDO::PARAM_INT);
         $stmt->bindValue(':id', $targetId);
         $stmt->execute();
+        logActivity('hotspot', 'Revogou permissão de hotspot do Usuário Padrão', "{$routerLabel} — item {$targetId}");
     }
     header("Location: index.php?page=hotspot");
     exit;
+}
+
+// Ação em massa: habilitar/desabilitar vários servidores de uma vez
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_action'], $_POST['ids']) && in_array($_POST['bulk_action'], ['enable', 'disable'])) {
+    csrfVerify();
+    $ids = array_values(array_filter((array)$_POST['ids']));
+
+    // Usuário padrão só pode agir sobre itens explicitamente liberados pelo Administrador.
+    if ($role !== 'admin') {
+        $ids = array_values(array_intersect($ids, array_keys($permittedIds)));
+    }
+
+    if (empty($ids)) {
+        $bulkError = 'Nenhum item válido selecionado.';
+    } else {
+        $disabled = $_POST['bulk_action'] === 'disable' ? 'yes' : 'no';
+        foreach ($ids as $targetId) {
+            $api->comm('/ip/hotspot/set', ['.id' => $targetId, 'disabled' => $disabled]);
+        }
+        logActivity('hotspot', $_POST['bulk_action'] === 'disable' ? 'Desabilitou hotspots em massa' : 'Habilitou hotspots em massa', "{$routerLabel} — " . count($ids) . " item(ns): " . implode(', ', $ids));
+        header("Location: index.php?page=hotspot");
+        exit;
+    }
+}
+
+// Ação em massa: conceder/revogar visibilidade de vários servidores para o Usuário Padrão (Administrador)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_permission_action'], $_POST['ids'])) {
+    csrfVerify();
+    requireAdmin();
+    $ids = array_values(array_filter((array)$_POST['ids']));
+
+    if (empty($ids)) {
+        $bulkError = 'Nenhum item válido selecionado.';
+    } else {
+        if ($_POST['bulk_permission_action'] === 'grant') {
+            $stmt = $db->prepare("INSERT IGNORE INTO rule_permissions (router_id, rule_type, rule_id, granted_by) VALUES (:r, 'hotspot', :id, :by)");
+            foreach ($ids as $targetId) {
+                $stmt->execute([':r' => $routerId, ':id' => $targetId, ':by' => $_SESSION['user_logged_in'] ?? '']);
+            }
+            logActivity('hotspot', 'Permitiu hotspots em massa para Usuário Padrão', "{$routerLabel} — " . count($ids) . " item(ns): " . implode(', ', $ids));
+        } else {
+            $stmt = $db->prepare("DELETE FROM rule_permissions WHERE router_id = :r AND rule_type = 'hotspot' AND rule_id = :id");
+            foreach ($ids as $targetId) {
+                $stmt->execute([':r' => $routerId, ':id' => $targetId]);
+            }
+            logActivity('hotspot', 'Revogou permissão em massa de hotspots do Usuário Padrão', "{$routerLabel} — " . count($ids) . " item(ns): " . implode(', ', $ids));
+        }
+        header("Location: index.php?page=hotspot");
+        exit;
+    }
 }
 
 // Executa a requisição limpa do comando print
@@ -91,9 +150,33 @@ if ($role !== 'admin') {
     <div class="alert alert-info py-2">Exibindo apenas os servidores liberados pelo Administrador para o seu perfil.</div>
 <?php endif; ?>
 
+<?php if ($bulkError): ?>
+    <div class="alert alert-danger py-2"><?= htmlspecialchars($bulkError) ?></div>
+<?php endif; ?>
+
+<form method="POST" id="bulkHotspotForm">
+    <?= csrfField() ?>
+</form>
+
+<?php if (!empty($hotspots_clean)): ?>
+<div class="card mb-3">
+    <div class="card-body py-2 d-flex flex-wrap align-items-center gap-2">
+        <span class="text-muted small me-2"><i class="bi bi-check2-square"></i> Ações em massa:</span>
+        <button type="submit" form="bulkHotspotForm" name="bulk_action" value="enable" class="btn btn-sm btn-success" onclick="return confirm('Habilitar todos os itens selecionados?');">Habilitar Selecionados</button>
+        <button type="submit" form="bulkHotspotForm" name="bulk_action" value="disable" class="btn btn-sm btn-warning" onclick="return confirm('Desabilitar todos os itens selecionados?');">Desabilitar Selecionados</button>
+        <?php if ($role === 'admin'): ?>
+            <span class="vr mx-1"></span>
+            <button type="submit" form="bulkHotspotForm" name="bulk_permission_action" value="grant" class="btn btn-sm btn-outline-primary">Permitir p/ Padrão</button>
+            <button type="submit" form="bulkHotspotForm" name="bulk_permission_action" value="revoke" class="btn btn-sm btn-outline-secondary">Revogar de Padrão</button>
+        <?php endif; ?>
+    </div>
+</div>
+<?php endif; ?>
+
 <table class="table table-striped table-hover bg-white shadow-sm mt-3 align-middle" style="font-size: 0.9rem;">
     <thead class="table-dark">
         <tr>
+            <th style="width: 36px;"><input type="checkbox" class="form-check-input" id="selectAllHotspot"></th>
             <th>Servidor</th>
             <th>Interface</th>
             <th>Endereço Pool</th>
@@ -106,7 +189,7 @@ if ($role !== 'admin') {
     <tbody>
         <?php if (empty($hotspots_clean)): ?>
             <tr>
-                <td colspan="<?= $role === 'admin' ? 7 : 6 ?>" class="text-center text-muted py-4">Nenhum Hotspot Server configurado<?= $role === 'admin' ? ' neste MikroTik.' : ' liberado para o seu perfil.' ?></td>
+                <td colspan="<?= $role === 'admin' ? 8 : 7 ?>" class="text-center text-muted py-4">Nenhum Hotspot Server configurado<?= $role === 'admin' ? ' neste MikroTik.' : ' liberado para o seu perfil.' ?></td>
             </tr>
         <?php else: ?>
             <?php foreach ($hotspots_clean as $h): ?>
@@ -122,6 +205,7 @@ if ($role !== 'admin') {
                     $isInvalid = isset($h['invalid']) && $h['invalid'] === 'true';
                 ?>
                 <tr class="<?= $isDisabled ? 'table-light text-muted' : '' ?>">
+                    <td><input type="checkbox" class="form-check-input hotspot-row-check" name="ids[]" value="<?= htmlspecialchars($internal_id) ?>" form="bulkHotspotForm"></td>
                     <td>
                         <strong><?= htmlspecialchars($h['name'] ?? '-') ?></strong>
                         <?php if ($isInvalid): ?>
@@ -175,3 +259,8 @@ if ($role !== 'admin') {
         <?php endif; ?>
     </tbody>
 </table>
+<script>
+document.getElementById('selectAllHotspot')?.addEventListener('change', function () {
+    document.querySelectorAll('.hotspot-row-check').forEach(function (cb) { cb.checked = this.checked; }, this);
+});
+</script>
