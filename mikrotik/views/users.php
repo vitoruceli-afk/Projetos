@@ -291,12 +291,10 @@ function ldapTestServiceBind(array $settings) {
     if (empty($settings['bind_username'])) {
         return [false, 'Nenhuma conta de serviço informada.'];
     }
-    $ldap = @ldap_connect($settings['ldap_server']);
+    $ldap = ldapConnect($settings['ldap_server']);
     if (!$ldap) {
         return [false, 'Não foi possível conectar ao servidor LDAP.'];
     }
-    @ldap_set_option($ldap, LDAP_OPT_PROTOCOL_VERSION, 3);
-    @ldap_set_option($ldap, LDAP_OPT_REFERRALS, 0);
 
     $bindPass = routerDecrypt($settings['bind_password']);
     if (@ldap_bind($ldap, $settings['bind_username'], $bindPass)) {
@@ -311,13 +309,11 @@ function ldapListGroupMembers(array $settings, &$errorMsg = null) {
         return [];
     }
 
-    $ldap = @ldap_connect($settings['ldap_server']);
+    $ldap = ldapConnect($settings['ldap_server']);
     if (!$ldap) {
         $errorMsg = 'Não foi possível conectar ao servidor LDAP.';
         return [];
     }
-    @ldap_set_option($ldap, LDAP_OPT_PROTOCOL_VERSION, 3);
-    @ldap_set_option($ldap, LDAP_OPT_REFERRALS, 0);
 
     $bindPass = routerDecrypt($settings['bind_password']);
     if (!@ldap_bind($ldap, $settings['bind_username'], $bindPass)) {
@@ -345,6 +341,24 @@ function ldapListGroupMembers(array $settings, &$errorMsg = null) {
         ];
     }
     usort($users, fn($a, $b) => strcasecmp($a['name'] ?: $a['username'], $b['name'] ?: $b['username']));
+    return $users;
+}
+
+// A busca no AD (ldapListGroupMembers) é a operação mais lenta desta tela. Como toda ação
+// (bloquear, promover, ação em massa, etc.) redireciona de volta para esta mesma aba, sem cache
+// cada clique refaria a busca inteira no LDAP. Guarda o resultado na sessão por um tempo curto;
+// ?refresh=1 força buscar de novo. O cache é automaticamente invalidado se as configurações LDAP mudarem.
+function ldapListGroupMembersCached(array $settings, &$errorMsg = null, $ttlSeconds = 120) {
+    $hash = md5(json_encode($settings));
+    $cache = $_SESSION['ldap_members_cache'] ?? null;
+
+    if (!isset($_GET['refresh']) && $cache && $cache['hash'] === $hash && (time() - $cache['time']) < $ttlSeconds) {
+        $errorMsg = $cache['error'];
+        return $cache['data'];
+    }
+
+    $users = ldapListGroupMembers($settings, $errorMsg);
+    $_SESSION['ldap_members_cache'] = ['hash' => $hash, 'time' => time(), 'data' => $users, 'error' => $errorMsg];
     return $users;
 }
 
@@ -494,7 +508,8 @@ $ldapSettings = getLdapSettings();
 
     <?php
     $ldapError = null;
-    $ldapUsers = ldapListGroupMembers($ldapSettings, $ldapError);
+    $ldapUsers = ldapListGroupMembersCached($ldapSettings, $ldapError);
+    $cacheInfo = $_SESSION['ldap_members_cache'] ?? null;
 
     $blockedRows = $db->query("SELECT username FROM ldap_blocked_users")->fetchAll(PDO::FETCH_COLUMN);
     $blockedSet = array_flip($blockedRows);
@@ -513,6 +528,12 @@ $ldapSettings = getLdapSettings();
 
     <div class="d-flex justify-content-between align-items-center mb-3">
         <p class="text-muted mb-0">Usuários que pertencem ao grupo AD configurado (<code><?= htmlspecialchars($ldapSettings['ldap_group']) ?></code>). Usuários ainda não classificados aqui entram como <strong>Administrador</strong> por padrão. Bloquear/rebaixar aqui não altera a conta no Active Directory — apenas afeta o acesso a esta aplicação.</p>
+    </div>
+    <div class="d-flex justify-content-end align-items-center mb-2">
+        <?php if ($cacheInfo): ?>
+            <span class="text-muted small me-2">Lista obtida do AD há <?= max(0, time() - $cacheInfo['time']) ?>s</span>
+        <?php endif; ?>
+        <a href="index.php?page=users&tab=ldap&refresh=1" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-clockwise"></i> Atualizar Lista</a>
     </div>
 
     <form method="POST" id="bulkLdapUsersForm">

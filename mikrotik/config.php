@@ -2,10 +2,15 @@
 session_start();
 
 // Configurações do Active Directory (LDAP)
-define('LDAP_SERVER', 'ldap://faesa.br'); 
+define('LDAP_SERVER', 'ldap://faesa.br');
 define('LDAP_DOMAIN', '@faesa.br');
 define('LDAP_BASEDN', 'DC=faesa,DC=br');
 define('LDAP_GROUP', 'CN=Nucleo_de_Tecnologia_da_Informação,OU=Grupos Setores,OU=Servicos,DC=faesa,DC=br');
+
+// Timeout (segundos) para conectar/autenticar/consultar o LDAP. Sem isso, uma tentativa de
+// conexão a um Domain Controller inalcançável pode travar por ~20s+ (timeout de TCP do SO)
+// antes do cliente LDAP desistir e cair para outro DC resolvido pelo DNS de LDAP_SERVER.
+define('LDAP_CONN_TIMEOUT', 3);
 
 // Configurações do Banco de Dados Local (MySQL 5.7+)
 define('DB_HOST', '127.0.0.1'); // IP do servidor MySQL (ou localhost)
@@ -232,6 +237,18 @@ function logActivity($category, $action, $details = '') {
     } catch (PDOException $e) {
         // intencionalmente silencioso
     }
+}
+
+// Abre uma conexão LDAP já com protocolo v3, referrals desligados e timeout curto.
+// Centraliza essa configuração para que todo ponto que fala com o AD tenha o mesmo limite de tempo.
+function ldapConnect($server) {
+    $ldap = @ldap_connect($server);
+    if (!$ldap) return false;
+    @ldap_set_option($ldap, LDAP_OPT_PROTOCOL_VERSION, 3);
+    @ldap_set_option($ldap, LDAP_OPT_REFERRALS, 0);
+    @ldap_set_option($ldap, LDAP_OPT_NETWORK_TIMEOUT, LDAP_CONN_TIMEOUT);
+    @ldap_set_option($ldap, LDAP_OPT_TIMEOUT, LDAP_CONN_TIMEOUT);
+    return $ldap;
 }
 
 // ---- Configurações LDAP editáveis via tela (aba "Configurações" em Usuários) ----

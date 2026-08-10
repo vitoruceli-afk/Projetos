@@ -31,9 +31,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             // Não é um usuário local: tenta autenticar via LDAP/Active Directory.
             $settings = getLdapSettings();
-            $ldap = @ldap_connect($settings['ldap_server']);
-            @ldap_set_option($ldap, LDAP_OPT_PROTOCOL_VERSION, 3);
-            @ldap_set_option($ldap, LDAP_OPT_REFERRALS, 0);
+            $ldap = ldapConnect($settings['ldap_server']);
 
             if ($ldap) {
                 $bind = @ldap_bind($ldap, $username . $settings['ldap_domain'], $password);
