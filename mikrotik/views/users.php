@@ -238,6 +238,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['area'] ?? '') === 'ldap' &
     }
 }
 
+// ---- Ação: Acesso a Roteadores (Local + LDAP) ----
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['area'] ?? '') === 'router_access') {
+    csrfVerify();
+    $userType = ($_POST['user_type'] ?? '') === 'local' ? 'local' : 'ldap';
+    $username = trim($_POST['username'] ?? '');
+    $routerIds = array_values(array_unique(array_filter(array_map('intval', (array)($_POST['router_ids'] ?? [])))));
+
+    if ($username !== '') {
+        $del = $db->prepare("DELETE FROM user_router_access WHERE user_type = :t AND username = :u");
+        $del->execute([':t' => $userType, ':u' => $username]);
+        if (!empty($routerIds)) {
+            $ins = $db->prepare("INSERT INTO user_router_access (user_type, username, router_id, granted_by) VALUES (:t, :u, :r, :by)");
+            foreach ($routerIds as $rid) {
+                $ins->execute([':t' => $userType, ':u' => $username, ':r' => $rid, ':by' => $_SESSION['user_logged_in'] ?? '']);
+            }
+        }
+        logActivity('users', 'Atualizou acesso a roteadores', "{$username} (" . ($userType === 'local' ? 'local' : 'LDAP') . ") — " . (empty($routerIds) ? 'nenhum roteador' : count($routerIds) . ' roteador(es)'));
+        header("Location: index.php?page=users&tab=" . $userType);
+        exit;
+    }
+}
+
 // ---- Ações: Configurações LDAP ----
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['area'] ?? '') === 'settings') {
     csrfVerify();
@@ -362,6 +384,42 @@ function ldapListGroupMembersCached(array $settings, &$errorMsg = null, $ttlSeco
     return $users;
 }
 
+// Painel de acesso a roteadores, compartilhado entre as abas Local e LDAP — mostra todos os
+// MikroTiks cadastrados como checkboxes, com os já liberados para este usuário pré-marcados.
+function renderRouterAccessPanel($db, $userType, $username) {
+    $allRouters = $db->query("SELECT id, name, location FROM routers ORDER BY name ASC")->fetchAll();
+    $allowedSet = array_flip(allowedRouterIds($username, $userType));
+    ?>
+    <div class="card mb-3">
+        <div class="card-header">Acesso a Roteadores — <?= htmlspecialchars($username) ?></div>
+        <div class="card-body">
+            <?php if (empty($allRouters)): ?>
+                <p class="text-muted mb-0">Nenhum roteador cadastrado ainda. Cadastre em <a href="index.php?page=routers">Gerenciar Roteadores</a> antes de liberar o acesso.</p>
+            <?php else: ?>
+                <form method="POST">
+                    <?= csrfField() ?>
+                    <input type="hidden" name="area" value="router_access">
+                    <input type="hidden" name="user_type" value="<?= htmlspecialchars($userType) ?>">
+                    <input type="hidden" name="username" value="<?= htmlspecialchars($username) ?>">
+                    <div class="row g-2 mb-3">
+                        <?php foreach ($allRouters as $r): ?>
+                            <div class="col-12 col-sm-6 col-lg-4">
+                                <div class="form-check">
+                                    <input type="checkbox" class="form-check-input" name="router_ids[]" value="<?= (int)$r['id'] ?>" id="ra-<?= (int)$r['id'] ?>" <?= isset($allowedSet[(int)$r['id']]) ? 'checked' : '' ?>>
+                                    <label class="form-check-label" for="ra-<?= (int)$r['id'] ?>"><?= htmlspecialchars($r['name']) ?> <span class="text-muted small">(<?= htmlspecialchars($r['location']) ?>)</span></label>
+                                </div>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                    <button type="submit" class="btn btn-outline-success">Salvar Acesso</button>
+                    <a href="index.php?page=users&tab=<?= htmlspecialchars($userType) ?>" class="btn btn-outline-secondary">Cancelar</a>
+                </form>
+            <?php endif; ?>
+        </div>
+    </div>
+    <?php
+}
+
 // Carrega roteador em edição (usuários locais)
 $editing = null;
 if ($tab === 'local' && isset($_GET['edit'])) {
@@ -382,6 +440,10 @@ $ldapSettings = getLdapSettings();
 </ul>
 
 <?php if ($tab === 'local'): ?>
+
+    <?php if (isset($_GET['router_access']) && $_GET['router_access'] !== ''): ?>
+        <?php renderRouterAccessPanel($db, 'local', $_GET['router_access']); ?>
+    <?php endif; ?>
 
     <div class="row">
         <div class="col-md-4">
@@ -439,7 +501,7 @@ $ldapSettings = getLdapSettings();
             <div class="table-responsive">
             <table class="table table-bordered bg-white align-middle table-actions-sticky">
                 <thead class="table-dark">
-                    <tr><th style="width:32px;"><input type="checkbox" class="form-check-input" id="selectAllLocalUsers"></th><th>Usuário</th><th>Nome</th><th>Perfil</th><th>Status</th><th>Criado em</th><th class="text-center">Ações</th></tr>
+                    <tr><th style="width:32px;"><input type="checkbox" class="form-check-input" id="selectAllLocalUsers"></th><th>Usuário</th><th>Nome</th><th>Perfil</th><th>Status</th><th>Criado em</th><th class="text-center">Roteadores</th><th class="text-center">Ações</th></tr>
                 </thead>
                 <tbody>
                     <?php
@@ -468,8 +530,13 @@ $ldapSettings = getLdapSettings();
                             <?php endif; ?>
                         </td>
                         <td><small class="mono text-muted"><?= htmlspecialchars($u['created_at']) ?></small></td>
+                        <td class="text-center">
+                            <?php $routerCount = count(allowedRouterIds($u['username'], 'local')); ?>
+                            <span class="badge <?= $routerCount > 0 ? 'bg-info text-dark' : 'bg-secondary' ?>"><?= $routerCount ?></span>
+                        </td>
                         <td class="text-center text-nowrap">
                             <a href="index.php?page=users&tab=local&edit=<?= (int)$u['id'] ?>" class="btn btn-sm btn-outline-primary" title="Editar"><i class="bi bi-pencil"></i></a>
+                            <a href="index.php?page=users&tab=local&router_access=<?= urlencode($u['username']) ?>" class="btn btn-sm btn-outline-info" title="Acesso a Roteadores"><i class="bi bi-hdd-network"></i></a>
                             <form method="POST" class="d-inline">
                                 <?= csrfField() ?>
                                 <input type="hidden" name="area" value="local">
@@ -493,7 +560,7 @@ $ldapSettings = getLdapSettings();
                     </tr>
                     <?php endwhile; ?>
                     <?php if ($count === 0): ?>
-                        <tr><td colspan="7" class="text-center text-muted py-3">Nenhum usuário local cadastrado.</td></tr>
+                        <tr><td colspan="8" class="text-center text-muted py-3">Nenhum usuário local cadastrado.</td></tr>
                     <?php endif; ?>
                 </tbody>
             </table>
@@ -507,6 +574,10 @@ $ldapSettings = getLdapSettings();
     </div>
 
 <?php elseif ($tab === 'ldap'): ?>
+
+    <?php if (isset($_GET['router_access']) && $_GET['router_access'] !== ''): ?>
+        <?php renderRouterAccessPanel($db, 'ldap', $_GET['router_access']); ?>
+    <?php endif; ?>
 
     <?php
     $ldapError = null;
@@ -558,11 +629,11 @@ $ldapSettings = getLdapSettings();
     <div class="table-responsive">
     <table class="table table-bordered bg-white align-middle table-actions-sticky">
         <thead class="table-dark">
-            <tr><th style="width:32px;"><input type="checkbox" class="form-check-input" id="selectAllLdapUsers"></th><th>Usuário</th><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Status</th><th class="text-center">Ações</th></tr>
+            <tr><th style="width:32px;"><input type="checkbox" class="form-check-input" id="selectAllLdapUsers"></th><th>Usuário</th><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Status</th><th class="text-center">Roteadores</th><th class="text-center">Ações</th></tr>
         </thead>
         <tbody>
             <?php if (empty($ldapUsers)): ?>
-                <tr><td colspan="7" class="text-center text-muted py-3">Nenhum usuário encontrado (ou conta de serviço não configurada).</td></tr>
+                <tr><td colspan="8" class="text-center text-muted py-3">Nenhum usuário encontrado (ou conta de serviço não configurada).</td></tr>
             <?php else: ?>
                 <?php foreach ($ldapUsers as $u): ?>
                     <?php
@@ -589,7 +660,12 @@ $ldapSettings = getLdapSettings();
                                 <span class="badge bg-success">Permitido</span>
                             <?php endif; ?>
                         </td>
+                        <td class="text-center">
+                            <?php $routerCount = count(allowedRouterIds($u['username'], 'ldap')); ?>
+                            <span class="badge <?= $routerCount > 0 ? 'bg-info text-dark' : 'bg-secondary' ?>"><?= $routerCount ?></span>
+                        </td>
                         <td class="text-center text-nowrap">
+                            <a href="index.php?page=users&tab=ldap&router_access=<?= urlencode($u['username']) ?>" class="btn btn-sm btn-outline-info" title="Acesso a Roteadores"><i class="bi bi-hdd-network"></i></a>
                             <form method="POST" class="d-inline">
                                 <?= csrfField() ?>
                                 <input type="hidden" name="area" value="ldap">

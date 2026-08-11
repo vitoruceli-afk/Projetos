@@ -6,16 +6,21 @@ $db = getDB();
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'switch_router') {
     csrfVerify();
     $router_id = (int)$_POST['router_id'];
-    
+
+    if (!hasRouterAccess($router_id)) {
+        http_response_code(403);
+        die('Você não tem acesso a este roteador.');
+    }
+
     // Sincronizado exatamente com a sessão utilizada no index.php
     $_SESSION['active_router'] = $router_id;
-    
+
     // Mensagem de feedback rápido na tela
     echo "<div class='alert alert-success alert-dismissible fade show mb-3' role='alert'>
             <i class='bi bi-check-circle-fill'></i> Roteador alterado com sucesso! Redirecionando...
             <button type='button' class='btn-close' data-bs-dismiss='alert' aria-label='Close'></button>
           </div>";
-          
+
     // Força o recarregamento da página para atualizar o menu superior e os cookies de sessão da API
     header("Refresh:1; url=index.php?page=dashboard");
 }
@@ -28,6 +33,13 @@ try {
     echo "<div class='alert alert-danger'>Erro ao buscar roteadores no banco de dados: " . $e->getMessage() . "</div>";
     return;
 }
+
+// O Dashboard só lista/testa os roteadores liberados para este usuário em Usuários > Roteadores
+// — os demais nem aparecem aqui (não é apenas um filtro de exibição, é o mesmo controle de
+// acesso aplicado no seletor de roteador e em getActiveRouterAPI()).
+$totalRoutersConfigured = count($routers_list);
+$allowedRouterIdsNow = allowedRouterIds();
+$routers_list = array_values(array_filter($routers_list, fn($r) => in_array((int)$r['id'], $allowedRouterIdsNow, true)));
 
 // Recupera o ID do roteador ativo atualmente usando a chave correta (pode ser NULL se nenhum estiver selecionado)
 $active_id_now = $_SESSION['active_router'] ?? null;
@@ -142,7 +154,11 @@ function timeAgo($datetime) {
     </div>
 </div>
 
-<?php if (empty($active_id_now) && $total_routers > 0): ?>
+<?php if ($totalRoutersConfigured > 0 && $total_routers === 0): ?>
+    <div class="alert alert-danger mb-4" role="alert">
+        <strong>Você não tem acesso a nenhum roteador</strong>, entre em contato com o administrador do sistema e solicite o acesso.
+    </div>
+<?php elseif (empty($active_id_now) && $total_routers > 0): ?>
     <div class="alert alert-warning mb-4" role="alert">
         <strong>Nenhum roteador selecionado para gerência.</strong>
         Escolha um dos MikroTiks operacionais na lista abaixo e clique em <strong>"Gerenciar"</strong> para liberar os menus de Firewall e Autenticação.
@@ -200,7 +216,11 @@ function timeAgo($datetime) {
                     <?php if (empty($dashboard_data)): ?>
                         <tr>
                             <td colspan="8" class="text-center text-muted py-4">
-                                Nenhum equipamento cadastrado. Vá até a página <a href="index.php?page=routers" class="fw-bold text-decoration-none">Gerenciar Roteadores</a> para começar.
+                                <?php if ($totalRoutersConfigured > 0): ?>
+                                    Nenhum equipamento liberado para o seu usuário.
+                                <?php else: ?>
+                                    Nenhum equipamento cadastrado. Vá até a página <a href="index.php?page=routers" class="fw-bold text-decoration-none">Gerenciar Roteadores</a> para começar.
+                                <?php endif; ?>
                             </td>
                         </tr>
                     <?php else: ?>

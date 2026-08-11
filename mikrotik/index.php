@@ -3,6 +3,13 @@ require_once 'config.php';
 require_once 'RouterosAPI.php';
 checkAuth();
 
+// Se o roteador ativo na sessão não está (mais) liberado para este usuário — acesso nunca
+// concedido, ou revogado por um Administrador desde o último request — solta a seleção. As
+// checagens abaixo (pages_that_require_router) então tratam como se nenhum roteador estivesse ativo.
+if (isset($_SESSION['active_router']) && !hasRouterAccess($_SESSION['active_router'])) {
+    unset($_SESSION['active_router']);
+}
+
 $page = $_GET['page'] ?? 'dashboard';
 $allowed_pages = ['dashboard', 'routers', 'hotspot', 'firewall', 'diagnostics', 'users', 'logs', 'bypass'];
 

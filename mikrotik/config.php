@@ -157,6 +157,21 @@ function getDB() {
             INDEX idx_active_sessions_activity (last_activity)
         )");
 
+        // Controle de acesso por roteador: quais MikroTiks cada usuário (local ou LDAP) pode
+        // enxergar/selecionar/operar. Sem nenhuma linha para o usuário = SEM acesso a nenhum
+        // roteador (diferente do padrão "grandfather" dos perfis LDAP — aqui o padrão é
+        // restritivo por decisão explícita, então todo usuário precisa ser liberado por um
+        // Administrador em Usuários antes de conseguir usar qualquer roteador).
+        $db->exec("CREATE TABLE IF NOT EXISTS user_router_access (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_type VARCHAR(10) NOT NULL,
+            username VARCHAR(100) NOT NULL,
+            router_id INT NOT NULL,
+            granted_by VARCHAR(100) DEFAULT '',
+            granted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_user_router (user_type, username, router_id)
+        )");
+
         return $db;
     } catch (PDOException $e) {
         die("Erro de conexão com o MySQL: " . $e->getMessage());
@@ -243,6 +258,32 @@ function getActiveSessions() {
     } catch (PDOException $e) {
         return [];
     }
+}
+
+// ---- Acesso por roteador (quais MikroTiks cada usuário pode ver/selecionar/operar) ----
+
+// IDs dos roteadores liberados para o usuário informado (ou o logado, por padrão). Vale para
+// Administrador e Usuário Padrão igualmente — não há exceção por perfil aqui.
+function allowedRouterIds($username = null, $userType = null) {
+    if ($username === null) {
+        $username = $_SESSION['user_logged_in'] ?? null;
+        $userType = ($_SESSION['auth_type'] ?? '') === 'local' ? 'local' : 'ldap';
+    }
+    if (!$username) return [];
+    try {
+        $db = getDB();
+        $stmt = $db->prepare("SELECT router_id FROM user_router_access WHERE user_type = :t AND username = :u");
+        $stmt->bindValue(':t', $userType);
+        $stmt->bindValue(':u', $username);
+        $stmt->execute();
+        return array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+    } catch (PDOException $e) {
+        return [];
+    }
+}
+
+function hasRouterAccess($routerId) {
+    return in_array((int)$routerId, allowedRouterIds(), true);
 }
 
 // ---- Perfis de acesso (admin / standard) ----

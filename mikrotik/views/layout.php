@@ -1,9 +1,20 @@
 <?php
 $db = getDB();
-$routersList = $db->query("SELECT id, name, location FROM routers ORDER BY name ASC")->fetchAll(PDO::FETCH_ASSOC);
+// O seletor de roteador só lista (e só aceita trocar para) os MikroTiks liberados para este
+// usuário em Usuários > Roteadores — os demais nem aparecem aqui.
+$allowedRouterIdsNow = allowedRouterIds();
+$routersList = empty($allowedRouterIdsNow) ? [] : (function () use ($db, $allowedRouterIdsNow) {
+    $placeholders = implode(',', array_fill(0, count($allowedRouterIdsNow), '?'));
+    $stmt = $db->prepare("SELECT id, name, location FROM routers WHERE id IN ({$placeholders}) ORDER BY name ASC");
+    $stmt->execute($allowedRouterIdsNow);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+})();
 
 if (isset($_GET['select_router'])) {
-    $_SESSION['active_router'] = (int)$_GET['select_router'];
+    $reqRouterId = (int)$_GET['select_router'];
+    if (hasRouterAccess($reqRouterId)) {
+        $_SESSION['active_router'] = $reqRouterId;
+    }
     header("Location: index.php");
     exit;
 }
@@ -117,7 +128,7 @@ function userInitials($username) {
                 <div class="router-dropdown" id="routerDropdown">
                     <div class="rd-label">Selecionar Mikrotik</div>
                     <?php if (empty($routersList)): ?>
-                        <div class="rd-empty">Nenhum roteador cadastrado.</div>
+                        <div class="rd-empty">Nenhum roteador liberado para o seu usuário.</div>
                     <?php else: ?>
                         <?php foreach ($routersList as $row): ?>
                             <a class="rd-item <?= $active_router_id == $row['id'] ? 'is-current' : '' ?>" href="index.php?select_router=<?= (int)$row['id'] ?>">
