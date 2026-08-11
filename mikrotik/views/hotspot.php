@@ -163,7 +163,7 @@ if ($role !== 'admin') {
     <input type="checkbox" class="form-check-input" id="selectAllHotspot" title="Selecionar todos">
     <span class="elt-label"><i class="bi bi-check2-square"></i> Ações em massa</span>
     <button type="submit" form="bulkHotspotForm" name="bulk_action" value="enable" class="btn btn-sm btn-outline-success" onclick="return confirm('Habilitar todos os itens selecionados?');">Habilitar Selecionados</button>
-    <button type="submit" form="bulkHotspotForm" name="bulk_action" value="disable" class="btn btn-sm btn-outline-danger" onclick="return confirm('Desabilitar todos os itens selecionados?');">Desabilitar Selecionados</button>
+    <button type="submit" form="bulkHotspotForm" name="bulk_action" value="disable" class="btn btn-sm btn-outline-danger" onclick="return confirmBulkDisableHotspot();">Desabilitar Selecionados</button>
     <?php if ($role === 'admin'): ?>
         <span class="vr mx-1"></span>
         <button type="submit" form="bulkHotspotForm" name="bulk_permission_action" value="grant" class="btn btn-sm btn-outline-primary">Permitir p/ Padrão</button>
@@ -193,7 +193,7 @@ if ($role !== 'admin') {
             <div class="entity-card <?= $isDisabled ? 'is-disabled' : '' ?>">
                 <div class="entity-card-head">
                     <div class="entity-title-wrap">
-                        <input type="checkbox" class="form-check-input entity-check hotspot-row-check" name="ids[]" value="<?= htmlspecialchars($internal_id) ?>" form="bulkHotspotForm">
+                        <input type="checkbox" class="form-check-input entity-check hotspot-row-check" name="ids[]" value="<?= htmlspecialchars($internal_id) ?>" data-name="<?= htmlspecialchars($h['name'] ?? $internal_id) ?>" form="bulkHotspotForm">
                         <div>
                             <div class="entity-title">
                                 <?= htmlspecialchars($h['name'] ?? '-') ?>
@@ -243,7 +243,13 @@ if ($role !== 'admin') {
                 <div class="entity-actions">
                     <div></div>
                     <div class="entity-actions-buttons">
-                        <form method="POST" class="m-0" onsubmit="return confirm('Alterar o status deste servidor de autenticação?');">
+                        <?php
+                            $rowDisableConfirm = htmlspecialchars(
+                                json_encode('Tem certeza que deseja desabilitar o servidor abaixo?' . "\n\n\"" . (string)($h['name'] ?? $internal_id) . '"'),
+                                ENT_QUOTES
+                            );
+                        ?>
+                        <form method="POST" class="m-0" onsubmit="return <?= $isDisabled ? "confirm('Alterar o status deste servidor de autenticação?')" : 'confirm(' . $rowDisableConfirm . ')' ?>;">
                             <?= csrfField() ?>
                             <input type="hidden" name="id" value="<?= htmlspecialchars($internal_id) ?>">
                             <?php if ($isDisabled): ?>
@@ -264,4 +270,16 @@ if ($role !== 'admin') {
 document.getElementById('selectAllHotspot')?.addEventListener('change', function () {
     document.querySelectorAll('.hotspot-row-check').forEach(function (cb) { cb.checked = this.checked; }, this);
 });
+
+// Confirmação da desativação em massa: lista pelo nome cada servidor selecionado (um ou vários),
+// para o administrador saber exatamente o que está prestes a desabilitar antes de confirmar.
+function confirmBulkDisableHotspot() {
+    var checked = Array.prototype.slice.call(document.querySelectorAll('.hotspot-row-check:checked'));
+    if (checked.length === 0) return true; // deixa o servidor exibir "nenhum item selecionado"
+    var names = checked.map(function (cb) { return cb.getAttribute('data-name') || cb.value; });
+    var msg = checked.length === 1
+        ? 'Tem certeza que deseja desabilitar o servidor abaixo?\n\n"' + names[0] + '"'
+        : 'Tem certeza que deseja desabilitar os ' + checked.length + ' servidores abaixo?\n\n"' + names.join('"\n"') + '"';
+    return confirm(msg);
+}
 </script>
