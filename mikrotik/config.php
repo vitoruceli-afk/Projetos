@@ -1,4 +1,13 @@
 <?php
+// Buffer de saída para toda a requisição: com output_buffering desligado neste servidor
+// (implicit_flush=On), o HTML do layout (nav, seletor de roteadores etc.) é enviado ao
+// navegador assim que é ecoado. Isso faz qualquer header() chamado depois (redirecionamentos
+// após salvar/excluir) falhar com "headers already sent" — e o problema só aparece quando o
+// HTML anterior cresce o bastante (ex: lista de roteadores no menu ficando maior), então pode
+// funcionar por um tempo e quebrar depois sem nenhuma mudança de código. Bufferizar a resposta
+// inteira aqui garante que header()/redirecionamentos sempre funcionem, em qualquer página.
+ob_start();
+
 // Tempo máximo de inatividade antes da sessão ser encerrada automaticamente.
 define('SESSION_IDLE_TIMEOUT', 1800); // 30 minutos
 

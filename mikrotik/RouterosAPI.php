@@ -6,7 +6,11 @@ class RouterosAPI {
     public $timeout = 2;
     public $attempts = 1;
     public $delay = 1;
-    
+    // Fica true quando a última chamada a read() foi interrompida por $maxWait sem terminar
+    // de receber a resposta (ver read()). Não significa que o comando falhou no roteador —
+    // só que o cliente desistiu de esperar a confirmação chegar.
+    public $lastReadTimedOut = false;
+
     private $socket;
 
     public function connect($ip, $login, $password) {
@@ -103,14 +107,19 @@ class RouterosAPI {
         return $results;
     }
 
-    public function comm($com, $arr = array()) {
+    // $maxWait (segundos, opcional): limite de tempo TOTAL de espera pela resposta completa.
+    // Existe porque, para alguns comandos (ex: /add em listas grandes de ip-binding), o roteador
+    // pode mandar as primeiras palavras da resposta rápido e travar minutos antes de mandar o
+    // resto — e como read() só desiste quando a resposta está totalmente vazia, sem esse limite
+    // o cliente fica preso esperando indefinidamente mesmo com um $timeout de socket configurado.
+    public function comm($com, $arr = array(), $maxWait = null) {
         $count = count($arr);
         $this->write($com, ($count == 0));
         $i = 0;
         foreach ($arr as $k => $v) {
             $this->write('=' . $k . '=' . $v, (++$i == $count));
         }
-        return $this->read();
+        return $this->read(true, $maxWait);
     }
 
     public function write($command, $end = true) {
@@ -125,9 +134,15 @@ class RouterosAPI {
     }
 
     // O SEGREDOR DO COMPORTAMENTO: Loop de leitura corrigido em lote
-    public function read($parse = true) {
+    public function read($parse = true, $maxWait = null) {
         $response = array();
+        $this->lastReadTimedOut = false;
+        $deadline = $maxWait !== null ? (microtime(true) + $maxWait) : null;
         while (true) {
+            if ($deadline !== null && microtime(true) > $deadline) {
+                $this->lastReadTimedOut = true;
+                break;
+            }
             $byte = ord(fread($this->socket, 1));
             $length = 0;
             if ($byte & 128) {

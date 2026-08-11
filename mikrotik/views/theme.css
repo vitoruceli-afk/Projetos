@@ -217,6 +217,16 @@ thead.table-dark, .table > thead.table-dark, .table thead.table-dark th {
 .table-light { --bs-table-bg: var(--bg); color: var(--text-400); }
 .bg-white { background: var(--surface) !important; }
 
+/* Mantém a última coluna (normalmente "Ações") visível mesmo com rolagem horizontal em
+   tabelas largas, para os botões nunca ficarem escondidos fora da área visível. */
+.table-actions-sticky td:last-child, .table-actions-sticky th:last-child {
+    position: sticky;
+    right: 0;
+    background: var(--surface);
+    box-shadow: -6px 0 6px -6px rgba(0, 0, 0, 0.15);
+}
+.table-actions-sticky thead th:last-child { background: var(--bg); }
+
 /* ---- formulários ---- */
 .form-control, .form-select {
   background: var(--bg);

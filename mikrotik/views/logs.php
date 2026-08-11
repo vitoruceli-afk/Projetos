@@ -6,6 +6,7 @@ $categoryLabels = [
     'auth' => 'Login/Logoff',
     'hotspot' => 'Hotspot',
     'firewall' => 'Firewall',
+    'bypass' => 'Bypass',
     'routers' => 'Gerenciar Roteadores',
     'users' => 'Usuários',
 ];

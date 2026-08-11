@@ -58,6 +58,7 @@ function navLink($targetPage, $currentPage, $label, $iconPath) {
             <div class="rail-section-label">Administração</div>
             <?php
             navLink('routers', $page, 'Roteadores', '<rect x="4" y="3.5" width="16" height="6" rx="1"/><rect x="4" y="14.5" width="16" height="6" rx="1"/><circle cx="7.5" cy="6.5" r=".6" fill="currentColor" stroke="none"/><circle cx="7.5" cy="17.5" r=".6" fill="currentColor" stroke="none"/>');
+            navLink('bypass', $page, 'Bypass', '<path d="M5 5l6 7-6 7"/><path d="M13 5l6 7-6 7"/>');
             navLink('users', $page, 'Usuários', '<circle cx="9" cy="8" r="3"/><path d="M3.5 20c0-3.5 2.5-6 5.5-6s5.5 2.5 5.5 6"/><path d="M16 8.2a3 3 0 010 5.6M19 20c0-2.8-1.6-5-3.5-5.8"/>');
             navLink('logs', $page, 'Logs', '<path d="M5 3h9l5 5v13H5z"/><path d="M9 12h6M9 16h6M9 8h3"/>');
             ?>
