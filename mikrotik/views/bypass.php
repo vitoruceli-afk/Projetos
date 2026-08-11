@@ -107,6 +107,30 @@ if (isset($_GET['edit'])) {
         if ($b['.id'] === $_GET['edit']) { $editing = $b; break; }
     }
 }
+
+// ---- Filtros (busca + tipo + status) — aplicados só à listagem; a busca do item em edição acima usa a lista completa. ----
+$fSearch = trim($_GET['search'] ?? '');
+$fType = $_GET['type'] ?? '';
+if (!in_array($fType, ['bypassed', 'blocked', 'regular'], true)) $fType = '';
+$fStatus = $_GET['status'] ?? '';
+if (!in_array($fStatus, ['active', 'disabled'], true)) $fStatus = '';
+$hasFilter = $fSearch !== '' || $fType !== '' || $fStatus !== '';
+
+if ($hasFilter) {
+    $bindings = array_values(array_filter($bindings, function ($b) use ($fSearch, $fType, $fStatus) {
+        if ($fSearch !== '') {
+            $haystack = mb_strtolower(($b['mac-address'] ?? '') . ' ' . ($b['address'] ?? '') . ' ' . ($b['comment'] ?? ''));
+            if (mb_strpos($haystack, mb_strtolower($fSearch)) === false) return false;
+        }
+        if ($fType !== '' && ($b['type'] ?? '') !== $fType) return false;
+        if ($fStatus !== '') {
+            $isDisabled = in_array(strtolower((string)($b['disabled'] ?? 'no')), ['true', 'yes'], true);
+            if ($fStatus === 'active' && $isDisabled) return false;
+            if ($fStatus === 'disabled' && !$isDisabled) return false;
+        }
+        return true;
+    }));
+}
 ?>
 <div class="page-head">
     <div>
@@ -183,9 +207,48 @@ if (isset($_GET['edit'])) {
     </div>
 </div>
 
+<div class="card mb-3">
+    <div class="card-body">
+        <form method="GET" class="row gx-3 gy-2 align-items-end">
+            <input type="hidden" name="page" value="bypass">
+            <div class="col-12 col-sm-6 col-lg-4">
+                <label class="form-label small text-muted mb-0">Buscar</label>
+                <input type="text" name="search" class="form-control" placeholder="MAC, IP ou comentário" value="<?= htmlspecialchars($fSearch) ?>">
+            </div>
+            <div class="col-6 col-lg-3">
+                <label class="form-label small text-muted mb-0">Tipo</label>
+                <select name="type" class="form-select">
+                    <option value="">Todos</option>
+                    <option value="bypassed" <?= $fType === 'bypassed' ? 'selected' : '' ?>>Bypassed</option>
+                    <option value="blocked" <?= $fType === 'blocked' ? 'selected' : '' ?>>Blocked</option>
+                    <option value="regular" <?= $fType === 'regular' ? 'selected' : '' ?>>Regular</option>
+                </select>
+            </div>
+            <div class="col-6 col-lg-2">
+                <label class="form-label small text-muted mb-0">Status</label>
+                <select name="status" class="form-select">
+                    <option value="">Todos</option>
+                    <option value="active" <?= $fStatus === 'active' ? 'selected' : '' ?>>Ativo</option>
+                    <option value="disabled" <?= $fStatus === 'disabled' ? 'selected' : '' ?>>Desabilitado</option>
+                </select>
+            </div>
+            <div class="col-12 col-lg-3 d-flex gap-2">
+                <button type="submit" class="btn btn-outline-primary flex-fill">Filtrar</button>
+                <a href="index.php?page=bypass" class="btn btn-outline-secondary">Limpar</a>
+            </div>
+        </form>
+    </div>
+</div>
+
 <?php if (empty($bindings)): ?>
     <div class="card">
-        <div class="card-body text-center text-muted py-4">Nenhum bypass cadastrado neste MikroTik.</div>
+        <div class="card-body text-center text-muted py-4">
+            <?php if ($hasFilter): ?>
+                Nenhum bypass encontrado para os filtros selecionados.
+            <?php else: ?>
+                Nenhum bypass cadastrado neste MikroTik.
+            <?php endif; ?>
+        </div>
     </div>
 <?php else: ?>
     <div class="entity-list">

@@ -139,6 +139,27 @@ if ($role !== 'admin') {
         return $id && isset($permittedIds[$id]);
     }));
 }
+
+// ---- Filtros (busca por nome/interface + status) ----
+$fSearch = trim($_GET['search'] ?? '');
+$fStatus = $_GET['status'] ?? '';
+if (!in_array($fStatus, ['enabled', 'disabled'], true)) $fStatus = '';
+$hasFilter = $fSearch !== '' || $fStatus !== '';
+
+if ($hasFilter) {
+    $hotspots_clean = array_values(array_filter($hotspots_clean, function ($h) use ($fSearch, $fStatus) {
+        if ($fSearch !== '') {
+            $haystack = mb_strtolower(($h['name'] ?? '') . ' ' . ($h['interface'] ?? ''));
+            if (mb_strpos($haystack, mb_strtolower($fSearch)) === false) return false;
+        }
+        if ($fStatus !== '') {
+            $isDisabled = isset($h['disabled']) && in_array(strtolower((string)$h['disabled']), ['true', 'yes']);
+            if ($fStatus === 'enabled' && $isDisabled) return false;
+            if ($fStatus === 'disabled' && !$isDisabled) return false;
+        }
+        return true;
+    }));
+}
 ?>
 
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -149,6 +170,30 @@ if ($role !== 'admin') {
 <?php if ($role !== 'admin'): ?>
     <div class="alert alert-info py-2">Exibindo apenas os servidores liberados pelo Administrador para o seu perfil.</div>
 <?php endif; ?>
+
+<div class="card mb-3">
+    <div class="card-body">
+        <form method="GET" class="row gx-3 gy-2 align-items-end">
+            <input type="hidden" name="page" value="hotspot">
+            <div class="col-12 col-sm-6 col-lg-5">
+                <label class="form-label small text-muted mb-0">Buscar</label>
+                <input type="text" name="search" class="form-control" placeholder="Nome ou interface" value="<?= htmlspecialchars($fSearch) ?>">
+            </div>
+            <div class="col-6 col-lg-3">
+                <label class="form-label small text-muted mb-0">Status</label>
+                <select name="status" class="form-select">
+                    <option value="">Todos</option>
+                    <option value="enabled" <?= $fStatus === 'enabled' ? 'selected' : '' ?>>Habilitado</option>
+                    <option value="disabled" <?= $fStatus === 'disabled' ? 'selected' : '' ?>>Desabilitado</option>
+                </select>
+            </div>
+            <div class="col-12 col-lg-4 d-flex gap-2">
+                <button type="submit" class="btn btn-outline-primary flex-fill">Filtrar</button>
+                <a href="index.php?page=hotspot" class="btn btn-outline-secondary">Limpar</a>
+            </div>
+        </form>
+    </div>
+</div>
 
 <?php if ($bulkError): ?>
     <div class="alert alert-danger py-2"><?= htmlspecialchars($bulkError) ?></div>
@@ -174,7 +219,13 @@ if ($role !== 'admin') {
 
 <?php if (empty($hotspots_clean)): ?>
     <div class="card">
-        <div class="card-body text-center text-muted py-4">Nenhum servidor de autenticação configurado<?= $role === 'admin' ? ' neste MikroTik.' : ' liberado para o seu perfil.' ?></div>
+        <div class="card-body text-center text-muted py-4">
+            <?php if ($hasFilter): ?>
+                Nenhum servidor encontrado para os filtros selecionados.
+            <?php else: ?>
+                Nenhum servidor de autenticação configurado<?= $role === 'admin' ? ' neste MikroTik.' : ' liberado para o seu perfil.' ?>
+            <?php endif; ?>
+        </div>
     </div>
 <?php else: ?>
     <div class="entity-list">

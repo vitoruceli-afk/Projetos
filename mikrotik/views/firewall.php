@@ -124,6 +124,41 @@ if ($role !== 'admin') {
         return is_array($r) && isset($r['.id']) && isset($permittedIds[$r['.id']]);
     }));
 }
+
+// Descarta blocos de resposta da API que não sejam regras válidas antes de montar os filtros.
+$rules = array_values(array_filter($rules, fn($r) => is_array($r) && isset($r['.id'])));
+
+// Opções dos seletores de Chain/Ação vêm dos valores realmente presentes nas regras visíveis
+// (em vez de uma lista fixa), então sempre refletem o que existe de fato neste roteador.
+$chainOptions = array_values(array_unique(array_filter(array_map(fn($r) => $r['chain'] ?? null, $rules))));
+sort($chainOptions);
+$actionOptions = array_values(array_unique(array_filter(array_map(fn($r) => $r['action'] ?? null, $rules))));
+sort($actionOptions);
+
+// ---- Filtros (busca + chain + ação + status) ----
+$fSearch = trim($_GET['search'] ?? '');
+$fChain = $_GET['chain'] ?? '';
+$fAction = $_GET['rule_action'] ?? '';
+$fStatus = $_GET['status'] ?? '';
+if (!in_array($fStatus, ['active', 'disabled'], true)) $fStatus = '';
+$hasFilter = $fSearch !== '' || $fChain !== '' || $fAction !== '' || $fStatus !== '';
+
+if ($hasFilter) {
+    $rules = array_values(array_filter($rules, function ($r) use ($fSearch, $fChain, $fAction, $fStatus) {
+        if ($fSearch !== '') {
+            $haystack = mb_strtolower(($r['comment'] ?? '') . ' ' . ($r['.id'] ?? '') . ' ' . ($r['src-address'] ?? '') . ' ' . ($r['dst-address'] ?? ''));
+            if (mb_strpos($haystack, mb_strtolower($fSearch)) === false) return false;
+        }
+        if ($fChain !== '' && ($r['chain'] ?? '') !== $fChain) return false;
+        if ($fAction !== '' && ($r['action'] ?? '') !== $fAction) return false;
+        if ($fStatus !== '') {
+            $isDisabled = isset($r['disabled']) && in_array(strtolower((string)$r['disabled']), ['true', 'yes']);
+            if ($fStatus === 'active' && $isDisabled) return false;
+            if ($fStatus === 'disabled' && !$isDisabled) return false;
+        }
+        return true;
+    }));
+}
 ?>
 
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -134,6 +169,48 @@ if ($role !== 'admin') {
 <?php if ($role !== 'admin'): ?>
     <div class="alert alert-info py-2">Exibindo apenas as regras liberadas pelo Administrador para o seu perfil.</div>
 <?php endif; ?>
+
+<div class="card mb-3">
+    <div class="card-body">
+        <form method="GET" class="row gx-3 gy-2 align-items-end">
+            <input type="hidden" name="page" value="firewall">
+            <div class="col-12 col-sm-6 col-lg-3">
+                <label class="form-label small text-muted mb-0">Buscar</label>
+                <input type="text" name="search" class="form-control" placeholder="Comentário, ID ou endereço" value="<?= htmlspecialchars($fSearch) ?>">
+            </div>
+            <div class="col-6 col-lg-2">
+                <label class="form-label small text-muted mb-0">Chain</label>
+                <select name="chain" class="form-select">
+                    <option value="">Todas</option>
+                    <?php foreach ($chainOptions as $c): ?>
+                        <option value="<?= htmlspecialchars($c) ?>" <?= $fChain === $c ? 'selected' : '' ?>><?= htmlspecialchars($c) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div class="col-6 col-lg-2">
+                <label class="form-label small text-muted mb-0">Ação</label>
+                <select name="rule_action" class="form-select">
+                    <option value="">Todas</option>
+                    <?php foreach ($actionOptions as $a): ?>
+                        <option value="<?= htmlspecialchars($a) ?>" <?= $fAction === $a ? 'selected' : '' ?>><?= htmlspecialchars($a) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div class="col-6 col-lg-2">
+                <label class="form-label small text-muted mb-0">Status</label>
+                <select name="status" class="form-select">
+                    <option value="">Todos</option>
+                    <option value="active" <?= $fStatus === 'active' ? 'selected' : '' ?>>Ativa</option>
+                    <option value="disabled" <?= $fStatus === 'disabled' ? 'selected' : '' ?>>Desabilitada</option>
+                </select>
+            </div>
+            <div class="col-12 col-lg-3 d-flex gap-2">
+                <button type="submit" class="btn btn-outline-primary flex-fill">Filtrar</button>
+                <a href="index.php?page=firewall" class="btn btn-outline-secondary">Limpar</a>
+            </div>
+        </form>
+    </div>
+</div>
 
 <?php if ($bulkError): ?>
     <div class="alert alert-danger py-2"><?= htmlspecialchars($bulkError) ?></div>
@@ -159,7 +236,13 @@ if ($role !== 'admin') {
 
 <?php if (empty($rules)): ?>
     <div class="card">
-        <div class="card-body text-center text-muted py-4">Nenhuma regra de firewall filter encontrada<?= $role === 'admin' ? '.' : ' liberada para o seu perfil.' ?></div>
+        <div class="card-body text-center text-muted py-4">
+            <?php if ($hasFilter): ?>
+                Nenhuma regra encontrada para os filtros selecionados.
+            <?php else: ?>
+                Nenhuma regra de firewall filter encontrada<?= $role === 'admin' ? '.' : ' liberada para o seu perfil.' ?>
+            <?php endif; ?>
+        </div>
     </div>
 <?php else: ?>
     <div class="entity-list">
