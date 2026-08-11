@@ -31,7 +31,8 @@ function navLink($targetPage, $currentPage, $label, $iconPath) {
 </head>
 <body>
 <div class="app-shell">
-    <nav class="rail" aria-label="Navegação principal">
+    <div class="rail-backdrop" id="railBackdrop"></div>
+    <nav class="rail" id="rail" aria-label="Navegação principal">
         <div class="rail-brand">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
                 <circle cx="12" cy="12" r="2.1" fill="currentColor" stroke="none"/>
@@ -74,6 +75,20 @@ function navLink($targetPage, $currentPage, $label, $iconPath) {
 
     <div class="main-col">
         <div class="topbar">
+            <button type="button" class="hamburger-btn" id="railToggle" aria-label="Abrir menu" aria-expanded="false" aria-controls="rail">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+            </button>
+            <div class="topbar-brand">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                    <circle cx="12" cy="12" r="2.1" fill="currentColor" stroke="none"/>
+                    <circle cx="4" cy="6" r="1.6" fill="currentColor" stroke="none"/>
+                    <circle cx="20" cy="6" r="1.6" fill="currentColor" stroke="none"/>
+                    <circle cx="4" cy="18" r="1.6" fill="currentColor" stroke="none"/>
+                    <circle cx="20" cy="18" r="1.6" fill="currentColor" stroke="none"/>
+                    <path d="M12 12L4 6M12 12L20 6M12 12L4 18M12 12L20 18"/>
+                </svg>
+                <span>MIKROTIK MGR</span>
+            </div>
             <form class="router-picker" method="GET" action="index.php">
                 <span class="dot <?= $active_router_id ? 'online' : 'offline' ?>"></span>
                 <select name="select_router" class="form-select" onchange="this.form.submit()">
@@ -102,5 +117,36 @@ function navLink($targetPage, $currentPage, $label, $iconPath) {
     </div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+(function () {
+    var rail = document.getElementById('rail');
+    var backdrop = document.getElementById('railBackdrop');
+    var toggle = document.getElementById('railToggle');
+    if (!rail || !backdrop || !toggle) return;
+
+    function openRail() {
+        rail.classList.add('is-open');
+        backdrop.classList.add('is-visible');
+        toggle.setAttribute('aria-expanded', 'true');
+    }
+    function closeRail() {
+        rail.classList.remove('is-open');
+        backdrop.classList.remove('is-visible');
+        toggle.setAttribute('aria-expanded', 'false');
+    }
+
+    toggle.addEventListener('click', function () {
+        rail.classList.contains('is-open') ? closeRail() : openRail();
+    });
+    backdrop.addEventListener('click', closeRail);
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') closeRail();
+    });
+    // Fecha o menu ao navegar para outra página no mobile (a gaveta não deve persistir aberta).
+    rail.querySelectorAll('a.rail-link, a.rail-logout').forEach(function (link) {
+        link.addEventListener('click', closeRail);
+    });
+})();
+</script>
 </body>
 </html>

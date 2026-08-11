@@ -173,7 +173,8 @@ if ($role !== 'admin') {
 </div>
 <?php endif; ?>
 
-<table class="table table-striped table-hover bg-white shadow-sm mt-3 align-middle" style="font-size: 0.9rem;">
+<div class="table-responsive">
+<table class="table table-striped table-hover bg-white shadow-sm mt-3 align-middle table-actions-sticky" style="font-size: 0.9rem;">
     <thead class="table-dark">
         <tr>
             <th style="width: 36px;"><input type="checkbox" class="form-check-input" id="selectAllHotspot"></th>
@@ -259,6 +260,7 @@ if ($role !== 'admin') {
         <?php endif; ?>
     </tbody>
 </table>
+</div>
 <script>
 document.getElementById('selectAllHotspot')?.addEventListener('change', function () {
     document.querySelectorAll('.hotspot-row-check').forEach(function (cb) { cb.checked = this.checked; }, this);

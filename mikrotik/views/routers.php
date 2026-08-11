@@ -114,7 +114,8 @@ $routers = $db->query("SELECT * FROM routers ORDER BY name ASC");
         </div>
     </div>
     <div class="col-md-8">
-        <table class="table table-bordered bg-white">
+        <div class="table-responsive">
+        <table class="table table-bordered bg-white table-actions-sticky">
             <thead class="table-dark"><tr><th>Nome</th><th>Campus/Local</th><th>IP</th><th>Porta</th><th>Usuário</th><th>Ações</th></tr></thead>
             <tbody>
                 <?php while($r = $routers->fetch(PDO::FETCH_ASSOC)): ?>
@@ -137,5 +138,6 @@ $routers = $db->query("SELECT * FROM routers ORDER BY name ASC");
                 <?php endwhile; ?>
             </tbody>
         </table>
+        </div>
     </div>
 </div>

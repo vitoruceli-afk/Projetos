@@ -92,10 +92,10 @@ $api->disconnect();
     <div class="card-body">
         <form method="POST" class="row gx-3 gy-2 align-items-center">
             <?= csrfField() ?>
-            <div class="col-sm-5">
+            <div class="col-12 col-md-5">
                 <input type="text" name="target_ip" class="form-control" placeholder="IP ou host de destino (ex: 8.8.8.8)" value="<?= htmlspecialchars($target) ?>" required>
             </div>
-            <div class="col-sm-5">
+            <div class="col-12 col-md-5">
                 <div class="btn-group w-100" role="group">
                     <input type="radio" class="btn-check" name="tool" id="tool_ping" value="ping" autocomplete="off" <?= $tool === 'ping' ? 'checked' : '' ?>>
                     <label class="btn btn-outline-primary" for="tool_ping"><i class="bi bi-reception-4"></i> Ping</label>
@@ -104,8 +104,8 @@ $api->disconnect();
                     <label class="btn btn-outline-primary" for="tool_traceroute"><i class="bi bi-signpost-split"></i> Traceroute</label>
                 </div>
             </div>
-            <div class="col-auto">
-                <button type="submit" class="btn btn-primary">Executar</button>
+            <div class="col-12 col-md-auto">
+                <button type="submit" class="btn btn-primary w-100">Executar</button>
             </div>
         </form>
     </div>
@@ -147,6 +147,7 @@ $api->disconnect();
         </div>
         <?php endif; ?>
 
+        <div class="table-responsive">
         <table class="table table-sm table-striped bg-white shadow-sm align-middle">
             <thead class="table-dark"><tr><th style="width:80px;">#</th><th>Host</th><th>Tempo de Resposta</th><th class="text-center" style="width:120px;">Status</th></tr></thead>
             <tbody>
@@ -166,6 +167,7 @@ $api->disconnect();
                 <?php endforeach; ?>
             </tbody>
         </table>
+        </div>
     </div>
 <?php endif; ?>
 
@@ -176,6 +178,7 @@ $api->disconnect();
         <?php if (empty($tracerouteHops)): ?>
             <div class="alert alert-warning">Nenhum salto retornado pelo roteador.</div>
         <?php else: ?>
+            <div class="table-responsive">
             <table class="table table-sm table-striped bg-white shadow-sm align-middle">
                 <thead class="table-dark">
                     <tr>
@@ -201,6 +204,7 @@ $api->disconnect();
                     <?php endforeach; ?>
                 </tbody>
             </table>
+            </div>
         <?php endif; ?>
     </div>
 <?php endif; ?>

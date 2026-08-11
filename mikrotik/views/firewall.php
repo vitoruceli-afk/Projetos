@@ -159,7 +159,7 @@ if ($role !== 'admin') {
 <?php endif; ?>
 
 <div class="table-responsive">
-    <table class="table table-striped table-hover bg-white shadow-sm table-sm align-middle" style="font-size: 0.88rem;">
+    <table class="table table-striped table-hover bg-white shadow-sm table-sm align-middle table-actions-sticky" style="font-size: 0.88rem;">
         <thead class="table-dark">
             <tr>
                 <th style="width: 32px;"><input type="checkbox" class="form-check-input" id="selectAllFirewall"></th>

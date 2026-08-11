@@ -74,7 +74,7 @@ function logsQueryString(array $overrides = []) {
     <div class="card-body">
         <form method="GET" class="row gx-3 gy-2 align-items-end">
             <input type="hidden" name="page" value="logs">
-            <div class="col-sm-3">
+            <div class="col-12 col-sm-6 col-lg-3">
                 <label class="form-label small text-muted mb-0">Categoria</label>
                 <select name="category" class="form-select">
                     <option value="">Todas</option>
@@ -83,19 +83,19 @@ function logsQueryString(array $overrides = []) {
                     <?php endforeach; ?>
                 </select>
             </div>
-            <div class="col-sm-3">
+            <div class="col-12 col-sm-6 col-lg-3">
                 <label class="form-label small text-muted mb-0">Usuário</label>
                 <input type="text" name="username" class="form-control" placeholder="Filtrar por usuário" value="<?= htmlspecialchars($username) ?>">
             </div>
-            <div class="col-sm-2">
+            <div class="col-6 col-lg-2">
                 <label class="form-label small text-muted mb-0">De</label>
                 <input type="date" name="date_from" class="form-control" value="<?= htmlspecialchars($dateFrom) ?>">
             </div>
-            <div class="col-sm-2">
+            <div class="col-6 col-lg-2">
                 <label class="form-label small text-muted mb-0">Até</label>
                 <input type="date" name="date_to" class="form-control" value="<?= htmlspecialchars($dateTo) ?>">
             </div>
-            <div class="col-sm-2 d-flex gap-2">
+            <div class="col-12 col-lg-2 d-flex gap-2">
                 <button type="submit" class="btn btn-primary flex-fill">Filtrar</button>
                 <a href="index.php?page=logs" class="btn btn-outline-secondary">Limpar</a>
             </div>

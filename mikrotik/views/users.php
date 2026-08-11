@@ -436,7 +436,8 @@ $ldapSettings = getLdapSettings();
                     <button type="submit" form="bulkLocalUsersForm" name="bulk_action" value="delete" class="btn btn-sm btn-outline-danger" onclick="return confirm('Excluir todos os usuários locais selecionados?');">Excluir Selecionados</button>
                 </div>
             </div>
-            <table class="table table-bordered bg-white align-middle">
+            <div class="table-responsive">
+            <table class="table table-bordered bg-white align-middle table-actions-sticky">
                 <thead class="table-dark">
                     <tr><th style="width:32px;"><input type="checkbox" class="form-check-input" id="selectAllLocalUsers"></th><th>Usuário</th><th>Nome</th><th>Perfil</th><th>Status</th><th>Criado em</th><th class="text-center">Ações</th></tr>
                 </thead>
@@ -496,6 +497,7 @@ $ldapSettings = getLdapSettings();
                     <?php endif; ?>
                 </tbody>
             </table>
+            </div>
             <script>
             document.getElementById('selectAllLocalUsers')?.addEventListener('change', function () {
                 document.querySelectorAll('.local-user-check:not(:disabled)').forEach(function (cb) { cb.checked = this.checked; }, this);
@@ -553,7 +555,8 @@ $ldapSettings = getLdapSettings();
     </div>
     <?php endif; ?>
 
-    <table class="table table-bordered bg-white align-middle">
+    <div class="table-responsive">
+    <table class="table table-bordered bg-white align-middle table-actions-sticky">
         <thead class="table-dark">
             <tr><th style="width:32px;"><input type="checkbox" class="form-check-input" id="selectAllLdapUsers"></th><th>Usuário</th><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Status</th><th class="text-center">Ações</th></tr>
         </thead>
@@ -617,6 +620,7 @@ $ldapSettings = getLdapSettings();
             <?php endif; ?>
         </tbody>
     </table>
+    </div>
     <script>
     document.getElementById('selectAllLdapUsers')?.addEventListener('change', function () {
         document.querySelectorAll('.ldap-user-check:not(:disabled)').forEach(function (cb) { cb.checked = this.checked; }, this);
