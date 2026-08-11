@@ -67,7 +67,7 @@ function logsQueryString(array $overrides = []) {
     return http_build_query($params);
 }
 ?>
-<h3 class="mb-3">Log de Atividades</h3>
+<h1 class="page-title mb-3">Log de Atividades</h1>
 
 <div class="card mb-4">
     <div class="card-body">
@@ -128,7 +128,7 @@ function logsQueryString(array $overrides = []) {
             <?php else: ?>
                 <?php foreach ($logs as $log): ?>
                     <tr>
-                        <td class="text-nowrap"><?= htmlspecialchars($log['created_at']) ?></td>
+                        <td class="mono text-nowrap"><?= htmlspecialchars($log['created_at']) ?></td>
                         <td><?= htmlspecialchars($log['username']) ?></td>
                         <td>
                             <?php if ($log['role'] === 'admin'): ?>
@@ -142,7 +142,7 @@ function logsQueryString(array $overrides = []) {
                         <td><span class="badge bg-info text-dark"><?= htmlspecialchars($categoryLabels[$log['category']] ?? $log['category']) ?></span></td>
                         <td><?= htmlspecialchars($log['action']) ?></td>
                         <td class="text-muted"><?= htmlspecialchars($log['details']) ?></td>
-                        <td><small class="text-muted"><?= htmlspecialchars($log['ip_address']) ?></small></td>
+                        <td><small class="mono text-muted"><?= htmlspecialchars($log['ip_address']) ?></small></td>
                     </tr>
                 <?php endforeach; ?>
             <?php endif; ?>

@@ -142,7 +142,7 @@ if ($role !== 'admin') {
 ?>
 
 <div class="d-flex justify-content-between align-items-center mb-3">
-    <h3>Gerenciamento de Hotspot (Servers)</h3>
+    <h1 class="page-title">Gerenciamento de Hotspot (Servers)</h1>
     <span class="badge bg-secondary">Total: <?= count($hotspots_clean) ?> servidores</span>
 </div>
 

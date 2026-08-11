@@ -127,7 +127,7 @@ if ($role !== 'admin') {
 ?>
 
 <div class="d-flex justify-content-between align-items-center mb-3">
-    <h3>Regras de Firewall Filter (Completo)</h3>
+    <h1 class="page-title">Regras de Firewall Filter (Completo)</h1>
     <span class="badge bg-secondary">Total: <?= count($rules) ?> regras</span>
 </div>
 
@@ -193,7 +193,7 @@ if ($role !== 'admin') {
                     ?>
                     <tr class="<?= $isDisabled ? 'table-light text-muted' : '' ?>">
                         <td><input type="checkbox" class="form-check-input firewall-row-check" name="ids[]" value="<?= htmlspecialchars($r['.id']) ?>" form="bulkFirewallForm"></td>
-                        <td><strong><?= htmlspecialchars($r['.id']) ?></strong></td>
+                        <td class="mono"><?= htmlspecialchars($r['.id']) ?></td>
 
                         <td>
                             <?php if (!empty($r['comment'])): ?>
@@ -209,26 +209,26 @@ if ($role !== 'admin') {
 
                         <td><span class="badge bg-secondary"><?= htmlspecialchars($r['chain'] ?? '-') ?></span></td>
 
-                        <td><?= htmlspecialchars($r['src-address'] ?? 'Qualquer (0.0.0.0/0)') ?></td>
-                        <td><?= htmlspecialchars($r['dst-address'] ?? 'Qualquer (0.0.0.0/0)') ?></td>
+                        <td class="mono"><?= htmlspecialchars($r['src-address'] ?? 'Qualquer (0.0.0.0/0)') ?></td>
+                        <td class="mono"><?= htmlspecialchars($r['dst-address'] ?? 'Qualquer (0.0.0.0/0)') ?></td>
 
                         <td><span class="text-uppercase text-info"><?= htmlspecialchars($r['protocol'] ?? 'todos') ?></span></td>
 
-                        <td><?= htmlspecialchars($r['dst-port'] ?? '-') ?></td>
+                        <td class="mono"><?= htmlspecialchars($r['dst-port'] ?? '-') ?></td>
 
                         <td>
-                            <small>
-                                📥 <?= htmlspecialchars($r['in-interface'] ?? $r['in-interface-list'] ?? 'any') ?><br>
-                                📤 <?= htmlspecialchars($r['out-interface'] ?? $r['out-interface-list'] ?? 'any') ?>
+                            <small class="mono text-muted">
+                                in: <?= htmlspecialchars($r['in-interface'] ?? $r['in-interface-list'] ?? 'any') ?><br>
+                                out: <?= htmlspecialchars($r['out-interface'] ?? $r['out-interface-list'] ?? 'any') ?>
                             </small>
                         </td>
 
                         <td>
                             <?php
                             $actionClass = match($r['action'] ?? '') {
-                                'accept' => 'badge bg-success',
-                                'drop' => 'badge bg-danger',
-                                'reject' => 'badge bg-warning text-dark',
+                                'accept' => 'tag-accept',
+                                'drop' => 'tag-drop',
+                                'reject' => 'tag-reject',
                                 default => 'badge bg-info'
                             };
                             ?>

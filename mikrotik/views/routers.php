@@ -82,7 +82,7 @@ if (isset($_GET['edit'])) {
 
 $routers = $db->query("SELECT * FROM routers ORDER BY name ASC");
 ?>
-<h3>Gerenciar Equipamentos Mikrotik</h3>
+<h1 class="page-title">Gerenciar Equipamentos Mikrotik</h1>
 <div class="row mb-4">
     <div class="col-md-4">
         <div class="card">
@@ -121,8 +121,8 @@ $routers = $db->query("SELECT * FROM routers ORDER BY name ASC");
                 <tr>
                     <td><?= htmlspecialchars($r['name']) ?></td>
                     <td><?= htmlspecialchars($r['location']) ?></td>
-                    <td><?= htmlspecialchars($r['ip']) ?></td>
-                    <td><?= htmlspecialchars($r['port']) ?></td>
+                    <td class="mono"><?= htmlspecialchars($r['ip']) ?></td>
+                    <td class="mono"><?= htmlspecialchars($r['port']) ?></td>
                     <td><?= htmlspecialchars($r['username']) ?></td>
                     <td>
                         <a href="index.php?page=routers&edit=<?= (int)$r['id'] ?>" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil"></i> Editar</a>

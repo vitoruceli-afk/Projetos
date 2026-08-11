@@ -373,7 +373,7 @@ if ($tab === 'local' && isset($_GET['edit'])) {
 
 $ldapSettings = getLdapSettings();
 ?>
-<h3 class="mb-3">Gerenciamento de Usuários</h3>
+<h1 class="page-title mb-3">Gerenciamento de Usuários</h1>
 
 <ul class="nav nav-tabs mb-4">
     <li class="nav-item"><a class="nav-link <?= $tab === 'local' ? 'active' : '' ?>" href="index.php?page=users&tab=local">Usuários Locais</a></li>
@@ -466,7 +466,7 @@ $ldapSettings = getLdapSettings();
                                 <span class="badge bg-danger">Desabilitado</span>
                             <?php endif; ?>
                         </td>
-                        <td><small class="text-muted"><?= htmlspecialchars($u['created_at']) ?></small></td>
+                        <td><small class="mono text-muted"><?= htmlspecialchars($u['created_at']) ?></small></td>
                         <td class="text-center text-nowrap">
                             <a href="index.php?page=users&tab=local&edit=<?= (int)$u['id'] ?>" class="btn btn-sm btn-outline-primary" title="Editar"><i class="bi bi-pencil"></i></a>
                             <form method="POST" class="d-inline">

@@ -104,53 +104,47 @@ if (!empty($routers_list)) {
 $total_routers = count($dashboard_data);
 ?>
 
-<h2 class="mb-4">Dashboard de Monitoramento de Infraestrutura</h2>
-
-<?php if (empty($active_id_now) && $total_routers > 0): ?>
-    <div class="alert alert-warning shadow-sm mb-4" role="alert">
-        <i class="bi bi-info-circle-fill"></i> <strong>Nenhum roteador selecionado para gerência!</strong> <br>
-        O painel geral está ativo. Escolha um dos MikroTiks operacionais na lista abaixo e clique em <strong>"Gerenciar"</strong> para liberar os menus de Firewall e Hotspot.
-    </div>
-<?php endif; ?>
-
-<div class="row text-start mb-4">
-    <div class="col-md-4 mb-3">
-        <div class="card text-white bg-dark shadow-sm h-100">
-            <div class="card-header"><i class="bi bi-hdd-network"></i> Total Cadastrados</div>
-            <div class="card-body">
-                <h3 class="card-title"><?= $total_routers ?> Equipamentos</h3>
-                <p class="card-text">Total de MikroTiks registrados no sistema.</p>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-4 mb-3">
-        <div class="card text-white bg-success shadow-sm h-100">
-            <div class="card-header"><i class="bi bi-check-circle-fill"></i> Dispositivos Online</div>
-            <div class="card-body">
-                <h3 class="card-title"><?= $total_online ?> Ativos</h3>
-                <p class="card-text">Respondendo com sucesso aos comandos de API.</p>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-4 mb-3">
-        <div class="card text-white bg-danger shadow-sm h-100">
-            <div class="card-header"><i class="bi bi-exclamation-triangle-fill"></i> Dispositivos Offline</div>
-            <div class="card-body">
-                <h3 class="card-title"><?= $total_offline ?> Inativos</h3>
-                <p class="card-text">Equipamentos inacessíveis ou desligados.</p>
-            </div>
-        </div>
+<div class="page-head">
+    <div>
+        <h1 class="page-title">Dashboard de Monitoramento de Infraestrutura</h1>
+        <div class="page-sub">Status em tempo real dos equipamentos cadastrados</div>
     </div>
 </div>
 
-<div class="card shadow-sm border-0">
-    <div class="card-header bg-secondary text-white">
-        <h5 class="mb-0 py-1"><i class="bi bi-list-stars"></i> Status em Tempo Real dos Roteadores</h5>
+<?php if (empty($active_id_now) && $total_routers > 0): ?>
+    <div class="alert alert-warning mb-4" role="alert">
+        <strong>Nenhum roteador selecionado para gerência.</strong>
+        Escolha um dos MikroTiks operacionais na lista abaixo e clique em <strong>"Gerenciar"</strong> para liberar os menus de Firewall e Hotspot.
+    </div>
+<?php endif; ?>
+
+<div class="stat-strip">
+    <div class="stat-tile">
+        <div class="stat-label">Cadastrados</div>
+        <div class="stat-value"><?= $total_routers ?></div>
+        <div class="stat-note">equipamentos monitorados</div>
+    </div>
+    <div class="stat-tile">
+        <div class="stat-label">Online <span class="dot online"></span></div>
+        <div class="stat-value online-c"><?= $total_online ?></div>
+        <div class="stat-note">respondendo à API</div>
+    </div>
+    <div class="stat-tile">
+        <div class="stat-label">Offline <span class="dot offline"></span></div>
+        <div class="stat-value critical-c"><?= $total_offline ?></div>
+        <div class="stat-note">inacessíveis agora</div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span>Equipamentos</span>
+        <span class="badge bg-light"><?= $total_routers ?> roteador<?= $total_routers === 1 ? '' : 'es' ?></span>
     </div>
     <div class="card-body p-0">
         <div class="table-responsive">
-            <table class="table table-striped table-hover align-middle mb-0" style="font-size: 0.9rem;">
-                <thead class="table-light">
+            <table class="table table-striped table-hover align-middle mb-0">
+                <thead class="table-dark">
                     <tr>
                         <th>Nome do Equipamento</th>
                         <th>Localidade / Campus</th>
@@ -175,23 +169,23 @@ $total_routers = count($dashboard_data);
                                 // Validação segura do roteador ativo
                                 $is_current_active = ($active_id_now !== null && $active_id_now == $router['id']); 
                             ?>
-                            <tr class="<?= $is_current_active ? 'table-success border-start border-success border-3' : '' ?>">
+                            <tr class="<?= $is_current_active ? 'table-success' : '' ?>">
                                 <td>
                                     <strong><?= htmlspecialchars($router['name']) ?></strong>
                                     <?php if ($is_current_active): ?>
-                                        <span class="badge bg-success ms-1" style="font-size: 0.65rem;">Atual</span>
+                                        <span class="badge bg-success ms-1">Atual</span>
                                     <?php endif; ?>
                                 </td>
-                                <td><span class="badge bg-light text-dark border"><i class="bi bi-geo-alt"></i> <?= htmlspecialchars($router['location']) ?></span></td>
-                                <td><code class="text-dark"><?= htmlspecialchars($router['host']) ?></code></td>
+                                <td><span class="badge bg-light"><i class="bi bi-geo-alt"></i> <?= htmlspecialchars($router['location']) ?></span></td>
+                                <td class="mono"><?= htmlspecialchars($router['host']) ?></td>
                                 <td><?= htmlspecialchars($router['model']) ?></td>
                                 <td><span class="badge bg-secondary"><?= htmlspecialchars($router['version']) ?></span></td>
-                                <td><small class="text-muted"><?= htmlspecialchars($router['uptime']) ?></small></td>
+                                <td class="mono text-muted"><?= htmlspecialchars($router['uptime']) ?></td>
                                 <td class="text-center">
                                     <?php if ($router['online']): ?>
-                                        <span class="badge bg-success px-2 py-1" style="font-size: 0.75rem;"><i class="bi bi-cloud-check"></i> ONLINE</span>
+                                        <span class="badge bg-success"><i class="bi bi-cloud-check"></i> ONLINE</span>
                                     <?php else: ?>
-                                        <span class="badge bg-danger px-2 py-1" style="font-size: 0.75rem;"><i class="bi bi-cloud-slash"></i> OFFLINE</span>
+                                        <span class="badge bg-danger"><i class="bi bi-cloud-slash"></i> OFFLINE</span>
                                     <?php endif; ?>
                                 </td>
                                 <td class="text-center">

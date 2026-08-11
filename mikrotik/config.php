@@ -1,4 +1,18 @@
 <?php
+// Tempo máximo de inatividade antes da sessão ser encerrada automaticamente.
+define('SESSION_IDLE_TIMEOUT', 1800); // 30 minutos
+
+// Cookie de sessão sem prazo fixo (expira quando o navegador é fechado por completo, não só a
+// aba) + endurecido contra roubo via XSS/CSRF cross-site. gc_maxlifetime é elevado para nunca
+// ser o fator limitante — quem decide o tempo de inatividade é o checkAuth() abaixo.
+ini_set('session.gc_maxlifetime', SESSION_IDLE_TIMEOUT + 300);
+session_set_cookie_params([
+    'lifetime' => 0,
+    'path' => '/',
+    'secure' => !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off',
+    'httponly' => true,
+    'samesite' => 'Lax',
+]);
 session_start();
 
 // Configurações do Active Directory (LDAP)
@@ -124,6 +138,17 @@ function checkAuth() {
         header("Location: login.php");
         exit;
     }
+
+    // Encerra a sessão se o usuário ficou inativo além do limite permitido.
+    if (isset($_SESSION['last_activity']) && (time() - $_SESSION['last_activity']) > SESSION_IDLE_TIMEOUT) {
+        logActivity('auth', 'Sessão expirada por inatividade');
+        session_unset();
+        session_destroy();
+        header("Location: login.php?timeout=1");
+        exit;
+    }
+
+    $_SESSION['last_activity'] = time();
 }
 
 // ---- Perfis de acesso (admin / standard) ----

@@ -87,7 +87,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['target_ip'])) {
 }
 $api->disconnect();
 ?>
-<h3>Diagnóstico de Rede</h3>
+<h1 class="page-title">Diagnóstico de Rede</h1>
 <div class="card mt-3">
     <div class="card-body">
         <form method="POST" class="row gx-3 gy-2 align-items-center">
@@ -152,9 +152,9 @@ $api->disconnect();
             <tbody>
                 <?php foreach ($pingResult['replies'] as $r): ?>
                     <tr class="<?= $r['time'] ? '' : 'table-light text-muted' ?>">
-                        <td><?= htmlspecialchars($r['seq']) ?></td>
-                        <td><?= htmlspecialchars($r['host']) ?></td>
-                        <td><?= $r['time'] ? htmlspecialchars($r['time']) : '-' ?></td>
+                        <td class="mono"><?= htmlspecialchars($r['seq']) ?></td>
+                        <td class="mono"><?= htmlspecialchars($r['host']) ?></td>
+                        <td class="mono"><?= $r['time'] ? htmlspecialchars($r['time']) : '-' ?></td>
                         <td class="text-center">
                             <?php if ($r['time']): ?>
                                 <span class="badge bg-success">Respondeu</span>
