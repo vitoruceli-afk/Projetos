@@ -230,7 +230,7 @@ function timeAgo($datetime) {
                                 </td>
                                 <td class="text-center">
                                     <?php if ($is_current_active): ?>
-                                        <button class="btn btn-sm btn-success disabled w-100 text-nowrap" style="font-size: 0.8rem; padding: 4px 8px;">
+                                        <button class="btn btn-sm btn-outline-success disabled w-100 text-nowrap" style="font-size: 0.8rem; padding: 4px 8px;">
                                             <i class="bi bi-eye-fill"></i> Ativo
                                         </button>
                                     <?php elseif (!$router['online']): ?>

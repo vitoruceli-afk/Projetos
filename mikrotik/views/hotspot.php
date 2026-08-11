@@ -162,8 +162,8 @@ if ($role !== 'admin') {
 <div class="entity-list-toolbar">
     <input type="checkbox" class="form-check-input" id="selectAllHotspot" title="Selecionar todos">
     <span class="elt-label"><i class="bi bi-check2-square"></i> Ações em massa</span>
-    <button type="submit" form="bulkHotspotForm" name="bulk_action" value="enable" class="btn btn-sm btn-success" onclick="return confirm('Habilitar todos os itens selecionados?');">Habilitar Selecionados</button>
-    <button type="submit" form="bulkHotspotForm" name="bulk_action" value="disable" class="btn btn-sm btn-warning" onclick="return confirm('Desabilitar todos os itens selecionados?');">Desabilitar Selecionados</button>
+    <button type="submit" form="bulkHotspotForm" name="bulk_action" value="enable" class="btn btn-sm btn-outline-success" onclick="return confirm('Habilitar todos os itens selecionados?');">Habilitar Selecionados</button>
+    <button type="submit" form="bulkHotspotForm" name="bulk_action" value="disable" class="btn btn-sm btn-outline-danger" onclick="return confirm('Desabilitar todos os itens selecionados?');">Desabilitar Selecionados</button>
     <?php if ($role === 'admin'): ?>
         <span class="vr mx-1"></span>
         <button type="submit" form="bulkHotspotForm" name="bulk_permission_action" value="grant" class="btn btn-sm btn-outline-primary">Permitir p/ Padrão</button>
@@ -248,10 +248,10 @@ if ($role !== 'admin') {
                             <input type="hidden" name="id" value="<?= htmlspecialchars($internal_id) ?>">
                             <?php if ($isDisabled): ?>
                                 <input type="hidden" name="action" value="enable">
-                                <button type="submit" class="btn btn-sm btn-success">Habilitar</button>
+                                <button type="submit" class="btn btn-sm btn-outline-success">Habilitar</button>
                             <?php else: ?>
                                 <input type="hidden" name="action" value="disable">
-                                <button type="submit" class="btn btn-sm btn-warning">Desabilitar</button>
+                                <button type="submit" class="btn btn-sm btn-outline-danger">Desabilitar</button>
                             <?php endif; ?>
                         </form>
                     </div>

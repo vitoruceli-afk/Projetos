@@ -105,7 +105,7 @@ $api->disconnect();
                 </div>
             </div>
             <div class="col-12 col-md-auto">
-                <button type="submit" class="btn btn-primary w-100">Executar</button>
+                <button type="submit" class="btn btn-outline-primary w-100">Executar</button>
             </div>
         </form>
     </div>

@@ -251,10 +251,10 @@ if ($role !== 'admin') {
                             <input type="hidden" name="id" value="<?= htmlspecialchars($r['.id']) ?>">
                             <?php if ($isDisabled): ?>
                                 <input type="hidden" name="action" value="enable">
-                                <button class="btn btn-sm btn-outline-success" title="Habilitar Regra"><i class="bi bi-play-fill"></i> Habilitar</button>
+                                <button type="submit" class="btn btn-sm btn-outline-success">Habilitar</button>
                             <?php else: ?>
                                 <input type="hidden" name="action" value="disable">
-                                <button class="btn btn-sm btn-outline-danger" title="Desabilitar Regra"><i class="bi bi-pause-fill"></i> Desabilitar</button>
+                                <button type="submit" class="btn btn-sm btn-outline-danger">Desabilitar</button>
                             <?php endif; ?>
                         </form>
                     </div>

@@ -174,7 +174,7 @@ if (isset($_GET['edit'])) {
                 </div>
             </div>
             <div class="mt-3 d-flex gap-2">
-                <button type="submit" id="bypass-submit" class="btn btn-primary"><?= $editing ? 'Salvar Alterações' : 'Cadastrar' ?></button>
+                <button type="submit" id="bypass-submit" class="btn btn-outline-primary"><?= $editing ? 'Salvar Alterações' : 'Cadastrar' ?></button>
                 <?php if ($editing): ?>
                     <a href="index.php?page=bypass" class="btn btn-outline-secondary">Cancelar Edição</a>
                 <?php endif; ?>
@@ -237,12 +237,12 @@ if (isset($_GET['edit'])) {
                 <div class="entity-actions">
                     <div></div>
                     <div class="entity-actions-buttons">
-                        <a href="index.php?page=bypass&edit=<?= urlencode($b['.id']) ?>" class="btn btn-sm btn-outline-primary" title="Editar"><i class="bi bi-pencil"></i> Editar</a>
+                        <a href="index.php?page=bypass&edit=<?= urlencode($b['.id']) ?>" class="btn btn-sm btn-outline-primary">Editar</a>
                         <form method="POST" class="d-inline" onsubmit="return confirm('Excluir este bypass?');">
                             <?= csrfField() ?>
                             <input type="hidden" name="action" value="delete">
                             <input type="hidden" name="id" value="<?= htmlspecialchars($b['.id']) ?>">
-                            <button class="btn btn-sm btn-danger" title="Excluir"><i class="bi bi-trash"></i> Excluir</button>
+                            <button type="submit" class="btn btn-sm btn-outline-danger">Excluir</button>
                         </form>
                     </div>
                 </div>

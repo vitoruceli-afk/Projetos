@@ -96,7 +96,7 @@ function logsQueryString(array $overrides = []) {
                 <input type="date" name="date_to" class="form-control" value="<?= htmlspecialchars($dateTo) ?>">
             </div>
             <div class="col-12 col-lg-2 d-flex gap-2">
-                <button type="submit" class="btn btn-primary flex-fill">Filtrar</button>
+                <button type="submit" class="btn btn-outline-primary flex-fill">Filtrar</button>
                 <a href="index.php?page=logs" class="btn btn-outline-secondary">Limpar</a>
             </div>
         </form>

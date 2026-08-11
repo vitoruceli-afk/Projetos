@@ -105,7 +105,7 @@ $routers = $db->query("SELECT * FROM routers ORDER BY name ASC");
                     <div class="mb-2">
                         <input type="password" name="password" class="form-control" placeholder="<?= $editing ? 'Senha (deixe em branco para manter)' : 'Senha' ?>" <?= $editing ? '' : 'required' ?>>
                     </div>
-                    <button class="btn btn-success w-100"><?= $editing ? 'Salvar Alterações' : 'Salvar Roteador' ?></button>
+                    <button class="btn btn-outline-success w-100"><?= $editing ? 'Salvar Alterações' : 'Salvar Roteador' ?></button>
                     <?php if ($editing): ?>
                         <a href="index.php?page=routers" class="btn btn-outline-secondary w-100 mt-2">Cancelar Edição</a>
                     <?php endif; ?>
@@ -131,7 +131,7 @@ $routers = $db->query("SELECT * FROM routers ORDER BY name ASC");
                             <?= csrfField() ?>
                             <input type="hidden" name="action" value="delete">
                             <input type="hidden" name="id" value="<?= $r['id'] ?>">
-                            <button class="btn btn-sm btn-danger"><i class="bi bi-trash"></i> Remover</button>
+                            <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i> Remover</button>
                         </form>
                     </td>
                 </tr>

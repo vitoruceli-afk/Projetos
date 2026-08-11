@@ -164,7 +164,7 @@ h1, h2, h3, h4, h5, h6 { font-weight: 700; letter-spacing: 0.01em; text-wrap: ba
 .btn {
   font-family: var(--font-body);
   font-weight: 700;
-  border-radius: var(--radius);
+  border-radius: 999px;
   box-shadow: none !important;
 }
 .btn:focus, .btn:focus-visible { box-shadow: 0 0 0 3px var(--accent-soft) !important; }
