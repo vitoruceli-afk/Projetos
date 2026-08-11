@@ -142,7 +142,7 @@ if ($role !== 'admin') {
 ?>
 
 <div class="d-flex justify-content-between align-items-center mb-3">
-    <h1 class="page-title">Gerenciamento de Hotspot (Servers)</h1>
+    <h1 class="page-title">Gerenciamento de Autenticação (Hotspot Servers)</h1>
     <span class="badge bg-secondary">Total: <?= count($hotspots_clean) ?> servidores</span>
 </div>
 
@@ -174,7 +174,7 @@ if ($role !== 'admin') {
 
 <?php if (empty($hotspots_clean)): ?>
     <div class="card">
-        <div class="card-body text-center text-muted py-4">Nenhum Hotspot Server configurado<?= $role === 'admin' ? ' neste MikroTik.' : ' liberado para o seu perfil.' ?></div>
+        <div class="card-body text-center text-muted py-4">Nenhum servidor de autenticação configurado<?= $role === 'admin' ? ' neste MikroTik.' : ' liberado para o seu perfil.' ?></div>
     </div>
 <?php else: ?>
     <div class="entity-list">
@@ -243,7 +243,7 @@ if ($role !== 'admin') {
                 <div class="entity-actions">
                     <div></div>
                     <div class="entity-actions-buttons">
-                        <form method="POST" class="m-0" onsubmit="return confirm('Alterar o status deste servidor Hotspot?');">
+                        <form method="POST" class="m-0" onsubmit="return confirm('Alterar o status deste servidor de autenticação?');">
                             <?= csrfField() ?>
                             <input type="hidden" name="id" value="<?= htmlspecialchars($internal_id) ?>">
                             <?php if ($isDisabled): ?>
