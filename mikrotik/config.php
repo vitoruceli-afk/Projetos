@@ -8,6 +8,12 @@
 // inteira aqui garante que header()/redirecionamentos sempre funcionem, em qualquer página.
 ob_start();
 
+// O date.timezone do PHP neste servidor está configurado para Europe/Berlin, mas o relógio do
+// SO/MySQL (usado em CURRENT_TIMESTAMP no activity_log) reflete o horário local de Brasília. Sem
+// isso, strtotime() interpretava os timestamps do banco 5h adiantado, fazendo ações recém
+// registradas aparecerem como "há 5h" em vez de "agora mesmo".
+date_default_timezone_set('America/Sao_Paulo');
+
 // Tempo máximo de inatividade antes da sessão ser encerrada automaticamente.
 define('SESSION_IDLE_TIMEOUT', 1800); // 30 minutos
 
@@ -135,6 +141,22 @@ function getDB() {
             INDEX idx_activity_created (created_at)
         )");
 
+        // Registro de sessões atualmente ativas (uma linha por sessão de navegador, não por
+        // usuário — a mesma pessoa logada em dois navegadores aparece como duas linhas).
+        // Atualizado a cada requisição autenticada em touchActiveSession() e usado no Dashboard
+        // para mostrar ao Administrador quem está de fato conectado agora.
+        $db->exec("CREATE TABLE IF NOT EXISTS active_sessions (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            session_id VARCHAR(64) NOT NULL UNIQUE,
+            username VARCHAR(100) NOT NULL,
+            auth_type VARCHAR(20) DEFAULT '',
+            role VARCHAR(20) DEFAULT '',
+            ip_address VARCHAR(64) DEFAULT '',
+            login_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_active_sessions_activity (last_activity)
+        )");
+
         return $db;
     } catch (PDOException $e) {
         die("Erro de conexão com o MySQL: " . $e->getMessage());
@@ -151,6 +173,7 @@ function checkAuth() {
     // Encerra a sessão se o usuário ficou inativo além do limite permitido.
     if (isset($_SESSION['last_activity']) && (time() - $_SESSION['last_activity']) > SESSION_IDLE_TIMEOUT) {
         logActivity('auth', 'Sessão expirada por inatividade');
+        removeActiveSession(session_id());
         session_unset();
         session_destroy();
         header("Location: login.php?timeout=1");
@@ -158,6 +181,68 @@ function checkAuth() {
     }
 
     $_SESSION['last_activity'] = time();
+    touchActiveSession();
+}
+
+// ---- Sessões ativas (visão do Administrador no Dashboard) ----
+
+// Marca a sessão atual como ativa agora (chamado em toda requisição autenticada) e aproveita
+// para descartar sessões que já passaram do mesmo limite de inatividade do checkAuth(), para a
+// lista nunca mostrar sessões "fantasma" que na prática já foram encerradas.
+function touchActiveSession() {
+    if (empty($_SESSION['user_logged_in'])) return;
+    try {
+        $db = getDB();
+        $cutoff = date('Y-m-d H:i:s', time() - SESSION_IDLE_TIMEOUT);
+        $stmt = $db->prepare("DELETE FROM active_sessions WHERE last_activity < :cutoff");
+        $stmt->bindValue(':cutoff', $cutoff);
+        $stmt->execute();
+
+        $stmt = $db->prepare("INSERT INTO active_sessions (session_id, username, auth_type, role, ip_address, last_activity)
+            VALUES (:sid, :u, :at, :r, :ip, NOW())
+            ON DUPLICATE KEY UPDATE username = :u2, auth_type = :at2, role = :r2, ip_address = :ip2, last_activity = NOW()");
+        $u = $_SESSION['user_logged_in'];
+        $at = $_SESSION['auth_type'] ?? '';
+        $r = currentUserRole();
+        $ip = $_SERVER['REMOTE_ADDR'] ?? '';
+        $stmt->bindValue(':sid', session_id());
+        $stmt->bindValue(':u', $u);
+        $stmt->bindValue(':u2', $u);
+        $stmt->bindValue(':at', $at);
+        $stmt->bindValue(':at2', $at);
+        $stmt->bindValue(':r', $r);
+        $stmt->bindValue(':r2', $r);
+        $stmt->bindValue(':ip', $ip);
+        $stmt->bindValue(':ip2', $ip);
+        $stmt->execute();
+    } catch (PDOException $e) {
+        // Nunca deve impedir o uso normal da aplicação por causa disso.
+    }
+}
+
+function removeActiveSession($sessionId) {
+    try {
+        $db = getDB();
+        $stmt = $db->prepare("DELETE FROM active_sessions WHERE session_id = :sid");
+        $stmt->bindValue(':sid', $sessionId);
+        $stmt->execute();
+    } catch (PDOException $e) {
+        // intencionalmente silencioso
+    }
+}
+
+// Sessões dentro da janela de SESSION_IDLE_TIMEOUT, mais recentes primeiro.
+function getActiveSessions() {
+    try {
+        $db = getDB();
+        $cutoff = date('Y-m-d H:i:s', time() - SESSION_IDLE_TIMEOUT);
+        $stmt = $db->prepare("SELECT * FROM active_sessions WHERE last_activity >= :cutoff ORDER BY last_activity DESC");
+        $stmt->bindValue(':cutoff', $cutoff);
+        $stmt->execute();
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        return [];
+    }
 }
 
 // ---- Perfis de acesso (admin / standard) ----

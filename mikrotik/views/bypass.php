@@ -183,63 +183,70 @@ if (isset($_GET['edit'])) {
     </div>
 </div>
 
-<div class="card">
-    <div class="card-body p-0">
-        <div class="table-responsive">
-            <table class="table table-striped table-hover align-middle mb-0 table-actions-sticky">
-                <thead class="table-dark">
-                    <tr>
-                        <th>MAC</th>
-                        <th>IP</th>
-                        <th>Para IP</th>
-                        <th>Servidor</th>
-                        <th>Tipo</th>
-                        <th>Comentário</th>
-                        <th class="text-center">Status</th>
-                        <th class="text-center">Ações</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php if (empty($bindings)): ?>
-                        <tr><td colspan="8" class="text-center text-muted py-4">Nenhum bypass cadastrado neste MikroTik.</td></tr>
-                    <?php else: ?>
-                        <?php foreach ($bindings as $b): ?>
-                            <?php
-                                $isDisabled = in_array(strtolower((string)($b['disabled'] ?? 'no')), ['true', 'yes'], true);
-                                $typeClass = match ($b['type'] ?? '') {
-                                    'bypassed' => 'tag-accept',
-                                    'blocked' => 'tag-drop',
-                                    default => 'tag-reject',
-                                };
-                            ?>
-                            <tr class="<?= $isDisabled ? 'table-light text-muted' : '' ?>">
-                                <td class="mono"><?= htmlspecialchars($b['mac-address'] ?? '-') ?></td>
-                                <td class="mono"><?= htmlspecialchars($b['address'] ?? '-') ?></td>
-                                <td class="mono"><?= htmlspecialchars($b['to-address'] ?? '-') ?></td>
-                                <td><?= htmlspecialchars($b['server'] ?? 'all') ?></td>
-                                <td><span class="<?= $typeClass ?>"><?= htmlspecialchars($b['type'] ?? '-') ?></span></td>
-                                <td><?= htmlspecialchars($b['comment'] ?? '') ?></td>
-                                <td class="text-center">
-                                    <?php if ($isDisabled): ?>
-                                        <span class="badge bg-secondary">Desabilitado</span>
-                                    <?php else: ?>
-                                        <span class="badge bg-success">Ativo</span>
-                                    <?php endif; ?>
-                                </td>
-                                <td class="text-center text-nowrap">
-                                    <a href="index.php?page=bypass&edit=<?= urlencode($b['.id']) ?>" class="btn btn-sm btn-outline-primary" title="Editar"><i class="bi bi-pencil"></i></a>
-                                    <form method="POST" class="d-inline" onsubmit="return confirm('Excluir este bypass?');">
-                                        <?= csrfField() ?>
-                                        <input type="hidden" name="action" value="delete">
-                                        <input type="hidden" name="id" value="<?= htmlspecialchars($b['.id']) ?>">
-                                        <button class="btn btn-sm btn-danger" title="Excluir"><i class="bi bi-trash"></i></button>
-                                    </form>
-                                </td>
-                            </tr>
-                        <?php endforeach; ?>
-                    <?php endif; ?>
-                </tbody>
-            </table>
-        </div>
+<?php if (empty($bindings)): ?>
+    <div class="card">
+        <div class="card-body text-center text-muted py-4">Nenhum bypass cadastrado neste MikroTik.</div>
     </div>
-</div>
+<?php else: ?>
+    <div class="entity-list">
+        <?php foreach ($bindings as $b): ?>
+            <?php
+                $isDisabled = in_array(strtolower((string)($b['disabled'] ?? 'no')), ['true', 'yes'], true);
+                $typeClass = match ($b['type'] ?? '') {
+                    'bypassed' => 'tag-accept',
+                    'blocked' => 'tag-drop',
+                    default => 'tag-reject',
+                };
+                $cardTitle = $b['mac-address'] ?? $b['address'] ?? '(sem identificador)';
+            ?>
+            <div class="entity-card <?= $isDisabled ? 'is-disabled' : '' ?>">
+                <div class="entity-card-head">
+                    <div class="entity-title-wrap">
+                        <div>
+                            <div class="entity-title mono"><?= htmlspecialchars($cardTitle) ?></div>
+                            <div class="entity-sub"><?= htmlspecialchars($b['comment'] ?: 'Sem comentário') ?></div>
+                        </div>
+                    </div>
+                    <div class="entity-badges">
+                        <span class="<?= $typeClass ?>"><?= htmlspecialchars($b['type'] ?? '-') ?></span>
+                        <?php if ($isDisabled): ?>
+                            <span class="badge bg-secondary">Desabilitado</span>
+                        <?php else: ?>
+                            <span class="badge bg-success">Ativo</span>
+                        <?php endif; ?>
+                    </div>
+                </div>
+                <div class="entity-grid">
+                    <div>
+                        <div class="entity-field-label">MAC</div>
+                        <div class="entity-field-value mono"><?= htmlspecialchars($b['mac-address'] ?? '-') ?></div>
+                    </div>
+                    <div>
+                        <div class="entity-field-label">IP</div>
+                        <div class="entity-field-value mono"><?= htmlspecialchars($b['address'] ?? '-') ?></div>
+                    </div>
+                    <div>
+                        <div class="entity-field-label">Para IP</div>
+                        <div class="entity-field-value mono"><?= htmlspecialchars($b['to-address'] ?? '-') ?></div>
+                    </div>
+                    <div>
+                        <div class="entity-field-label">Servidor</div>
+                        <div class="entity-field-value"><?= htmlspecialchars($b['server'] ?? 'all') ?></div>
+                    </div>
+                </div>
+                <div class="entity-actions">
+                    <div></div>
+                    <div class="entity-actions-buttons">
+                        <a href="index.php?page=bypass&edit=<?= urlencode($b['.id']) ?>" class="btn btn-sm btn-outline-primary" title="Editar"><i class="bi bi-pencil"></i> Editar</a>
+                        <form method="POST" class="d-inline" onsubmit="return confirm('Excluir este bypass?');">
+                            <?= csrfField() ?>
+                            <input type="hidden" name="action" value="delete">
+                            <input type="hidden" name="id" value="<?= htmlspecialchars($b['.id']) ?>">
+                            <button class="btn btn-sm btn-danger" title="Excluir"><i class="bi bi-trash"></i> Excluir</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        <?php endforeach; ?>
+    </div>
+<?php endif; ?>

@@ -159,108 +159,107 @@ if ($role !== 'admin') {
 </form>
 
 <?php if (!empty($hotspots_clean)): ?>
-<div class="card mb-3">
-    <div class="card-body py-2 d-flex flex-wrap align-items-center gap-2">
-        <span class="text-muted small me-2"><i class="bi bi-check2-square"></i> Ações em massa:</span>
-        <button type="submit" form="bulkHotspotForm" name="bulk_action" value="enable" class="btn btn-sm btn-success" onclick="return confirm('Habilitar todos os itens selecionados?');">Habilitar Selecionados</button>
-        <button type="submit" form="bulkHotspotForm" name="bulk_action" value="disable" class="btn btn-sm btn-warning" onclick="return confirm('Desabilitar todos os itens selecionados?');">Desabilitar Selecionados</button>
-        <?php if ($role === 'admin'): ?>
-            <span class="vr mx-1"></span>
-            <button type="submit" form="bulkHotspotForm" name="bulk_permission_action" value="grant" class="btn btn-sm btn-outline-primary">Permitir p/ Padrão</button>
-            <button type="submit" form="bulkHotspotForm" name="bulk_permission_action" value="revoke" class="btn btn-sm btn-outline-secondary">Revogar de Padrão</button>
-        <?php endif; ?>
-    </div>
+<div class="entity-list-toolbar">
+    <input type="checkbox" class="form-check-input" id="selectAllHotspot" title="Selecionar todos">
+    <span class="elt-label"><i class="bi bi-check2-square"></i> Ações em massa</span>
+    <button type="submit" form="bulkHotspotForm" name="bulk_action" value="enable" class="btn btn-sm btn-success" onclick="return confirm('Habilitar todos os itens selecionados?');">Habilitar Selecionados</button>
+    <button type="submit" form="bulkHotspotForm" name="bulk_action" value="disable" class="btn btn-sm btn-warning" onclick="return confirm('Desabilitar todos os itens selecionados?');">Desabilitar Selecionados</button>
+    <?php if ($role === 'admin'): ?>
+        <span class="vr mx-1"></span>
+        <button type="submit" form="bulkHotspotForm" name="bulk_permission_action" value="grant" class="btn btn-sm btn-outline-primary">Permitir p/ Padrão</button>
+        <button type="submit" form="bulkHotspotForm" name="bulk_permission_action" value="revoke" class="btn btn-sm btn-outline-secondary">Revogar de Padrão</button>
+    <?php endif; ?>
 </div>
 <?php endif; ?>
 
-<div class="table-responsive">
-<table class="table table-striped table-hover bg-white shadow-sm mt-3 align-middle table-actions-sticky" style="font-size: 0.9rem;">
-    <thead class="table-dark">
-        <tr>
-            <th style="width: 36px;"><input type="checkbox" class="form-check-input" id="selectAllHotspot"></th>
-            <th>Servidor</th>
-            <th>Interface</th>
-            <th>Endereço Pool</th>
-            <th>Profile</th>
-            <th>Status</th>
-            <?php if ($role === 'admin'): ?><th class="text-center" style="width: 150px;">Visível p/ Padrão</th><?php endif; ?>
-            <th class="text-center" style="width: 130px;">Ações</th>
-        </tr>
-    </thead>
-    <tbody>
-        <?php if (empty($hotspots_clean)): ?>
-            <tr>
-                <td colspan="<?= $role === 'admin' ? 8 : 7 ?>" class="text-center text-muted py-4">Nenhum Hotspot Server configurado<?= $role === 'admin' ? ' neste MikroTik.' : ' liberado para o seu perfil.' ?></td>
-            </tr>
-        <?php else: ?>
-            <?php foreach ($hotspots_clean as $h): ?>
-                <?php
-                    // Fallback de ID para garantir que o formulário de POST consiga ativar/desativar a linha
-                    $internal_id = $h['.id'] ?? $h['name'] ?? null;
-                    if (!$internal_id) continue;
+<?php if (empty($hotspots_clean)): ?>
+    <div class="card">
+        <div class="card-body text-center text-muted py-4">Nenhum Hotspot Server configurado<?= $role === 'admin' ? ' neste MikroTik.' : ' liberado para o seu perfil.' ?></div>
+    </div>
+<?php else: ?>
+    <div class="entity-list">
+        <?php foreach ($hotspots_clean as $h): ?>
+            <?php
+                // Fallback de ID para garantir que o formulário de POST consiga ativar/desativar a linha
+                $internal_id = $h['.id'] ?? $h['name'] ?? null;
+                if (!$internal_id) continue;
 
-                    $isDisabled = isset($h['disabled']) && in_array(strtolower((string)$h['disabled']), ['true', 'yes']);
-                    $isPermitted = isset($permittedIds[$internal_id]);
+                $isDisabled = isset($h['disabled']) && in_array(strtolower((string)$h['disabled']), ['true', 'yes']);
+                $isPermitted = isset($permittedIds[$internal_id]);
 
-                    // Tratamento visual das flags especiais mostradas no terminal (ex: I = Invalid)
-                    $isInvalid = isset($h['invalid']) && $h['invalid'] === 'true';
-                ?>
-                <tr class="<?= $isDisabled ? 'table-light text-muted' : '' ?>">
-                    <td><input type="checkbox" class="form-check-input hotspot-row-check" name="ids[]" value="<?= htmlspecialchars($internal_id) ?>" form="bulkHotspotForm"></td>
-                    <td>
-                        <strong><?= htmlspecialchars($h['name'] ?? '-') ?></strong>
-                        <?php if ($isInvalid): ?>
-                            <span class="badge bg-dark text-warning ms-1" style="font-size: 0.65rem;" title="Invalid Setup">I</span>
-                        <?php endif; ?>
-                    </td>
-                    <td><span class="badge bg-secondary"><?= htmlspecialchars($h['interface'] ?? '-') ?></span></td>
-                    <td><code><?= htmlspecialchars($h['address-pool'] ?? 'Qualquer (None)') ?></code></td>
-                    <td><?= htmlspecialchars($h['profile'] ?? '-') ?></td>
-
-                    <td>
+                // Tratamento visual das flags especiais mostradas no terminal (ex: I = Invalid)
+                $isInvalid = isset($h['invalid']) && $h['invalid'] === 'true';
+            ?>
+            <div class="entity-card <?= $isDisabled ? 'is-disabled' : '' ?>">
+                <div class="entity-card-head">
+                    <div class="entity-title-wrap">
+                        <input type="checkbox" class="form-check-input entity-check hotspot-row-check" name="ids[]" value="<?= htmlspecialchars($internal_id) ?>" form="bulkHotspotForm">
+                        <div>
+                            <div class="entity-title">
+                                <?= htmlspecialchars($h['name'] ?? '-') ?>
+                                <?php if ($isInvalid): ?>
+                                    <span class="badge bg-dark text-warning ms-1" style="font-size: 0.65rem;" title="Invalid Setup">I</span>
+                                <?php endif; ?>
+                            </div>
+                            <div class="entity-sub">Interface: <?= htmlspecialchars($h['interface'] ?? '-') ?></div>
+                        </div>
+                    </div>
+                    <div class="entity-badges">
                         <?php if ($isDisabled): ?>
                             <span class="badge bg-danger">Desabilitado</span>
                         <?php else: ?>
                             <span class="badge bg-success">Habilitado</span>
                         <?php endif; ?>
-                    </td>
+                    </div>
+                </div>
+                <div class="entity-grid">
+                    <div>
+                        <div class="entity-field-label">Endereço Pool</div>
+                        <div class="entity-field-value mono"><?= htmlspecialchars($h['address-pool'] ?? 'Qualquer (None)') ?></div>
+                    </div>
+                    <div>
+                        <div class="entity-field-label">Profile</div>
+                        <div class="entity-field-value"><?= htmlspecialchars($h['profile'] ?? '-') ?></div>
+                    </div>
+                </div>
 
-                    <?php if ($role === 'admin'): ?>
-                    <td class="text-center">
-                        <form method="POST" class="m-0">
-                            <?= csrfField() ?>
-                            <input type="hidden" name="id" value="<?= htmlspecialchars($internal_id) ?>">
-                            <?php if ($isPermitted): ?>
-                                <input type="hidden" name="permission_action" value="revoke">
-                                <button type="submit" class="btn btn-sm btn-outline-secondary w-100 py-1" style="font-size: 0.75rem;">Revogar</button>
-                            <?php else: ?>
-                                <input type="hidden" name="permission_action" value="grant">
-                                <button type="submit" class="btn btn-sm btn-outline-primary w-100 py-1" style="font-size: 0.75rem;">Permitir</button>
-                            <?php endif; ?>
-                        </form>
-                    </td>
-                    <?php endif; ?>
+                <?php if ($role === 'admin'): ?>
+                <div class="entity-visible-row">
+                    <span><?= $isPermitted ? 'Visível para Usuário Padrão' : 'Oculto para Usuário Padrão' ?></span>
+                    <form method="POST" class="m-0">
+                        <?= csrfField() ?>
+                        <input type="hidden" name="id" value="<?= htmlspecialchars($internal_id) ?>">
+                        <?php if ($isPermitted): ?>
+                            <input type="hidden" name="permission_action" value="revoke">
+                            <button type="submit" class="btn btn-sm btn-outline-secondary py-1" style="font-size: 0.75rem;">Revogar</button>
+                        <?php else: ?>
+                            <input type="hidden" name="permission_action" value="grant">
+                            <button type="submit" class="btn btn-sm btn-outline-primary py-1" style="font-size: 0.75rem;">Permitir</button>
+                        <?php endif; ?>
+                    </form>
+                </div>
+                <?php endif; ?>
 
-                    <td class="text-center">
+                <div class="entity-actions">
+                    <div></div>
+                    <div class="entity-actions-buttons">
                         <form method="POST" class="m-0" onsubmit="return confirm('Alterar o status deste servidor Hotspot?');">
                             <?= csrfField() ?>
                             <input type="hidden" name="id" value="<?= htmlspecialchars($internal_id) ?>">
-
                             <?php if ($isDisabled): ?>
                                 <input type="hidden" name="action" value="enable">
-                                <button type="submit" class="btn btn-sm btn-success w-100 py-1" style="font-size: 0.8rem;">Habilitar</button>
+                                <button type="submit" class="btn btn-sm btn-success">Habilitar</button>
                             <?php else: ?>
                                 <input type="hidden" name="action" value="disable">
-                                <button type="submit" class="btn btn-sm btn-warning w-100 py-1" style="font-size: 0.8rem;">Desabilitar</button>
+                                <button type="submit" class="btn btn-sm btn-warning">Desabilitar</button>
                             <?php endif; ?>
                         </form>
-                    </td>
-                </tr>
-            <?php endforeach; ?>
-        <?php endif; ?>
-    </tbody>
-</table>
-</div>
+                    </div>
+                </div>
+            </div>
+        <?php endforeach; ?>
+    </div>
+<?php endif; ?>
 <script>
 document.getElementById('selectAllHotspot')?.addEventListener('change', function () {
     document.querySelectorAll('.hotspot-row-check').forEach(function (cb) { cb.checked = this.checked; }, this);

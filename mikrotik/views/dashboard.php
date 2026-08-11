@@ -102,6 +102,37 @@ if (!empty($routers_list)) {
 }
 
 $total_routers = count($dashboard_data);
+
+// ---- Atividades recentes + sessões ativas (só para Administrador, mesmo escopo da tela de Logs) ----
+$recentActivity = [];
+$activeSessions = [];
+if (isAdmin()) {
+    $recentActivity = $db->query("SELECT username, category, action, details, created_at FROM activity_log ORDER BY created_at DESC, id DESC LIMIT 6")->fetchAll(PDO::FETCH_ASSOC);
+    $activeSessions = getActiveSessions();
+}
+
+// Ícone (trecho de <path>) por categoria de log, reaproveitando o mesmo estilo dos ícones do menu.
+function activityIconPath($category) {
+    return match ($category) {
+        'hotspot' => '<path d="M4 9a12 12 0 0116 0M7 12.5a8 8 0 0110 0M10 16a4 4 0 014 0"/>',
+        'firewall' => '<path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z"/>',
+        'bypass' => '<path d="M5 5l6 7-6 7M13 5l6 7-6 7"/>',
+        'routers' => '<rect x="4" y="3.5" width="16" height="6" rx="1.5"/><rect x="4" y="14.5" width="16" height="6" rx="1.5"/>',
+        'users' => '<circle cx="9" cy="8" r="3"/><path d="M3.5 20c0-3.5 2.5-6 5.5-6s5.5 2.5 5.5 6"/>',
+        default => '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>',
+    };
+}
+
+// "há X min", "Ontem, HH:MM" etc. a partir de um timestamp real do log.
+function timeAgo($datetime) {
+    $ts = strtotime($datetime);
+    $diff = time() - $ts;
+    if ($diff < 60) return 'agora mesmo';
+    if ($diff < 3600) return 'há ' . (int)floor($diff / 60) . ' min';
+    if (date('Y-m-d', $ts) === date('Y-m-d')) return 'há ' . (int)floor($diff / 3600) . 'h';
+    if (date('Y-m-d', $ts) === date('Y-m-d', strtotime('-1 day'))) return 'Ontem, ' . date('H:i', $ts);
+    return date('d/m, H:i', $ts);
+}
 ?>
 
 <div class="page-head">
@@ -120,19 +151,28 @@ $total_routers = count($dashboard_data);
 
 <div class="stat-strip">
     <div class="stat-tile">
-        <div class="stat-label">Cadastrados</div>
-        <div class="stat-value"><?= $total_routers ?></div>
-        <div class="stat-note">equipamentos monitorados</div>
+        <div>
+            <div class="stat-label">Cadastrados</div>
+            <div class="stat-value"><?= $total_routers ?></div>
+            <div class="stat-note">equipamentos monitorados</div>
+        </div>
+        <div class="stat-icon blue"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><rect x="4" y="3.5" width="16" height="6" rx="1.5"/><rect x="4" y="14.5" width="16" height="6" rx="1.5"/></svg></div>
     </div>
     <div class="stat-tile">
-        <div class="stat-label">Online <span class="dot online"></span></div>
-        <div class="stat-value online-c"><?= $total_online ?></div>
-        <div class="stat-note">respondendo à API</div>
+        <div>
+            <div class="stat-label">Online</div>
+            <div class="stat-value online-c"><?= $total_online ?></div>
+            <div class="stat-note">respondendo à API</div>
+        </div>
+        <div class="stat-icon blue"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg></div>
     </div>
     <div class="stat-tile">
-        <div class="stat-label">Offline <span class="dot offline"></span></div>
-        <div class="stat-value critical-c"><?= $total_offline ?></div>
-        <div class="stat-note">inacessíveis agora</div>
+        <div>
+            <div class="stat-label">Offline</div>
+            <div class="stat-value critical-c"><?= $total_offline ?></div>
+            <div class="stat-note">inacessíveis agora</div>
+        </div>
+        <div class="stat-icon orange"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 9v4M12 17h.01M10.3 3.9L2.6 18a1.5 1.5 0 001.3 2.2h16.2a1.5 1.5 0 001.3-2.2L13.7 3.9a1.5 1.5 0 00-2.6 0z"/></svg></div>
     </div>
 </div>
 
@@ -216,3 +256,61 @@ $total_routers = count($dashboard_data);
         </div>
     </div>
 </div>
+
+<?php if (isAdmin()): ?>
+<div class="row mt-3 g-3">
+    <div class="col-lg-8">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>Atividades Recentes</span>
+                <a href="index.php?page=logs" class="small fw-bold">Ver todas</a>
+            </div>
+            <div class="card-body">
+                <?php if (empty($recentActivity)): ?>
+                    <p class="text-muted mb-0 small">Nenhuma atividade registrada ainda.</p>
+                <?php else: ?>
+                    <div class="activity-list">
+                        <?php foreach ($recentActivity as $log): ?>
+                            <div class="activity-row">
+                                <div class="activity-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><?= activityIconPath($log['category']) ?></svg></div>
+                                <div>
+                                    <div class="activity-title"><?= htmlspecialchars($log['action']) ?></div>
+                                    <div class="activity-sub"><?= htmlspecialchars($log['username']) ?><?= $log['details'] ? ' · ' . htmlspecialchars($log['details']) : '' ?></div>
+                                </div>
+                                <div class="activity-time"><?= htmlspecialchars(timeAgo($log['created_at'])) ?></div>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                <?php endif; ?>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-4">
+        <div class="highlight-card">
+            <div class="hc-head">
+                <div class="hc-icon"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></div>
+                <h3>Sessões Ativas<?= !empty($activeSessions) ? ' (' . count($activeSessions) . ')' : '' ?></h3>
+            </div>
+            <?php if (empty($activeSessions)): ?>
+                <p class="hc-session-empty">Nenhuma sessão ativa no momento.</p>
+            <?php else: ?>
+                <div class="hc-session-list">
+                    <?php foreach ($activeSessions as $s): ?>
+                        <?php $isYou = $s['session_id'] === session_id(); ?>
+                        <div class="hc-session-row">
+                            <div>
+                                <span class="hc-session-user"><?= htmlspecialchars($s['username']) ?></span>
+                                <?php if ($isYou): ?><span class="hc-session-you">Você</span><?php endif; ?>
+                                <div class="hc-session-meta"><?= $s['role'] === 'admin' ? 'Administrador' : 'Usuário Padrão' ?> · <?= htmlspecialchars($s['ip_address'] ?: '-') ?></div>
+                            </div>
+                            <div class="hc-session-time"><?= htmlspecialchars(timeAgo($s['last_activity'])) ?></div>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+            <?php endif; ?>
+            <p>Por segurança, cada sessão é encerrada automaticamente após <?= (int)round(SESSION_IDLE_TIMEOUT / 60) ?> minutos de inatividade.</p>
+        </div>
+    </div>
+</div>
+<?php endif; ?>

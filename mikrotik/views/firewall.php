@@ -144,144 +144,125 @@ if ($role !== 'admin') {
 </form>
 
 <?php if (!empty($rules)): ?>
-<div class="card mb-3">
-    <div class="card-body py-2 d-flex flex-wrap align-items-center gap-2">
-        <span class="text-muted small me-2"><i class="bi bi-check2-square"></i> Ações em massa:</span>
-        <button type="submit" form="bulkFirewallForm" name="bulk_action" value="enable" class="btn btn-sm btn-outline-success" onclick="return confirm('Habilitar todas as regras selecionadas?');">Habilitar Selecionadas</button>
-        <button type="submit" form="bulkFirewallForm" name="bulk_action" value="disable" class="btn btn-sm btn-outline-danger" onclick="return confirm('Desabilitar todas as regras selecionadas?');">Desabilitar Selecionadas</button>
-        <?php if ($role === 'admin'): ?>
-            <span class="vr mx-1"></span>
-            <button type="submit" form="bulkFirewallForm" name="bulk_permission_action" value="grant" class="btn btn-sm btn-outline-primary">Permitir p/ Padrão</button>
-            <button type="submit" form="bulkFirewallForm" name="bulk_permission_action" value="revoke" class="btn btn-sm btn-outline-secondary">Revogar de Padrão</button>
-        <?php endif; ?>
-    </div>
+<div class="entity-list-toolbar">
+    <input type="checkbox" class="form-check-input" id="selectAllFirewall" title="Selecionar todas">
+    <span class="elt-label"><i class="bi bi-check2-square"></i> Ações em massa</span>
+    <button type="submit" form="bulkFirewallForm" name="bulk_action" value="enable" class="btn btn-sm btn-outline-success" onclick="return confirm('Habilitar todas as regras selecionadas?');">Habilitar Selecionadas</button>
+    <button type="submit" form="bulkFirewallForm" name="bulk_action" value="disable" class="btn btn-sm btn-outline-danger" onclick="return confirm('Desabilitar todas as regras selecionadas?');">Desabilitar Selecionadas</button>
+    <?php if ($role === 'admin'): ?>
+        <span class="vr mx-1"></span>
+        <button type="submit" form="bulkFirewallForm" name="bulk_permission_action" value="grant" class="btn btn-sm btn-outline-primary">Permitir p/ Padrão</button>
+        <button type="submit" form="bulkFirewallForm" name="bulk_permission_action" value="revoke" class="btn btn-sm btn-outline-secondary">Revogar de Padrão</button>
+    <?php endif; ?>
 </div>
 <?php endif; ?>
 
-<div class="table-responsive">
-    <table class="table table-striped table-hover bg-white shadow-sm table-sm align-middle table-actions-sticky" style="font-size: 0.88rem;">
-        <thead class="table-dark">
-            <tr>
-                <th style="width: 32px;"><input type="checkbox" class="form-check-input" id="selectAllFirewall"></th>
-                <th>ID</th>
-                <th>Nome da Regra (Comentário)</th>
-                <th>Chain</th>
-                <th>Src. Address</th>
-                <th>Dst. Address</th>
-                <th>Prot.</th>
-                <th>Dst. Port</th>
-                <th>In. / Out. Int.</th>
-                <th>Ação</th>
-                <th>Status</th>
-                <?php if ($role === 'admin'): ?><th class="text-center">Visível p/ Padrão</th><?php endif; ?>
-                <th class="text-center">Ações</th>
-            </tr>
-        </thead>
-        <tbody>
-            <?php if (empty($rules)): ?>
-                <tr>
-                    <td colspan="<?= $role === 'admin' ? 13 : 12 ?>" class="text-center text-muted py-3">Nenhuma regra de firewall filter encontrada<?= $role === 'admin' ? '.' : ' liberada para o seu perfil.' ?></td>
-                </tr>
-            <?php else: ?>
-                <?php foreach ($rules as $r): ?>
-                    <?php
-                        // Ignora blocos de resposta da API que não sejam dados de regras válidas (como mensagens de !done)
-                        if (!is_array($r) || !isset($r['.id'])) continue;
+<?php if (empty($rules)): ?>
+    <div class="card">
+        <div class="card-body text-center text-muted py-4">Nenhuma regra de firewall filter encontrada<?= $role === 'admin' ? '.' : ' liberada para o seu perfil.' ?></div>
+    </div>
+<?php else: ?>
+    <div class="entity-list">
+        <?php foreach ($rules as $r): ?>
+            <?php
+                // Ignora blocos de resposta da API que não sejam dados de regras válidas (como mensagens de !done)
+                if (!is_array($r) || !isset($r['.id'])) continue;
 
-                        $isDisabled = isset($r['disabled']) && in_array(strtolower((string)$r['disabled']), ['true', 'yes']);
-                        $isPermitted = isset($permittedIds[$r['.id']]);
-                    ?>
-                    <tr class="<?= $isDisabled ? 'table-light text-muted' : '' ?>">
-                        <td><input type="checkbox" class="form-check-input firewall-row-check" name="ids[]" value="<?= htmlspecialchars($r['.id']) ?>" form="bulkFirewallForm"></td>
-                        <td class="mono"><?= htmlspecialchars($r['.id']) ?></td>
+                $isDisabled = isset($r['disabled']) && in_array(strtolower((string)$r['disabled']), ['true', 'yes']);
+                $isPermitted = isset($permittedIds[$r['.id']]);
 
-                        <td>
-                            <?php if (!empty($r['comment'])): ?>
-                                <span class="text-dark" style="font-weight: 600;">
+                $actionClass = match($r['action'] ?? '') {
+                    'accept' => 'tag-accept',
+                    'drop' => 'tag-drop',
+                    'reject' => 'tag-reject',
+                    default => 'badge bg-info'
+                };
+            ?>
+            <div class="entity-card <?= $isDisabled ? 'is-disabled' : '' ?>">
+                <div class="entity-card-head">
+                    <div class="entity-title-wrap">
+                        <input type="checkbox" class="form-check-input entity-check firewall-row-check" name="ids[]" value="<?= htmlspecialchars($r['.id']) ?>" form="bulkFirewallForm">
+                        <div>
+                            <div class="entity-title">
+                                <?php if (!empty($r['comment'])): ?>
                                     <?= htmlspecialchars($r['comment']) ?>
-                                </span>
-                            <?php else: ?>
-                                <span class="text-muted italic" style="font-style: italic; font-size: 0.8rem;">
-                                    (Sem comentário / Sem nome)
-                                </span>
-                            <?php endif; ?>
-                        </td>
-
-                        <td><span class="badge bg-secondary"><?= htmlspecialchars($r['chain'] ?? '-') ?></span></td>
-
-                        <td class="mono"><?= htmlspecialchars($r['src-address'] ?? 'Qualquer (0.0.0.0/0)') ?></td>
-                        <td class="mono"><?= htmlspecialchars($r['dst-address'] ?? 'Qualquer (0.0.0.0/0)') ?></td>
-
-                        <td><span class="text-uppercase text-info"><?= htmlspecialchars($r['protocol'] ?? 'todos') ?></span></td>
-
-                        <td class="mono"><?= htmlspecialchars($r['dst-port'] ?? '-') ?></td>
-
-                        <td>
-                            <small class="mono text-muted">
-                                in: <?= htmlspecialchars($r['in-interface'] ?? $r['in-interface-list'] ?? 'any') ?><br>
-                                out: <?= htmlspecialchars($r['out-interface'] ?? $r['out-interface-list'] ?? 'any') ?>
-                            </small>
-                        </td>
-
-                        <td>
-                            <?php
-                            $actionClass = match($r['action'] ?? '') {
-                                'accept' => 'tag-accept',
-                                'drop' => 'tag-drop',
-                                'reject' => 'tag-reject',
-                                default => 'badge bg-info'
-                            };
-                            ?>
-                            <span class="<?= $actionClass ?>"><?= htmlspecialchars($r['action'] ?? 'unknown') ?></span>
-                        </td>
-
-                        <td>
-                            <?php if ($isDisabled): ?>
-                                <span class="badge bg-secondary text-wrap" style="font-size: 0.75rem;">Desabilitada</span>
-                            <?php else: ?>
-                                <span class="badge bg-success text-wrap" style="font-size: 0.75rem;">Ativa</span>
-                            <?php endif; ?>
-                        </td>
-
-                        <?php if ($role === 'admin'): ?>
-                        <td class="text-center">
-                            <form method="POST" class="m-0">
-                                <?= csrfField() ?>
-                                <input type="hidden" name="id" value="<?= htmlspecialchars($r['.id']) ?>">
-                                <?php if ($isPermitted): ?>
-                                    <input type="hidden" name="permission_action" value="revoke">
-                                    <button type="submit" class="btn btn-sm btn-outline-secondary" style="font-size: 0.75rem;">Revogar</button>
                                 <?php else: ?>
-                                    <input type="hidden" name="permission_action" value="grant">
-                                    <button type="submit" class="btn btn-sm btn-outline-primary" style="font-size: 0.75rem;">Permitir</button>
+                                    <span class="text-muted" style="font-style: italic; font-weight: 400;">(Sem comentário / Sem nome)</span>
                                 <?php endif; ?>
-                            </form>
-                        </td>
+                            </div>
+                            <div class="entity-sub mono">ID <?= htmlspecialchars($r['.id']) ?></div>
+                        </div>
+                    </div>
+                    <div class="entity-badges">
+                        <span class="badge bg-secondary"><?= htmlspecialchars($r['chain'] ?? '-') ?></span>
+                        <span class="<?= $actionClass ?>"><?= htmlspecialchars($r['action'] ?? 'unknown') ?></span>
+                        <?php if ($isDisabled): ?>
+                            <span class="badge bg-secondary">Desabilitada</span>
+                        <?php else: ?>
+                            <span class="badge bg-success">Ativa</span>
                         <?php endif; ?>
+                    </div>
+                </div>
+                <div class="entity-grid">
+                    <div>
+                        <div class="entity-field-label">Src. Address</div>
+                        <div class="entity-field-value mono"><?= htmlspecialchars($r['src-address'] ?? 'Qualquer (0.0.0.0/0)') ?></div>
+                    </div>
+                    <div>
+                        <div class="entity-field-label">Dst. Address</div>
+                        <div class="entity-field-value mono"><?= htmlspecialchars($r['dst-address'] ?? 'Qualquer (0.0.0.0/0)') ?></div>
+                    </div>
+                    <div>
+                        <div class="entity-field-label">Protocolo</div>
+                        <div class="entity-field-value text-uppercase"><?= htmlspecialchars($r['protocol'] ?? 'todos') ?></div>
+                    </div>
+                    <div>
+                        <div class="entity-field-label">Dst. Port</div>
+                        <div class="entity-field-value mono"><?= htmlspecialchars($r['dst-port'] ?? '-') ?></div>
+                    </div>
+                    <div class="full">
+                        <div class="entity-field-label">Interfaces (in / out)</div>
+                        <div class="entity-field-value mono"><?= htmlspecialchars($r['in-interface'] ?? $r['in-interface-list'] ?? 'any') ?> / <?= htmlspecialchars($r['out-interface'] ?? $r['out-interface-list'] ?? 'any') ?></div>
+                    </div>
+                </div>
 
-                        <td class="text-center">
-                            <form method="POST" style="display:inline;">
-                                <?= csrfField() ?>
-                                <input type="hidden" name="id" value="<?= htmlspecialchars($r['.id']) ?>">
-                                <?php if ($isDisabled): ?>
-                                    <input type="hidden" name="action" value="enable">
-                                    <button class="btn btn-sm btn-outline-success" title="Habilitar Regra">
-                                        <i class="bi bi-play-fill"></i>
-                                    </button>
-                                <?php else: ?>
-                                    <input type="hidden" name="action" value="disable">
-                                    <button class="btn btn-sm btn-outline-danger" title="Desabilitar Regra">
-                                        <i class="bi bi-pause-fill"></i>
-                                    </button>
-                                <?php endif; ?>
-                            </form>
-                        </td>
-                    </tr>
-                <?php endforeach; ?>
-            <?php endif; ?>
-        </tbody>
-    </table>
-</div>
+                <?php if ($role === 'admin'): ?>
+                <div class="entity-visible-row">
+                    <span><?= $isPermitted ? 'Visível para Usuário Padrão' : 'Oculta para Usuário Padrão' ?></span>
+                    <form method="POST" class="m-0">
+                        <?= csrfField() ?>
+                        <input type="hidden" name="id" value="<?= htmlspecialchars($r['.id']) ?>">
+                        <?php if ($isPermitted): ?>
+                            <input type="hidden" name="permission_action" value="revoke">
+                            <button type="submit" class="btn btn-sm btn-outline-secondary py-1" style="font-size: 0.75rem;">Revogar</button>
+                        <?php else: ?>
+                            <input type="hidden" name="permission_action" value="grant">
+                            <button type="submit" class="btn btn-sm btn-outline-primary py-1" style="font-size: 0.75rem;">Permitir</button>
+                        <?php endif; ?>
+                    </form>
+                </div>
+                <?php endif; ?>
+
+                <div class="entity-actions">
+                    <div></div>
+                    <div class="entity-actions-buttons">
+                        <form method="POST" class="m-0">
+                            <?= csrfField() ?>
+                            <input type="hidden" name="id" value="<?= htmlspecialchars($r['.id']) ?>">
+                            <?php if ($isDisabled): ?>
+                                <input type="hidden" name="action" value="enable">
+                                <button class="btn btn-sm btn-outline-success" title="Habilitar Regra"><i class="bi bi-play-fill"></i> Habilitar</button>
+                            <?php else: ?>
+                                <input type="hidden" name="action" value="disable">
+                                <button class="btn btn-sm btn-outline-danger" title="Desabilitar Regra"><i class="bi bi-pause-fill"></i> Desabilitar</button>
+                            <?php endif; ?>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        <?php endforeach; ?>
+    </div>
+<?php endif; ?>
 <script>
 document.getElementById('selectAllFirewall')?.addEventListener('change', function () {
     document.querySelectorAll('.firewall-row-check').forEach(function (cb) { cb.checked = this.checked; }, this);

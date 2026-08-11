@@ -1,6 +1,7 @@
 <?php
 $db = getDB();
-$routers = $db->query("SELECT id, name, location FROM routers");
+$routersList = $db->query("SELECT id, name, location FROM routers ORDER BY name ASC")->fetchAll(PDO::FETCH_ASSOC);
+
 if (isset($_GET['select_router'])) {
     $_SESSION['active_router'] = (int)$_GET['select_router'];
     header("Location: index.php");
@@ -9,11 +10,28 @@ if (isset($_GET['select_router'])) {
 $active_router_id = $_SESSION['active_router'] ?? null;
 $is_admin = isAdmin();
 
+$activeRouterLabel = null;
+foreach ($routersList as $r) {
+    if ($active_router_id == $r['id']) {
+        $activeRouterLabel = $r['name'];
+        break;
+    }
+}
+
 function navLink($targetPage, $currentPage, $label, $iconPath) {
     $active = $targetPage === $currentPage ? ' is-active' : '';
     echo '<a class="rail-link' . $active . '" href="index.php?page=' . $targetPage . '">'
         . '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">' . $iconPath . '</svg>'
         . htmlspecialchars($label) . '</a>';
+}
+
+// Iniciais para o avatar (ex: "vitor.uceli" -> "VU"; sem separador, pega as 2 primeiras letras).
+function userInitials($username) {
+    $parts = array_values(array_filter(preg_split('/[.\s_-]+/', trim((string)$username))));
+    if (count($parts) >= 2) {
+        return strtoupper(mb_substr($parts[0], 0, 1) . mb_substr($parts[1], 0, 1));
+    }
+    return strtoupper(mb_substr((string)$username, 0, 2));
 }
 ?>
 <!DOCTYPE html>
@@ -22,9 +40,6 @@ function navLink($targetPage, $currentPage, $label, $iconPath) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Mikrotik Manager</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css">
     <link rel="stylesheet" href="views/theme.css">
@@ -67,9 +82,12 @@ function navLink($targetPage, $currentPage, $label, $iconPath) {
         <?php endif; ?>
 
         <div class="rail-foot">
-            <div class="rail-user"><?= htmlspecialchars($_SESSION['user_logged_in']) ?></div>
-            <span class="rail-role"><?= $is_admin ? 'Administrador' : 'Usuário Padrão' ?></span>
-            <a href="logout.php" class="rail-logout">Sair</a>
+            <div class="avatar sm"><?= htmlspecialchars(userInitials($_SESSION['user_logged_in'])) ?></div>
+            <div>
+                <div class="rail-user"><?= htmlspecialchars($_SESSION['user_logged_in']) ?></div>
+                <span class="rail-role"><?= $is_admin ? 'Administrador' : 'Usuário Padrão' ?></span>
+                <a href="logout.php" class="rail-logout">Sair</a>
+            </div>
         </div>
     </nav>
 
@@ -89,17 +107,33 @@ function navLink($targetPage, $currentPage, $label, $iconPath) {
                 </svg>
                 <span>MIKROTIK MGR</span>
             </div>
-            <form class="router-picker" method="GET" action="index.php">
-                <span class="dot <?= $active_router_id ? 'online' : 'offline' ?>"></span>
-                <select name="select_router" class="form-select" onchange="this.form.submit()">
-                    <option value="">-- Selecione o Mikrotik --</option>
-                    <?php while ($row = $routers->fetch(PDO::FETCH_ASSOC)): ?>
-                        <option value="<?= $row['id'] ?>" <?= $active_router_id == $row['id'] ? 'selected' : '' ?>>
-                            <?= htmlspecialchars($row['name'] . ' (' . $row['location'] . ')') ?>
-                        </option>
-                    <?php endwhile; ?>
-                </select>
-            </form>
+
+            <div class="router-switch-wrap">
+                <button type="button" class="router-switch" id="routerSwitchBtn" aria-haspopup="true" aria-expanded="false">
+                    <span class="dot <?= $active_router_id ? 'online' : 'offline' ?>"></span>
+                    <span class="rs-name"><?= $activeRouterLabel ? htmlspecialchars($activeRouterLabel) : 'Selecione o Mikrotik' ?></span>
+                    <svg class="rs-chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
+                </button>
+                <div class="router-dropdown" id="routerDropdown">
+                    <div class="rd-label">Selecionar Mikrotik</div>
+                    <?php if (empty($routersList)): ?>
+                        <div class="rd-empty">Nenhum roteador cadastrado.</div>
+                    <?php else: ?>
+                        <?php foreach ($routersList as $row): ?>
+                            <a class="rd-item <?= $active_router_id == $row['id'] ? 'is-current' : '' ?>" href="index.php?select_router=<?= (int)$row['id'] ?>">
+                                <div>
+                                    <div class="rd-item-name"><?= htmlspecialchars($row['name']) ?></div>
+                                    <div class="rd-item-loc"><?= htmlspecialchars($row['location']) ?></div>
+                                </div>
+                                <?php if ($active_router_id == $row['id']): ?><span class="rd-item-tag">atual</span><?php endif; ?>
+                            </a>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+            <div class="topbar-spacer"></div>
+            <div class="avatar" title="<?= htmlspecialchars($_SESSION['user_logged_in']) ?>"><?= htmlspecialchars(userInitials($_SESSION['user_logged_in'])) ?></div>
         </div>
 
         <div class="main-content">
@@ -122,30 +156,45 @@ function navLink($targetPage, $currentPage, $label, $iconPath) {
     var rail = document.getElementById('rail');
     var backdrop = document.getElementById('railBackdrop');
     var toggle = document.getElementById('railToggle');
-    if (!rail || !backdrop || !toggle) return;
-
-    function openRail() {
-        rail.classList.add('is-open');
-        backdrop.classList.add('is-visible');
-        toggle.setAttribute('aria-expanded', 'true');
+    if (rail && backdrop && toggle) {
+        var openRail = function () {
+            rail.classList.add('is-open');
+            backdrop.classList.add('is-visible');
+            toggle.setAttribute('aria-expanded', 'true');
+        };
+        var closeRail = function () {
+            rail.classList.remove('is-open');
+            backdrop.classList.remove('is-visible');
+            toggle.setAttribute('aria-expanded', 'false');
+        };
+        toggle.addEventListener('click', function () {
+            rail.classList.contains('is-open') ? closeRail() : openRail();
+        });
+        backdrop.addEventListener('click', closeRail);
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') closeRail();
+        });
+        // Fecha o menu ao navegar para outra página no mobile (a gaveta não deve persistir aberta).
+        rail.querySelectorAll('a.rail-link, a.rail-logout').forEach(function (link) {
+            link.addEventListener('click', closeRail);
+        });
     }
-    function closeRail() {
-        rail.classList.remove('is-open');
-        backdrop.classList.remove('is-visible');
-        toggle.setAttribute('aria-expanded', 'false');
-    }
 
-    toggle.addEventListener('click', function () {
-        rail.classList.contains('is-open') ? closeRail() : openRail();
-    });
-    backdrop.addEventListener('click', closeRail);
-    document.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape') closeRail();
-    });
-    // Fecha o menu ao navegar para outra página no mobile (a gaveta não deve persistir aberta).
-    rail.querySelectorAll('a.rail-link, a.rail-logout').forEach(function (link) {
-        link.addEventListener('click', closeRail);
-    });
+    // Seletor de Mikrotik ativo (dropdown na topbar)
+    var rsBtn = document.getElementById('routerSwitchBtn');
+    var rsPanel = document.getElementById('routerDropdown');
+    if (rsBtn && rsPanel) {
+        rsBtn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            var willOpen = !rsPanel.classList.contains('is-open');
+            rsPanel.classList.toggle('is-open', willOpen);
+            rsBtn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+        });
+        document.addEventListener('click', function () {
+            rsPanel.classList.remove('is-open');
+            rsBtn.setAttribute('aria-expanded', 'false');
+        });
+    }
 })();
 </script>
 </body>
