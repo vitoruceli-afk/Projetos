@@ -8,6 +8,15 @@ checkAuth();
 
 header('Content-Type: application/json; charset=utf-8');
 
+// CPU/memória e tráfego das interfaces são informação de infraestrutura do equipamento em si
+// (não de um hotspot/regra específico), então ficam restritos ao mesmo escopo de Administrador
+// usado no resto da área de infraestrutura (Roteadores, Logs).
+if (!isAdmin()) {
+    http_response_code(403);
+    echo json_encode(['error' => 'Acesso restrito ao perfil Administrador.']);
+    exit;
+}
+
 if (empty($_SESSION['active_router']) || !hasRouterAccess($_SESSION['active_router'])) {
     http_response_code(403);
     echo json_encode(['error' => 'Nenhum roteador ativo ou sem acesso a ele.']);

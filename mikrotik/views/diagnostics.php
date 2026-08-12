@@ -171,6 +171,7 @@ $api->disconnect();
     </div>
 <?php endif; ?>
 
+<?php if (isAdmin()): ?>
 <div class="row mt-4 g-3">
     <div class="col-md-6">
         <div class="card h-100">
@@ -333,6 +334,7 @@ $api->disconnect();
     });
 })();
 </script>
+<?php endif; ?>
 
 <?php if ($tracerouteHops !== null): ?>
     <div class="mt-4">
