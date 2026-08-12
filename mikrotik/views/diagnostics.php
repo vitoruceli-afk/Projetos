@@ -171,6 +171,169 @@ $api->disconnect();
     </div>
 <?php endif; ?>
 
+<div class="row mt-4 g-3">
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header">Uso de CPU</div>
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-baseline mb-2">
+                    <span class="fs-3 fw-bold" id="cpuLoadValue">-</span>
+                    <span class="text-muted small">carga atual</span>
+                </div>
+                <div class="progress" style="height: 10px;">
+                    <div class="progress-bar" id="cpuLoadBar" role="progressbar" style="width: 0%;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header">Uso de Memória</div>
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-baseline mb-2">
+                    <span class="fs-5 fw-bold" id="memUsedValue">-</span>
+                    <span class="text-muted small" id="memTotalValue">de -</span>
+                </div>
+                <div class="progress mb-2" style="height: 10px;">
+                    <div class="progress-bar" id="memUsedBar" role="progressbar" style="width: 0%;"></div>
+                </div>
+                <div class="small text-muted" id="memFreeValue">Livre: -</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card mt-3">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span>Tráfego em Tempo Real das Interfaces Ativas</span>
+        <span class="small text-muted" id="trafficUpdatedAt">carregando…</span>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-sm table-striped bg-white align-middle mb-0">
+                <thead class="table-dark">
+                    <tr>
+                        <th>Interface</th>
+                        <th>Tipo</th>
+                        <th>Download (RX)</th>
+                        <th>Upload (TX)</th>
+                    </tr>
+                </thead>
+                <tbody id="trafficTableBody">
+                    <tr><td colspan="4" class="text-center text-muted py-4">Carregando…</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+<script>
+(function () {
+    var tbody = document.getElementById('trafficTableBody');
+    var updatedAt = document.getElementById('trafficUpdatedAt');
+    var cpuValue = document.getElementById('cpuLoadValue');
+    var cpuBar = document.getElementById('cpuLoadBar');
+    var memUsed = document.getElementById('memUsedValue');
+    var memTotal = document.getElementById('memTotalValue');
+    var memFree = document.getElementById('memFreeValue');
+    var memBar = document.getElementById('memUsedBar');
+    var timer = null;
+
+    function escapeHtml(s) {
+        var div = document.createElement('div');
+        div.textContent = String(s);
+        return div.innerHTML;
+    }
+
+    function formatBps(bps) {
+        bps = Number(bps) || 0;
+        if (bps >= 1000000000) return (bps / 1000000000).toFixed(2) + ' Gbps';
+        if (bps >= 1000000) return (bps / 1000000).toFixed(2) + ' Mbps';
+        if (bps >= 1000) return (bps / 1000).toFixed(1) + ' Kbps';
+        return bps.toFixed(0) + ' bps';
+    }
+
+    function formatBytes(bytes) {
+        bytes = Number(bytes) || 0;
+        if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(2) + ' GB';
+        if (bytes >= 1048576) return (bytes / 1048576).toFixed(2) + ' MB';
+        if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KB';
+        return bytes.toFixed(0) + ' B';
+    }
+
+    function barColorClass(pct) {
+        if (pct >= 90) return 'bg-danger';
+        if (pct >= 70) return 'bg-warning';
+        return 'bg-success';
+    }
+
+    function renderSystem(system) {
+        if (!system) return;
+        var cpuPct = Math.max(0, Math.min(100, Number(system.cpu_load) || 0));
+        cpuValue.textContent = cpuPct.toFixed(0) + '%';
+        cpuBar.style.width = cpuPct + '%';
+        cpuBar.className = 'progress-bar ' + barColorClass(cpuPct);
+
+        var total = Number(system.total_memory) || 0;
+        var used = Number(system.used_memory) || 0;
+        var free = Number(system.free_memory) || 0;
+        var memPct = total > 0 ? Math.max(0, Math.min(100, (used / total) * 100)) : 0;
+
+        memUsed.textContent = formatBytes(used) + ' usados';
+        memTotal.textContent = 'de ' + formatBytes(total);
+        memFree.textContent = 'Livre: ' + formatBytes(free);
+        memBar.style.width = memPct + '%';
+        memBar.className = 'progress-bar ' + barColorClass(memPct);
+    }
+
+    function renderRows(list) {
+        if (!list.length) {
+            tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted py-4">Nenhuma interface ativa encontrada neste momento.</td></tr>';
+            return;
+        }
+        var html = '';
+        list.forEach(function (item) {
+            html += '<tr>'
+                + '<td class="mono fw-bold">' + escapeHtml(item.name) + '</td>'
+                + '<td><span class="badge bg-secondary">' + escapeHtml(item.type) + '</span></td>'
+                + '<td class="mono text-success"><i class="bi bi-arrow-down-circle"></i> ' + formatBps(item.rx_bps) + '</td>'
+                + '<td class="mono text-primary"><i class="bi bi-arrow-up-circle"></i> ' + formatBps(item.tx_bps) + '</td>'
+                + '</tr>';
+        });
+        tbody.innerHTML = html;
+    }
+
+    function poll() {
+        fetch('traffic_poll.php', { credentials: 'same-origin' })
+            .then(function (res) { return res.json(); })
+            .then(function (data) {
+                if (data.error) {
+                    tbody.innerHTML = '<tr><td colspan="4" class="text-center text-danger py-4">' + escapeHtml(data.error) + '</td></tr>';
+                    updatedAt.textContent = 'erro ao atualizar';
+                    return;
+                }
+                renderSystem(data.system);
+                renderRows(data.interfaces || []);
+                updatedAt.textContent = 'atualizado agora mesmo';
+            })
+            .catch(function () {
+                updatedAt.textContent = 'falha ao atualizar';
+            });
+    }
+
+    poll();
+    timer = setInterval(poll, 2000);
+
+    // Pausa o polling quando a aba não está visível, evitando chamadas desnecessárias ao roteador.
+    document.addEventListener('visibilitychange', function () {
+        clearInterval(timer);
+        if (!document.hidden) {
+            poll();
+            timer = setInterval(poll, 2000);
+        }
+    });
+})();
+</script>
+
 <?php if ($tracerouteHops !== null): ?>
     <div class="mt-4">
         <h5>Resultado do Traceroute para <code><?= htmlspecialchars($target) ?></code></h5>
