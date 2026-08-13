@@ -334,6 +334,8 @@ hr { border-color: var(--line); opacity: 1; }
   .rail-backdrop { display: none !important; }
   .hamburger-btn { display: none; }
 }
+.rail-institution { padding: 0 8px 14px; }
+.rail-institution-logo { height: 68px; width: auto; max-width: 100%; background: #fff; border-radius: 10px; padding: 10px 16px; }
 .rail-brand { display: flex; align-items: center; gap: 10px; padding: 0 8px 4px; }
 .rail-brand svg { color: var(--accent); flex-shrink: 0; }
 .rail-brand-name { font-size: 14px; font-weight: 700; color: var(--rail-text-active); letter-spacing: 0.01em; }
@@ -562,6 +564,8 @@ tr.table-success > * { --bs-table-accent-bg: transparent; background: transparen
   padding: 40px 16px;
 }
 .login-card { width: 100%; max-width: 380px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); box-shadow: var(--shadow); padding: 34px 30px 28px; }
+.login-institution { display: flex; justify-content: center; margin-bottom: 22px; }
+.login-institution-logo { height: 56px; width: auto; max-width: 100%; }
 .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 26px; }
 .brand svg { color: var(--accent); flex-shrink: 0; }
 .brand-name { font-size: 15px; font-weight: 800; letter-spacing: 0.01em; color: var(--text-900); }

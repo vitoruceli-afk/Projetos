@@ -59,6 +59,9 @@ function userInitials($username) {
 <div class="app-shell">
     <div class="rail-backdrop" id="railBackdrop"></div>
     <nav class="rail" id="rail" aria-label="Navegação principal">
+        <div class="rail-institution">
+            <img src="https://www.faesa.br/wp-content/uploads/2024/08/Camada_1.svg" alt="FAESA Centro Universitário" class="rail-institution-logo">
+        </div>
         <div class="rail-brand">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
                 <circle cx="12" cy="12" r="2.1" fill="currentColor" stroke="none"/>
