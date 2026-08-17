@@ -52,6 +52,19 @@ define('DB_PASS', ''); // Sua senha do MySQL
 define('ROUTER_ENC_KEY', 'faesa-mikrotik-manager-troque-esta-chave');
 
 function getDB() {
+    // getDB() é chamado várias vezes por requisição (cada view, mais currentUserRole(),
+    // logActivity(), touchActiveSession() etc. chamam de novo). Sem esse cache, cada chamada
+    // reabria a conexão E reexecutava os 9 CREATE TABLE IF NOT EXISTS + 1 ALTER TABLE — o
+    // MySQL 8 grava DDL atômico no data dictionary mesmo quando a tabela já existe e nada muda,
+    // então isso custava ~50-150ms *por chamada*. Uma única ação (ex: habilitar/desabilitar um
+    // hotspot) podia disparar getDB() 3-4 vezes, somando meio segundo ou mais só nisso — o
+    // gargalo real por trás da lentidão percebida após a migração. Guardando a conexão já
+    // aberta (e com o schema já garantido) numa estática, isso roda só uma vez por requisição.
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
+
     try {
         $dsn = "mysql:host=" . DB_HOST . ";dbname=" . DB_NAME . ";charset=utf8mb4";
         $db = new PDO($dsn, DB_USER, DB_PASS, [
@@ -172,7 +185,8 @@ function getDB() {
             UNIQUE KEY uq_user_router (user_type, username, router_id)
         )");
 
-        return $db;
+        $cached = $db;
+        return $cached;
     } catch (PDOException $e) {
         die("Erro de conexão com o MySQL: " . $e->getMessage());
     }
