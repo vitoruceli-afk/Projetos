@@ -80,7 +80,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Login - Mikrotik Manager</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="views/theme.css">
+    <link rel="stylesheet" href="views/theme.css?v=<?= @filemtime(__DIR__ . '/views/theme.css') ?: time() ?>">
 </head>
 <body>
     <div class="login-stage">

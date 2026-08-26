@@ -11,7 +11,7 @@ if (isset($_SESSION['active_router']) && !hasRouterAccess($_SESSION['active_rout
 }
 
 $page = $_GET['page'] ?? 'dashboard';
-$allowed_pages = ['dashboard', 'routers', 'hotspot', 'firewall', 'diagnostics', 'users', 'logs', 'bypass'];
+$allowed_pages = ['dashboard', 'routers', 'hotspot', 'firewall', 'diagnostics', 'users', 'logs', 'bypass', 'actions'];
 
 if (!in_array($page, $allowed_pages)) {
     $page = 'dashboard';
@@ -25,7 +25,7 @@ if (in_array($page, $admin_only_pages)) {
 
 // Permite acesso ao Dashboard mesmo sem um MikroTik ativo.
 // Apenas páginas que exigem conexão ativa são bloqueadas.
-$pages_that_require_router = ['hotspot', 'firewall', 'diagnostics', 'bypass'];
+$pages_that_require_router = ['hotspot', 'firewall', 'diagnostics', 'bypass', 'actions'];
 
 if (!isset($_SESSION['active_router']) && in_array($page, $pages_that_require_router)) {
     header("Location: index.php?page=dashboard");
