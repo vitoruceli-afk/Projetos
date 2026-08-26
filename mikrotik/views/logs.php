@@ -4,7 +4,7 @@ $db = getDB();
 
 $categoryLabels = [
     'auth' => 'Login/Logoff',
-    'hotspot' => 'Autenticação',
+    'hotspot' => 'Hotspot',
     'firewall' => 'Firewall',
     'bypass' => 'Bypass',
     'routers' => 'Gerenciar Roteadores',

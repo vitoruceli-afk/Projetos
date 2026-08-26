@@ -161,7 +161,7 @@ function timeAgo($datetime) {
 <?php elseif (empty($active_id_now) && $total_routers > 0): ?>
     <div class="alert alert-warning mb-4" role="alert">
         <strong>Nenhum roteador selecionado para gerência.</strong>
-        Escolha um dos MikroTiks operacionais na lista abaixo e clique em <strong>"Gerenciar"</strong> para liberar os menus de Firewall e Autenticação.
+        Escolha um dos MikroTiks operacionais na lista abaixo e clique em <strong>"Gerenciar"</strong> para liberar os menus de Firewall e Hotspot.
     </div>
 <?php endif; ?>
 

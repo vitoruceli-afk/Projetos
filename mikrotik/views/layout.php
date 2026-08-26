@@ -77,7 +77,7 @@ function userInitials($username) {
         <div class="rail-nav">
             <?php
             navLink('dashboard', $page, 'Dashboard', '<path d="M4 13l4-4 4 3 8-9M4 20h16"/>');
-            navLink('hotspot', $page, 'Autenticação', '<path d="M4 9a12 12 0 0116 0M7 12.5a8 8 0 0110 0M10 16a4 4 0 014 0"/><circle cx="12" cy="19" r="1" fill="currentColor" stroke="none"/>');
+            navLink('hotspot', $page, 'Hotspot', '<path d="M4 9a12 12 0 0116 0M7 12.5a8 8 0 0110 0M10 16a4 4 0 014 0"/><circle cx="12" cy="19" r="1" fill="currentColor" stroke="none"/>');
             navLink('firewall', $page, 'Firewall', '<path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z"/>');
             navLink('diagnostics', $page, 'Diagnóstico', '<path d="M3 12h4l2-7 4 14 2-7h6"/>');
             ?>

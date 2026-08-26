@@ -163,7 +163,7 @@ if ($hasFilter) {
 ?>
 
 <div class="d-flex justify-content-between align-items-center mb-3">
-    <h1 class="page-title">Gerenciamento de Autenticação (Hotspot Servers)</h1>
+    <h1 class="page-title">Gerenciamento de Hotspot (Servers)</h1>
     <span class="badge bg-secondary">Total: <?= count($hotspots_clean) ?> servidores</span>
 </div>
 
@@ -223,7 +223,7 @@ if ($hasFilter) {
             <?php if ($hasFilter): ?>
                 Nenhum servidor encontrado para os filtros selecionados.
             <?php else: ?>
-                Nenhum servidor de autenticação configurado<?= $role === 'admin' ? ' neste MikroTik.' : ' liberado para o seu perfil.' ?>
+                Nenhum Hotspot Server configurado<?= $role === 'admin' ? ' neste MikroTik.' : ' liberado para o seu perfil.' ?>
             <?php endif; ?>
         </div>
     </div>
@@ -300,7 +300,7 @@ if ($hasFilter) {
                                 ENT_QUOTES
                             );
                         ?>
-                        <form method="POST" class="m-0" onsubmit="return <?= $isDisabled ? "confirm('Alterar o status deste servidor de autenticação?')" : 'confirm(' . $rowDisableConfirm . ')' ?>;">
+                        <form method="POST" class="m-0" onsubmit="return <?= $isDisabled ? "confirm('Alterar o status deste servidor Hotspot?')" : 'confirm(' . $rowDisableConfirm . ')' ?>;">
                             <?= csrfField() ?>
                             <input type="hidden" name="id" value="<?= htmlspecialchars($internal_id) ?>">
                             <?php if ($isDisabled): ?>
