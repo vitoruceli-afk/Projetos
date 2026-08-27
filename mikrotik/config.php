@@ -185,6 +185,59 @@ function getDB() {
             UNIQUE KEY uq_user_router (user_type, username, router_id)
         )");
 
+        // Agendamentos de provas/eventos: cada evento guarda o que o usuário cadastrou na tela.
+        // As ações concretas (ligar/desligar em horários específicos) ficam na tabela separada
+        // schedule_actions — assim cada passo tem seu próprio estado e o executor nunca repete
+        // um passo já aplicado, mesmo se rodar várias vezes ou o servidor reiniciar no meio.
+        $db->exec("CREATE TABLE IF NOT EXISTS schedules (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            router_id INT NOT NULL,
+            name VARCHAR(150) NOT NULL,
+            description TEXT,
+            event_date DATE NOT NULL,
+            start_time TIME NOT NULL,
+            end_time TIME NOT NULL,
+            target_type VARCHAR(20) NOT NULL,
+            target_id VARCHAR(64) NOT NULL,
+            target_label VARCHAR(255) DEFAULT '',
+            created_by VARCHAR(100) DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_schedules_date (event_date),
+            INDEX idx_schedules_router (router_id)
+        )");
+
+        // Alvos de um agendamento — um evento pode afetar vários hotspots (ou várias regras)
+        // de uma vez (ex: uma prova que ocorre nos laboratórios 1 a 4). O tipo da ação continua
+        // sendo único por evento (está em schedules.target_type); aqui ficam só os itens.
+        $db->exec("CREATE TABLE IF NOT EXISTS schedule_targets (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            schedule_id INT NOT NULL,
+            target_id VARCHAR(64) NOT NULL,
+            target_label VARCHAR(255) DEFAULT '',
+            UNIQUE KEY uq_schedule_target (schedule_id, target_id),
+            INDEX idx_schedule_targets_schedule (schedule_id)
+        )");
+
+        // Uma linha por passo agendado, POR ALVO (o 'antes' e o 'depois' de cada item do
+        // evento). run_at é o instante exato em que deve ser aplicado; status controla
+        // pendente/feito/erro — cada alvo é independente, então uma falha num não trava os outros.
+        $db->exec("CREATE TABLE IF NOT EXISTS schedule_actions (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            schedule_id INT NOT NULL,
+            run_at DATETIME NOT NULL,
+            phase VARCHAR(10) NOT NULL,
+            target_type VARCHAR(20) NOT NULL,
+            target_id VARCHAR(64) NOT NULL,
+            router_id INT NOT NULL,
+            desired_disabled VARCHAR(3) NOT NULL,
+            status VARCHAR(10) NOT NULL DEFAULT 'pending',
+            attempts INT NOT NULL DEFAULT 0,
+            last_error TEXT,
+            executed_at DATETIME NULL,
+            INDEX idx_sched_actions_due (status, run_at),
+            INDEX idx_sched_actions_schedule (schedule_id)
+        )");
+
         $cached = $db;
         return $cached;
     } catch (PDOException $e) {
@@ -388,6 +441,79 @@ function isValidRouterHost($host) {
     if ($host === '') return false;
     if (filter_var($host, FILTER_VALIDATE_IP)) return true;
     return (bool) preg_match('/^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*$/', $host);
+}
+
+// ---- Agendamentos (provas/eventos) ----
+
+// Margem de segurança: a ação acontece este tanto de minutos ANTES do início e DEPOIS do fim,
+// para o evento já começar com tudo aplicado e só normalizar quando estiver de fato encerrado.
+define('SCHEDULE_MARGIN_MINUTES', 10);
+
+// Traduz um evento nos dois passos concretos que o executor vai aplicar.
+// - autenticação (hotspot): desabilita antes do início, habilita depois do fim;
+// - bloqueio (firewall): habilita a regra antes do início, desabilita depois do fim.
+// Retorna ['before' => ['run_at','desired_disabled'], 'after' => [...]].
+function scheduleComputeActions($eventDate, $startTime, $endTime, $targetType) {
+    $margin = SCHEDULE_MARGIN_MINUTES * 60;
+    $startTs = strtotime("{$eventDate} {$startTime}");
+    $endTs = strtotime("{$eventDate} {$endTime}");
+
+    // Evento que termina "antes" de começar significa que atravessou a meia-noite;
+    // nesse caso o fim é no dia seguinte.
+    if ($endTs <= $startTs) {
+        $endTs = strtotime('+1 day', $endTs);
+    }
+
+    // 'disabled' é o valor enviado ao RouterOS. Para hotspot queremos ele fora do ar durante o
+    // evento (disabled=yes antes, no depois); para firewall é o inverso — a regra de bloqueio
+    // precisa estar ativa durante o evento (disabled=no antes, yes depois).
+    $isHotspot = $targetType === 'hotspot';
+
+    return [
+        'before' => [
+            'run_at' => date('Y-m-d H:i:s', $startTs - $margin),
+            'desired_disabled' => $isHotspot ? 'yes' : 'no',
+        ],
+        'after' => [
+            'run_at' => date('Y-m-d H:i:s', $endTs + $margin),
+            'desired_disabled' => $isHotspot ? 'no' : 'yes',
+        ],
+    ];
+}
+
+// (Re)cria os passos de schedule_actions de um evento: dois passos (antes/depois) para CADA
+// alvo selecionado. Usada tanto na criação quanto na edição — apaga os passos antigos e grava
+// os novos, já que se as datas ou os alvos mudaram os passos anteriores não valem mais.
+// $targetIds é a lista de itens (hotspots ou regras) afetados pelo evento.
+function scheduleSyncActions($db, $scheduleId, array $schedule, array $targetIds) {
+    $del = $db->prepare("DELETE FROM schedule_actions WHERE schedule_id = :sid");
+    $del->bindValue(':sid', $scheduleId, PDO::PARAM_INT);
+    $del->execute();
+
+    $actions = scheduleComputeActions(
+        $schedule['event_date'],
+        $schedule['start_time'],
+        $schedule['end_time'],
+        $schedule['target_type']
+    );
+
+    $ins = $db->prepare("INSERT INTO schedule_actions
+        (schedule_id, run_at, phase, target_type, target_id, router_id, desired_disabled)
+        VALUES (:sid, :run_at, :phase, :ttype, :tid, :rid, :dis)");
+
+    foreach ($targetIds as $targetId) {
+        foreach ($actions as $phase => $a) {
+            $ins->execute([
+                ':sid' => $scheduleId,
+                ':run_at' => $a['run_at'],
+                ':phase' => $phase,
+                ':ttype' => $schedule['target_type'],
+                ':tid' => $targetId,
+                ':rid' => (int)$schedule['router_id'],
+                ':dis' => $a['desired_disabled'],
+            ]);
+        }
+    }
 }
 
 // ---- Log de auditoria ----

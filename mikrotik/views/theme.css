@@ -569,6 +569,48 @@ tr.table-success > * { --bs-table-accent-bg: transparent; background: transparen
 .toggle-row form { flex-shrink: 0; }
 /* Zebra striping só na lista de Bloqueios, pra facilitar achar uma regra específica numa lista longa. */
 .toggle-list-striped .toggle-row:nth-child(even) { background: var(--bg); }
+
+/* ---- seleção de múltiplos alvos no agendamento ---- */
+.target-picker {
+  border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg);
+  max-height: 190px; overflow-y: auto; padding: 4px;
+}
+.target-option {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px;
+  font-size: 13px; cursor: pointer; margin: 0;
+}
+.target-option:hover { background: var(--surface); }
+.target-option input { flex-shrink: 0; margin: 0; }
+.target-option span { overflow-wrap: anywhere; }
+
+/* ---- calendário da tela "Agendamentos" ---- */
+.cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.cal-dow {
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--text-400); text-align: center; padding-bottom: 4px;
+}
+.cal-cell {
+  min-height: 74px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--surface); padding: 5px 6px; display: flex; flex-direction: column; gap: 3px;
+}
+.cal-cell.is-empty { background: transparent; border-color: transparent; min-height: 0; }
+.cal-cell.is-today { border-color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
+.cal-day { font-size: 11.5px; font-weight: 700; color: var(--text-600); }
+.cal-cell.is-today .cal-day { color: var(--primary); }
+.cal-event {
+  font-size: 10px; font-weight: 600; line-height: 1.25; border-radius: 5px; padding: 2px 4px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cal-event.is-auth { background: var(--info-soft); color: var(--primary-dark); }
+.cal-event.is-block { background: var(--warning-soft); color: var(--warning); }
+.cal-legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 12px; font-size: 11.5px; color: var(--text-600); }
+.cal-dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; vertical-align: -1px; margin-right: 4px; }
+.cal-dot.is-auth { background: var(--info-soft); border: 1px solid var(--primary); }
+.cal-dot.is-block { background: var(--warning-soft); border: 1px solid var(--warning); }
+@media (max-width: 575.98px) {
+  .cal-cell { min-height: 58px; }
+  .cal-event { font-size: 9px; }
+}
 .toggle-switch-btn { background: none; border: none; padding: 8px; margin: -8px; cursor: pointer; line-height: 0; flex-shrink: 0; }
 .toggle-switch-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 999px; }
 

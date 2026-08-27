@@ -78,6 +78,7 @@ function userInitials($username) {
             <?php
             navLink('dashboard', $page, 'Dashboard', '<path d="M4 13l4-4 4 3 8-9M4 20h16"/>');
             navLink('actions', $page, 'Ações', '<path d="M13 3L4 14h6l-1 7 9-11h-6l1-7z"/>');
+            navLink('schedules', $page, 'Agendamentos', '<rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 10h17M8 3.5v3M16 3.5v3"/>');
             navLink('diagnostics', $page, 'Diagnóstico', '<path d="M3 12h4l2-7 4 14 2-7h6"/>');
             ?>
         </div>
