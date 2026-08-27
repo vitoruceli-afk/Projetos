@@ -234,9 +234,16 @@ function getDB() {
             attempts INT NOT NULL DEFAULT 0,
             last_error TEXT,
             executed_at DATETIME NULL,
+            claimed_at DATETIME NULL,
             INDEX idx_sched_actions_due (status, run_at),
             INDEX idx_sched_actions_schedule (schedule_id)
         )");
+        // Migração leve para bancos criados antes de existir o botão "Executar agora".
+        try {
+            $db->exec("ALTER TABLE schedule_actions ADD COLUMN claimed_at DATETIME NULL");
+        } catch (PDOException $e) {
+            // coluna já existe - ignora
+        }
 
         $cached = $db;
         return $cached;
@@ -514,6 +521,83 @@ function scheduleSyncActions($db, $scheduleId, array $schedule, array $targetIds
             ]);
         }
     }
+}
+
+// Abre (e reaproveita) a conexão com um roteador para aplicar passos agendados. $cache é
+// passado por referência para que vários passos do mesmo roteador usem uma conexão só.
+function scheduleRouterApi($db, $routerId, array &$cache) {
+    $routerId = (int)$routerId;
+    if (array_key_exists($routerId, $cache)) {
+        return $cache[$routerId];
+    }
+
+    $stmt = $db->prepare("SELECT * FROM routers WHERE id = :id");
+    $stmt->bindValue(':id', $routerId, PDO::PARAM_INT);
+    $stmt->execute();
+    $router = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$router) {
+        $cache[$routerId] = null;
+        return null;
+    }
+
+    $api = new RouterosAPI();
+    $api->port = (int)($router['port'] ?? 8728);
+    $api->timeout = 5;
+    if (!@$api->connect($router['ip'], $router['username'], routerDecrypt($router['password']))) {
+        $cache[$routerId] = null;
+        return null;
+    }
+
+    $cache[$routerId] = $api;
+    return $api;
+}
+
+// Aplica UM passo agendado no MikroTik e atualiza seu status. É o único ponto que de fato
+// executa a ação — usado tanto pelo executor automático (schedule_runner.php) quanto pelo botão
+// "Executar agora" da tela, para os dois se comportarem exatamente igual.
+// Devolve true se aplicou; em caso de falha devolve false e preenche $errorMsg.
+function scheduleApplyAction($db, array $action, $api, &$errorMsg = null) {
+    $label = !empty($action['target_label']) ? $action['target_label'] : $action['target_id'];
+    $scheduleName = $action['schedule_name'] ?? '';
+    $desc = trim("{$scheduleName} — {$action['phase']} — {$label}", ' —');
+
+    if (!$api) {
+        $errorMsg = 'Falha ao conectar no MikroTik (roteador ' . $action['router_id'] . ').';
+        $db->prepare("UPDATE schedule_actions SET status = 'pending', attempts = attempts + 1, last_error = :err WHERE id = :id")
+           ->execute([':err' => $errorMsg, ':id' => $action['id']]);
+        return false;
+    }
+
+    $command = $action['target_type'] === 'firewall' ? '/ip/firewall/filter/set' : '/ip/hotspot/set';
+
+    try {
+        $result = $api->comm($command, ['.id' => $action['target_id'], 'disabled' => $action['desired_disabled']], 10);
+        $routerError = is_array($result) ? ($result[0]['message'] ?? null) : null;
+
+        if ($routerError) {
+            $errorMsg = 'MikroTik recusou: ' . $routerError;
+            $db->prepare("UPDATE schedule_actions SET status = 'pending', attempts = attempts + 1, last_error = :err WHERE id = :id")
+               ->execute([':err' => $errorMsg, ':id' => $action['id']]);
+            return false;
+        }
+    } catch (Throwable $e) {
+        $errorMsg = 'Exceção ao aplicar: ' . $e->getMessage();
+        $db->prepare("UPDATE schedule_actions SET status = 'pending', attempts = attempts + 1, last_error = :err WHERE id = :id")
+           ->execute([':err' => $errorMsg, ':id' => $action['id']]);
+        return false;
+    }
+
+    $db->prepare("UPDATE schedule_actions SET status = 'done', executed_at = NOW(), attempts = attempts + 1, last_error = NULL WHERE id = :id")
+       ->execute([':id' => $action['id']]);
+
+    $acao = $action['target_type'] === 'hotspot'
+        ? ($action['desired_disabled'] === 'yes' ? 'Desabilitou hotspot' : 'Habilitou hotspot')
+        : ($action['desired_disabled'] === 'yes' ? 'Desabilitou regra de firewall' : 'Habilitou regra de firewall');
+
+    $origem = !empty($action['manual']) ? '(agendamento — executado manualmente)' : '(agendamento)';
+    logActivity('schedule', "{$acao} {$origem}", $desc);
+    return true;
 }
 
 // ---- Log de auditoria ----

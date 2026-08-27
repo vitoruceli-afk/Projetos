@@ -27,6 +27,13 @@ const GRACE_MINUTES = 120;
 $db = getDB();
 $now = date('Y-m-d H:i:s');
 
+// Passos marcados como 'running' são os que o botão "Executar agora" da tela reivindicou. Se
+// aquela requisição morreu no meio (navegador fechado, PHP interrompido), o passo ficaria preso
+// para sempre — depois de alguns minutos devolvemos ele para 'pending' e o executor assume.
+$db->exec("UPDATE schedule_actions SET status = 'pending'
+           WHERE status = 'running' AND claimed_at IS NOT NULL
+             AND claimed_at < DATE_SUB(NOW(), INTERVAL 5 MINUTE)");
+
 // O rótulo vem de schedule_targets (o item específico deste passo). O COALESCE cobre
 // agendamentos antigos, criados quando um evento tinha um único alvo guardado em schedules.
 $stmt = $db->prepare("
@@ -48,37 +55,10 @@ if (empty($due)) {
     exit(0);
 }
 
-$markDone = $db->prepare("UPDATE schedule_actions SET status = 'done', executed_at = NOW(), attempts = attempts + 1, last_error = NULL WHERE id = :id");
-$markError = $db->prepare("UPDATE schedule_actions SET status = 'pending', attempts = attempts + 1, last_error = :err WHERE id = :id");
 $markExpired = $db->prepare("UPDATE schedule_actions SET status = 'expired', attempts = attempts + 1, last_error = :err WHERE id = :id");
 
 // Uma conexão por roteador, reaproveitada entre os passos do mesmo ciclo.
 $apis = [];
-function runnerGetApi($routerId, array &$apis, PDO $db) {
-    if (array_key_exists($routerId, $apis)) {
-        return $apis[$routerId];
-    }
-    $stmt = $db->prepare("SELECT * FROM routers WHERE id = :id");
-    $stmt->bindValue(':id', $routerId, PDO::PARAM_INT);
-    $stmt->execute();
-    $router = $stmt->fetch(PDO::FETCH_ASSOC);
-
-    if (!$router) {
-        $apis[$routerId] = null;
-        return null;
-    }
-
-    $api = new RouterosAPI();
-    $api->port = (int)($router['port'] ?? 8728);
-    $api->timeout = 5;
-    if (!@$api->connect($router['ip'], $router['username'], routerDecrypt($router['password']))) {
-        $apis[$routerId] = null;
-        return null;
-    }
-    $apis[$routerId] = $api;
-    return $api;
-}
-
 $graceSeconds = GRACE_MINUTES * 60;
 $okCount = 0;
 $failCount = 0;
@@ -97,42 +77,23 @@ foreach ($due as $action) {
         continue;
     }
 
-    $api = runnerGetApi((int)$action['router_id'], $apis, $db);
-    if (!$api) {
-        $msg = 'Falha ao conectar no MikroTik (roteador ' . $action['router_id'] . ').';
-        $markError->execute([':err' => $msg, ':id' => $action['id']]);
-        echo "[ERRO] {$desc} — {$msg}\n";
-        $failCount++;
+    // Reivindica o passo antes de aplicar. Se o botão "Executar agora" da tela pegou este mesmo
+    // passo primeiro, o UPDATE não afeta nenhuma linha e nós simplesmente pulamos — evita os
+    // dois caminhos aplicarem (e registrarem no log) a mesma ação.
+    $claim = $db->prepare("UPDATE schedule_actions SET status = 'running', claimed_at = NOW() WHERE id = :id AND status = 'pending'");
+    $claim->execute([':id' => $action['id']]);
+    if ($claim->rowCount() === 0) {
+        echo "[PULADO] {$desc} — já estava sendo executado em outro lugar.\n";
         continue;
     }
 
-    $command = $action['target_type'] === 'firewall' ? '/ip/firewall/filter/set' : '/ip/hotspot/set';
-
-    try {
-        $result = $api->comm($command, ['.id' => $action['target_id'], 'disabled' => $action['desired_disabled']], 10);
-        $routerError = is_array($result) ? ($result[0]['message'] ?? null) : null;
-
-        if ($routerError) {
-            $msg = 'MikroTik recusou: ' . $routerError;
-            $markError->execute([':err' => $msg, ':id' => $action['id']]);
-            echo "[ERRO] {$desc} — {$msg}\n";
-            $failCount++;
-            continue;
-        }
-
-        $markDone->execute([':id' => $action['id']]);
-
-        $acao = $action['target_type'] === 'hotspot'
-            ? ($action['desired_disabled'] === 'yes' ? 'Desabilitou hotspot' : 'Habilitou hotspot')
-            : ($action['desired_disabled'] === 'yes' ? 'Desabilitou regra de firewall' : 'Habilitou regra de firewall');
-
-        logActivity('schedule', $acao . ' (agendamento)', $desc);
+    $api = scheduleRouterApi($db, (int)$action['router_id'], $apis);
+    $err = null;
+    if (scheduleApplyAction($db, $action, $api, $err)) {
         echo "[OK] {$desc} -> disabled={$action['desired_disabled']}\n";
         $okCount++;
-    } catch (Throwable $e) {
-        $msg = 'Exceção ao aplicar: ' . $e->getMessage();
-        $markError->execute([':err' => $msg, ':id' => $action['id']]);
-        echo "[ERRO] {$desc} — {$msg}\n";
+    } else {
+        echo "[ERRO] {$desc} — {$err}\n";
         $failCount++;
     }
 }

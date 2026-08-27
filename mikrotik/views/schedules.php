@@ -59,7 +59,69 @@ if (is_array($rawFirewall)) {
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     csrfVerify();
 
-    if ($_POST['action'] === 'delete') {
+    if ($_POST['action'] === 'run_now') {
+        // Antecipa a próxima etapa pendente do agendamento (a de menor run_at). As demais
+        // continuam agendadas normalmente — ex: adiantar o "desabilitar" não mexe no
+        // "habilitar" do fim do evento, que segue programado para o horário original.
+        // Roda por fora do agendador: o executor de minuto em minuto continua igual, e o
+        // 'claim' abaixo garante que os dois nunca apliquem a mesma etapa em duplicidade.
+        $sid = (int)($_POST['id'] ?? 0);
+
+        $stmt = $db->prepare("SELECT id, name FROM schedules WHERE id = :id AND router_id = :r");
+        $stmt->execute([':id' => $sid, ':r' => $routerId]);
+        $sched = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$sched) {
+            header("Location: index.php?page=schedules&exec=notfound");
+            exit;
+        }
+
+        // Qual é a próxima etapa? Pega a fase do passo pendente mais antigo e executa todos os
+        // alvos daquela fase de uma vez (uma prova em 4 laboratórios avança os 4 juntos).
+        $stmt = $db->prepare("SELECT phase FROM schedule_actions WHERE schedule_id = :id AND status = 'pending' ORDER BY run_at ASC, id ASC LIMIT 1");
+        $stmt->execute([':id' => $sid]);
+        $phase = $stmt->fetchColumn();
+
+        if ($phase === false) {
+            header("Location: index.php?page=schedules&exec=none");
+            exit;
+        }
+
+        $claim = $db->prepare("UPDATE schedule_actions SET status = 'running', claimed_at = NOW()
+                               WHERE schedule_id = :id AND phase = :ph AND status = 'pending'");
+        $claim->execute([':id' => $sid, ':ph' => $phase]);
+
+        if ($claim->rowCount() === 0) {
+            header("Location: index.php?page=schedules&exec=busy");
+            exit;
+        }
+
+        $stmt = $db->prepare("
+            SELECT sa.*, s.name AS schedule_name,
+                   COALESCE(st.target_label, s.target_label, sa.target_id) AS target_label
+            FROM schedule_actions sa
+            JOIN schedules s ON s.id = sa.schedule_id
+            LEFT JOIN schedule_targets st ON st.schedule_id = sa.schedule_id AND st.target_id = sa.target_id
+            WHERE sa.schedule_id = :id AND sa.phase = :ph AND sa.status = 'running'
+        ");
+        $stmt->execute([':id' => $sid, ':ph' => $phase]);
+        $claimed = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $apis = [];
+        $ok = 0;
+        $fail = 0;
+        foreach ($claimed as $act) {
+            $act['manual'] = true; // diferencia no log de auditoria
+            $api = scheduleRouterApi($db, (int)$act['router_id'], $apis);
+            $err = null;
+            if (scheduleApplyAction($db, $act, $api, $err)) { $ok++; } else { $fail++; }
+        }
+        foreach ($apis as $api) { if ($api) { $api->disconnect(); } }
+
+        header("Location: index.php?page=schedules&exec=" . ($fail === 0 ? 'ok' : 'partial') . "&ok={$ok}&fail={$fail}");
+        exit;
+
+    } elseif ($_POST['action'] === 'delete') {
         $sid = (int)($_POST['id'] ?? 0);
         $stmt = $db->prepare("SELECT name FROM schedules WHERE id = :id AND router_id = :r");
         $stmt->execute([':id' => $sid, ':r' => $routerId]);
@@ -187,6 +249,9 @@ $stmt = $db->prepare("
               FROM schedule_targets st WHERE st.schedule_id = s.id) AS targets_list,
            (SELECT COUNT(*) FROM schedule_targets st WHERE st.schedule_id = s.id) AS targets_count,
            (SELECT COUNT(*) FROM schedule_actions sa WHERE sa.schedule_id = s.id AND sa.status = 'done') AS done_count,
+           (SELECT COUNT(*) FROM schedule_actions sa WHERE sa.schedule_id = s.id AND sa.status = 'pending') AS pending_count,
+           (SELECT phase FROM schedule_actions sa WHERE sa.schedule_id = s.id AND sa.status = 'pending'
+             ORDER BY sa.run_at ASC, sa.id ASC LIMIT 1) AS next_phase,
            (SELECT COUNT(*) FROM schedule_actions sa WHERE sa.schedule_id = s.id) AS total_count
     FROM schedules s
     WHERE s.router_id = :r AND s.event_date >= CURDATE()
@@ -211,6 +276,21 @@ $todayKey = date('Y-m-d');
 
 <?php if ($formError): ?>
     <div class="alert alert-danger py-2"><?= htmlspecialchars($formError) ?></div>
+<?php endif; ?>
+
+<?php if (isset($_GET['exec'])): ?>
+    <?php $okN = (int)($_GET['ok'] ?? 0); $failN = (int)($_GET['fail'] ?? 0); ?>
+    <?php if ($_GET['exec'] === 'ok'): ?>
+        <div class="alert alert-success py-2">Etapa executada agora com sucesso (<?= $okN ?> item<?= $okN === 1 ? '' : 'ns' ?>). As demais etapas seguem agendadas para o horário original.</div>
+    <?php elseif ($_GET['exec'] === 'partial'): ?>
+        <div class="alert alert-warning py-2">Execução parcial: <?= $okN ?> aplicada(s), <?= $failN ?> com problema. As que falharam voltaram para a fila e serão tentadas de novo no horário agendado.</div>
+    <?php elseif ($_GET['exec'] === 'none'): ?>
+        <div class="alert alert-info py-2">Este agendamento não tem nenhuma etapa pendente — já foi todo executado.</div>
+    <?php elseif ($_GET['exec'] === 'busy'): ?>
+        <div class="alert alert-info py-2">Esta etapa já estava sendo executada pelo agendador automático neste momento.</div>
+    <?php elseif ($_GET['exec'] === 'notfound'): ?>
+        <div class="alert alert-danger py-2">Agendamento não encontrado neste MikroTik.</div>
+    <?php endif; ?>
 <?php endif; ?>
 
 <?php if (empty($hotspotTargets) && empty($firewallTargets)): ?>
@@ -399,8 +479,28 @@ $todayKey = date('Y-m-d');
                                         <span class="badge bg-success">Concluído</span>
                                     <?php endif; ?>
                                 </td>
-                                <td class="text-center">
-                                    <form method="POST" class="m-0" onsubmit="return confirm('Excluir este agendamento?');">
+                                <td class="text-center text-nowrap">
+                                    <?php if ((int)$s['pending_count'] > 0): ?>
+                                        <?php
+                                            // Descreve o que o clique vai fazer, para não haver surpresa.
+                                            $isBefore = $s['next_phase'] === 'before';
+                                            if ($s['target_type'] === 'firewall') {
+                                                $nextDesc = $isBefore ? 'habilitar o bloqueio agora' : 'desabilitar o bloqueio agora';
+                                            } else {
+                                                $nextDesc = $isBefore ? 'desabilitar a autenticação agora' : 'habilitar a autenticação agora';
+                                            }
+                                            $confirmMsg = htmlspecialchars(json_encode(
+                                                "Executar agora a próxima etapa de \"{$s['name']}\"?\n\nAção: {$nextDesc}.\nAs demais etapas continuam agendadas no horário original."
+                                            ), ENT_QUOTES);
+                                        ?>
+                                        <form method="POST" class="d-inline m-0" onsubmit="return confirm(<?= $confirmMsg ?>);">
+                                            <?= csrfField() ?>
+                                            <input type="hidden" name="action" value="run_now">
+                                            <input type="hidden" name="id" value="<?= (int)$s['id'] ?>">
+                                            <button type="submit" class="btn btn-sm btn-outline-primary" title="<?= htmlspecialchars(ucfirst($nextDesc)) ?>">Executar agora</button>
+                                        </form>
+                                    <?php endif; ?>
+                                    <form method="POST" class="d-inline m-0" onsubmit="return confirm('Excluir este agendamento?');">
                                         <?= csrfField() ?>
                                         <input type="hidden" name="action" value="delete">
                                         <input type="hidden" name="id" value="<?= (int)$s['id'] ?>">
