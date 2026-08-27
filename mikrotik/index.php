@@ -17,8 +17,10 @@ if (!in_array($page, $allowed_pages)) {
     $page = 'dashboard';
 }
 
-// Páginas restritas ao perfil Administrador (cadastro de roteadores, gestão de usuários/perfis, logs e bypass).
-$admin_only_pages = ['routers', 'users', 'logs', 'bypass'];
+// Páginas restritas ao perfil Administrador (cadastro de roteadores, gestão de usuários/perfis,
+// logs, bypass, e as telas completas de Hotspot/Firewall — o Usuário Padrão usa a versão
+// simplificada em "Ações", só com os itens que um Administrador liberou lá dentro).
+$admin_only_pages = ['routers', 'users', 'logs', 'bypass', 'hotspot', 'firewall'];
 if (in_array($page, $admin_only_pages)) {
     requireAdmin();
 }

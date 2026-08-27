@@ -1,8 +1,11 @@
 <?php
+// Tela restrita a Administradores — o Usuário Padrão usa a tela "Ações" (versão simplificada,
+// só com os itens que um Administrador liberou aqui através de "Permitir p/ Padrão").
+requireAdmin();
+
 $api = getActiveRouterAPI();
 if (!$api) { echo "<div class='alert alert-danger'>Conexão falhou ao tentar se comunicar com o MikroTik.</div>"; return; }
 
-$role = currentUserRole();
 $routerId = (int)$_SESSION['active_router'];
 $db = getDB();
 
@@ -21,12 +24,6 @@ $bulkError = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['id'], $_POST['action']) && in_array($_POST['action'], ['enable', 'disable'])) {
     csrfVerify();
     $targetId = $_POST['id'];
-
-    // Usuário padrão só pode agir sobre itens explicitamente liberados pelo Administrador.
-    if ($role !== 'admin' && !isset($permittedIds[$targetId])) {
-        http_response_code(403);
-        die('Você não tem permissão para alterar este item.');
-    }
 
     $disabled = $_POST['action'] === 'disable' ? 'yes' : 'no';
     // Garante o comando correto de alteração mapeando o ID interno (.id)
@@ -64,11 +61,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['id'], $_POST['permiss
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_action'], $_POST['ids']) && in_array($_POST['bulk_action'], ['enable', 'disable'])) {
     csrfVerify();
     $ids = array_values(array_filter((array)$_POST['ids']));
-
-    // Usuário padrão só pode agir sobre itens explicitamente liberados pelo Administrador.
-    if ($role !== 'admin') {
-        $ids = array_values(array_intersect($ids, array_keys($permittedIds)));
-    }
 
     if (empty($ids)) {
         $bulkError = 'Nenhum item válido selecionado.';
@@ -132,14 +124,6 @@ if (!empty($raw_response) && is_array($raw_response)) {
     }
 }
 
-// Usuário padrão só enxerga os hotspots liberados pelo Administrador.
-if ($role !== 'admin') {
-    $hotspots_clean = array_values(array_filter($hotspots_clean, function ($h) use ($permittedIds) {
-        $id = $h['.id'] ?? $h['name'] ?? null;
-        return $id && isset($permittedIds[$id]);
-    }));
-}
-
 // ---- Filtros (busca por nome/interface + status) ----
 $fSearch = trim($_GET['search'] ?? '');
 $fStatus = $_GET['status'] ?? '';
@@ -166,10 +150,6 @@ if ($hasFilter) {
     <h1 class="page-title">Gerenciamento de Hotspot (Servers)</h1>
     <span class="badge bg-secondary">Total: <?= count($hotspots_clean) ?> servidores</span>
 </div>
-
-<?php if ($role !== 'admin'): ?>
-    <div class="alert alert-info py-2">Exibindo apenas os servidores liberados pelo Administrador para o seu perfil.</div>
-<?php endif; ?>
 
 <div class="card mb-3">
     <div class="card-body">
@@ -209,11 +189,9 @@ if ($hasFilter) {
     <span class="elt-label"><i class="bi bi-check2-square"></i> Ações em massa</span>
     <button type="submit" form="bulkHotspotForm" name="bulk_action" value="enable" class="btn btn-sm btn-outline-success" onclick="return confirm('Habilitar todos os itens selecionados?');">Habilitar Selecionados</button>
     <button type="submit" form="bulkHotspotForm" name="bulk_action" value="disable" class="btn btn-sm btn-outline-danger" onclick="return confirmBulkDisableHotspot();">Desabilitar Selecionados</button>
-    <?php if ($role === 'admin'): ?>
-        <span class="vr mx-1"></span>
-        <button type="submit" form="bulkHotspotForm" name="bulk_permission_action" value="grant" class="btn btn-sm btn-outline-primary">Permitir p/ Padrão</button>
-        <button type="submit" form="bulkHotspotForm" name="bulk_permission_action" value="revoke" class="btn btn-sm btn-outline-secondary">Revogar de Padrão</button>
-    <?php endif; ?>
+    <span class="vr mx-1"></span>
+    <button type="submit" form="bulkHotspotForm" name="bulk_permission_action" value="grant" class="btn btn-sm btn-outline-primary">Permitir p/ Padrão</button>
+    <button type="submit" form="bulkHotspotForm" name="bulk_permission_action" value="revoke" class="btn btn-sm btn-outline-secondary">Revogar de Padrão</button>
 </div>
 <?php endif; ?>
 
@@ -223,7 +201,7 @@ if ($hasFilter) {
             <?php if ($hasFilter): ?>
                 Nenhum servidor encontrado para os filtros selecionados.
             <?php else: ?>
-                Nenhum Hotspot Server configurado<?= $role === 'admin' ? ' neste MikroTik.' : ' liberado para o seu perfil.' ?>
+                Nenhum Hotspot Server configurado neste MikroTik.
             <?php endif; ?>
         </div>
     </div>
@@ -274,7 +252,6 @@ if ($hasFilter) {
                     </div>
                 </div>
 
-                <?php if ($role === 'admin'): ?>
                 <div class="entity-visible-row">
                     <span><?= $isPermitted ? 'Visível para Usuário Padrão' : 'Oculto para Usuário Padrão' ?></span>
                     <form method="POST" class="m-0">
@@ -289,7 +266,6 @@ if ($hasFilter) {
                         <?php endif; ?>
                     </form>
                 </div>
-                <?php endif; ?>
 
                 <div class="entity-actions">
                     <div></div>

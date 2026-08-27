@@ -1,8 +1,11 @@
 <?php
+// Tela restrita a Administradores — o Usuário Padrão usa a tela "Ações" (versão simplificada,
+// só com as regras que um Administrador liberou aqui através de "Permitir p/ Padrão").
+requireAdmin();
+
 $api = getActiveRouterAPI();
 if (!$api) { echo "<div class='alert alert-danger'>Conexão falhou ao tentar se comunicar com o MikroTik.</div>"; return; }
 
-$role = currentUserRole();
 $routerId = (int)$_SESSION['active_router'];
 $db = getDB();
 
@@ -21,12 +24,6 @@ $bulkError = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['id'], $_POST['action']) && in_array($_POST['action'], ['enable', 'disable'])) {
     csrfVerify();
     $targetId = $_POST['id'];
-
-    // Usuário padrão só pode agir sobre regras explicitamente liberadas pelo Administrador.
-    if ($role !== 'admin' && !isset($permittedIds[$targetId])) {
-        http_response_code(403);
-        die('Você não tem permissão para alterar esta regra.');
-    }
 
     $disabled = $_POST['action'] === 'disable' ? 'yes' : 'no';
     $api->comm('/ip/firewall/filter/set', ['.id' => $targetId, 'disabled' => $disabled]);
@@ -63,11 +60,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['id'], $_POST['permiss
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_action'], $_POST['ids']) && in_array($_POST['bulk_action'], ['enable', 'disable'])) {
     csrfVerify();
     $ids = array_values(array_filter((array)$_POST['ids']));
-
-    // Usuário padrão só pode agir sobre regras explicitamente liberadas pelo Administrador.
-    if ($role !== 'admin') {
-        $ids = array_values(array_intersect($ids, array_keys($permittedIds)));
-    }
 
     if (empty($ids)) {
         $bulkError = 'Nenhuma regra válida selecionada.';
@@ -118,13 +110,6 @@ if (!is_array($rules)) {
     $rules = [];
 }
 
-// Usuário padrão só enxerga as regras liberadas pelo Administrador.
-if ($role !== 'admin') {
-    $rules = array_values(array_filter($rules, function ($r) use ($permittedIds) {
-        return is_array($r) && isset($r['.id']) && isset($permittedIds[$r['.id']]);
-    }));
-}
-
 // Descarta blocos de resposta da API que não sejam regras válidas antes de montar os filtros.
 $rules = array_values(array_filter($rules, fn($r) => is_array($r) && isset($r['.id'])));
 
@@ -165,10 +150,6 @@ if ($hasFilter) {
     <h1 class="page-title">Regras de Firewall Filter (Completo)</h1>
     <span class="badge bg-secondary">Total: <?= count($rules) ?> regras</span>
 </div>
-
-<?php if ($role !== 'admin'): ?>
-    <div class="alert alert-info py-2">Exibindo apenas as regras liberadas pelo Administrador para o seu perfil.</div>
-<?php endif; ?>
 
 <div class="card mb-3">
     <div class="card-body">
@@ -226,11 +207,9 @@ if ($hasFilter) {
     <span class="elt-label"><i class="bi bi-check2-square"></i> Ações em massa</span>
     <button type="submit" form="bulkFirewallForm" name="bulk_action" value="enable" class="btn btn-sm btn-outline-success" onclick="return confirm('Habilitar todas as regras selecionadas?');">Habilitar Selecionadas</button>
     <button type="submit" form="bulkFirewallForm" name="bulk_action" value="disable" class="btn btn-sm btn-outline-danger" onclick="return confirm('Desabilitar todas as regras selecionadas?');">Desabilitar Selecionadas</button>
-    <?php if ($role === 'admin'): ?>
-        <span class="vr mx-1"></span>
-        <button type="submit" form="bulkFirewallForm" name="bulk_permission_action" value="grant" class="btn btn-sm btn-outline-primary">Permitir p/ Padrão</button>
-        <button type="submit" form="bulkFirewallForm" name="bulk_permission_action" value="revoke" class="btn btn-sm btn-outline-secondary">Revogar de Padrão</button>
-    <?php endif; ?>
+    <span class="vr mx-1"></span>
+    <button type="submit" form="bulkFirewallForm" name="bulk_permission_action" value="grant" class="btn btn-sm btn-outline-primary">Permitir p/ Padrão</button>
+    <button type="submit" form="bulkFirewallForm" name="bulk_permission_action" value="revoke" class="btn btn-sm btn-outline-secondary">Revogar de Padrão</button>
 </div>
 <?php endif; ?>
 
@@ -240,7 +219,7 @@ if ($hasFilter) {
             <?php if ($hasFilter): ?>
                 Nenhuma regra encontrada para os filtros selecionados.
             <?php else: ?>
-                Nenhuma regra de firewall filter encontrada<?= $role === 'admin' ? '.' : ' liberada para o seu perfil.' ?>
+                Nenhuma regra de firewall filter encontrada neste MikroTik.
             <?php endif; ?>
         </div>
     </div>
@@ -309,7 +288,6 @@ if ($hasFilter) {
                     </div>
                 </div>
 
-                <?php if ($role === 'admin'): ?>
                 <div class="entity-visible-row">
                     <span><?= $isPermitted ? 'Visível para Usuário Padrão' : 'Oculta para Usuário Padrão' ?></span>
                     <form method="POST" class="m-0">
@@ -324,7 +302,6 @@ if ($hasFilter) {
                         <?php endif; ?>
                     </form>
                 </div>
-                <?php endif; ?>
 
                 <div class="entity-actions">
                     <div></div>

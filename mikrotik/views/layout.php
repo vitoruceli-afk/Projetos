@@ -78,8 +78,6 @@ function userInitials($username) {
             <?php
             navLink('dashboard', $page, 'Dashboard', '<path d="M4 13l4-4 4 3 8-9M4 20h16"/>');
             navLink('actions', $page, 'Ações', '<path d="M13 3L4 14h6l-1 7 9-11h-6l1-7z"/>');
-            navLink('hotspot', $page, 'Hotspot', '<path d="M4 9a12 12 0 0116 0M7 12.5a8 8 0 0110 0M10 16a4 4 0 014 0"/><circle cx="12" cy="19" r="1" fill="currentColor" stroke="none"/>');
-            navLink('firewall', $page, 'Firewall', '<path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z"/>');
             navLink('diagnostics', $page, 'Diagnóstico', '<path d="M3 12h4l2-7 4 14 2-7h6"/>');
             ?>
         </div>
@@ -88,6 +86,8 @@ function userInitials($username) {
         <div class="rail-nav">
             <div class="rail-section-label">Administração</div>
             <?php
+            navLink('hotspot', $page, 'Hotspot', '<path d="M4 9a12 12 0 0116 0M7 12.5a8 8 0 0110 0M10 16a4 4 0 014 0"/><circle cx="12" cy="19" r="1" fill="currentColor" stroke="none"/>');
+            navLink('firewall', $page, 'Firewall', '<path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z"/>');
             navLink('routers', $page, 'Roteadores', '<rect x="4" y="3.5" width="16" height="6" rx="1"/><rect x="4" y="14.5" width="16" height="6" rx="1"/><circle cx="7.5" cy="6.5" r=".6" fill="currentColor" stroke="none"/><circle cx="7.5" cy="17.5" r=".6" fill="currentColor" stroke="none"/>');
             navLink('bypass', $page, 'Bypass', '<path d="M5 5l6 7-6 7"/><path d="M13 5l6 7-6 7"/>');
             navLink('users', $page, 'Usuários', '<circle cx="9" cy="8" r="3"/><path d="M3.5 20c0-3.5 2.5-6 5.5-6s5.5 2.5 5.5 6"/><path d="M16 8.2a3 3 0 010 5.6M19 20c0-2.8-1.6-5-3.5-5.8"/>');
