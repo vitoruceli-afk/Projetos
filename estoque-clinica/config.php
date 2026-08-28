@@ -112,11 +112,25 @@ function getDB() {
             INDEX idx_lotes_medicamento (medicamento_id)
         )");
 
+        // Cabeçalho de uma confirmação em lote (tela Entrada: vários itens conferidos juntos e
+        // gravados de uma vez em "Confirmar Entrada"). Cada linha de movimentacoes gerada por essa
+        // confirmação aponta pra cá via confirmacao_id, permitindo que o relatório mostre a ação
+        // como um todo (data/hora/usuário/quantidade de itens) em vez de item a item.
+        $db->exec("CREATE TABLE IF NOT EXISTS movimentacao_confirmacoes (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            tipo VARCHAR(10) NOT NULL DEFAULT 'entrada',
+            usuario VARCHAR(100) DEFAULT '',
+            total_itens INT NOT NULL DEFAULT 0,
+            total_quantidade INT NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )");
+
         // Histórico de entradas/saídas — cada linha é um movimento aplicado a um lote específico.
         $db->exec("CREATE TABLE IF NOT EXISTS movimentacoes (
             id INT AUTO_INCREMENT PRIMARY KEY,
             medicamento_id INT NOT NULL,
             lote_id INT NULL,
+            confirmacao_id INT NULL,
             tipo VARCHAR(10) NOT NULL,
             quantidade INT NOT NULL,
             usuario VARCHAR(100) DEFAULT '',
@@ -124,8 +138,18 @@ function getDB() {
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             INDEX idx_mov_medicamento (medicamento_id),
             INDEX idx_mov_created (created_at),
-            INDEX idx_mov_tipo (tipo)
+            INDEX idx_mov_tipo (tipo),
+            INDEX idx_mov_confirmacao (confirmacao_id)
         )");
+
+        // Migração leve: se movimentacoes já existia (de uma versão anterior a este recurso) sem
+        // a coluna confirmacao_id, adiciona agora. Entradas antigas ficam com confirmacao_id NULL
+        // e o relatório as agrupa de forma aproximada (mesmo usuário + mesmo minuto).
+        $temConfirmacaoId = (bool)$db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'movimentacoes' AND COLUMN_NAME = 'confirmacao_id'")->fetchColumn();
+        if (!$temConfirmacaoId) {
+            $db->exec("ALTER TABLE movimentacoes ADD COLUMN confirmacao_id INT NULL AFTER lote_id, ADD INDEX idx_mov_confirmacao (confirmacao_id)");
+        }
 
         // Base de referência da ANVISA/CMED (lista de preços de medicamentos), importada via CSV
         // pelo administrador. codigo_ggrem é a chave de negócio do CMED (uma linha por apresentação),
@@ -342,6 +366,14 @@ function findMedicamentoByBarcode(PDO $db, $codigo) {
     $stmt->bindValue(':c', $codigo);
     $stmt->execute();
     return $stmt->fetch() ?: null;
+}
+
+// Expressão SQL que identifica a qual "lote de confirmação" (clique em Confirmar Entrada) uma
+// linha de movimentacoes pertence: usa confirmacao_id quando existe (toda entrada feita após
+// este recurso) e cai para um agrupamento aproximado por usuário+minuto em entradas antigas que
+// não tinham esse vínculo — assim o relatório consegue agrupar tanto as novas quanto as antigas.
+function movimentacaoGrupoChaveSql($aliasMov = 'mv') {
+    return "COALESCE({$aliasMov}.confirmacao_id, CONCAT('legacy_', {$aliasMov}.usuario, '_', DATE_FORMAT({$aliasMov}.created_at, '%Y%m%d%H%i')))";
 }
 
 // ---- Base de Medicamentos (ANVISA/CMED) ----
