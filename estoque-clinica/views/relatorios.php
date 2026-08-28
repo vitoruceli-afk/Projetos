@@ -1,9 +1,9 @@
 <?php
 $db = getDB();
 $tab = ($_GET['tab'] ?? 'estoque') === 'movimentacoes' ? 'movimentacoes' : 'estoque';
-$labs = $db->query("SELECT id, nome FROM laboratorios ORDER BY nome ASC")->fetchAll();
+$labs = $db->query("SELECT DISTINCT laboratorio FROM medicamentos_anvisa WHERE laboratorio <> '' ORDER BY laboratorio ASC")->fetchAll(PDO::FETCH_COLUMN);
 
-$laboratorioId = (int)($_GET['laboratorio_id'] ?? 0);
+$laboratorio = trim($_GET['laboratorio'] ?? '');
 $busca = trim($_GET['busca'] ?? '');
 
 function csvOutput($filename, $header, $rows) {
@@ -19,14 +19,13 @@ function csvOutput($filename, $header, $rows) {
 
 if ($tab === 'estoque') {
     $status = $_GET['status'] ?? 'todos';
-    $sql = "SELECT l.lote, l.validade, l.quantidade, i.nome AS insumo_nome, i.unidade_medida, i.codigo_barras, lab.nome AS laboratorio_nome
+    $sql = "SELECT l.lote, l.validade, l.quantidade, md.produto AS medicamento_nome, md.laboratorio AS laboratorio_nome, md.codigo_ggrem
         FROM insumo_lotes l
-        JOIN insumos i ON i.id = l.insumo_id
-        LEFT JOIN laboratorios lab ON lab.id = i.laboratorio_id
+        JOIN medicamentos_anvisa md ON md.id = l.medicamento_id
         WHERE l.quantidade > 0";
     $params = [];
-    if ($laboratorioId > 0) { $sql .= " AND i.laboratorio_id = :lab"; $params[':lab'] = $laboratorioId; }
-    if ($busca !== '') { $sql .= " AND i.nome LIKE :b"; $params[':b'] = "%{$busca}%"; }
+    if ($laboratorio !== '') { $sql .= " AND md.laboratorio = :lab"; $params[':lab'] = $laboratorio; }
+    if ($busca !== '') { $sql .= " AND md.produto LIKE :b"; $params[':b'] = "%{$busca}%"; }
 
     $hoje = date('Y-m-d');
     $em30 = date('Y-m-d', strtotime('+' . VENCIMENTO_ALERTA_DIAS . ' days'));
@@ -43,35 +42,34 @@ if ($tab === 'estoque') {
     if (($_GET['format'] ?? '') === 'csv') {
         $rows = array_map(function ($l) {
             $st = statusVencimento($l['validade']);
-            return [$l['insumo_nome'], $l['laboratorio_nome'], $l['codigo_barras'], $l['lote'], date('d/m/Y', strtotime($l['validade'])), $l['quantidade'], $l['unidade_medida'], statusVencimentoLabel($st)];
+            return [$l['medicamento_nome'], $l['laboratorio_nome'], $l['codigo_ggrem'], $l['lote'], date('d/m/Y', strtotime($l['validade'])), $l['quantidade'], statusVencimentoLabel($st)];
         }, $linhas);
-        csvOutput('relatorio_estoque.csv', ['Insumo', 'Laboratório', 'Código de Barras', 'Lote', 'Validade', 'Quantidade', 'Unidade', 'Status'], $rows);
+        csvOutput('relatorio_estoque.csv', ['Medicamento', 'Laboratório', 'Código GGREM', 'Lote', 'Validade', 'Quantidade', 'Status'], $rows);
     }
 } else {
     $dataInicio = trim($_GET['data_inicio'] ?? date('Y-m-01'));
     $dataFim = trim($_GET['data_fim'] ?? date('Y-m-d'));
     $tipo = in_array($_GET['tipo'] ?? '', ['entrada', 'saida']) ? $_GET['tipo'] : 'todos';
 
-    $sql = "SELECT m.*, i.nome AS insumo_nome, i.unidade_medida, i.codigo_barras, lab.nome AS laboratorio_nome, l.lote
-        FROM movimentacoes m
-        JOIN insumos i ON i.id = m.insumo_id
-        LEFT JOIN laboratorios lab ON lab.id = i.laboratorio_id
-        LEFT JOIN insumo_lotes l ON l.id = m.lote_id
-        WHERE DATE(m.created_at) BETWEEN :di AND :df";
+    $sql = "SELECT mv.*, md.produto AS medicamento_nome, md.laboratorio AS laboratorio_nome, md.codigo_ggrem, l.lote
+        FROM movimentacoes mv
+        JOIN medicamentos_anvisa md ON md.id = mv.medicamento_id
+        LEFT JOIN insumo_lotes l ON l.id = mv.lote_id
+        WHERE DATE(mv.created_at) BETWEEN :di AND :df";
     $params = [':di' => $dataInicio, ':df' => $dataFim];
-    if ($laboratorioId > 0) { $sql .= " AND i.laboratorio_id = :lab"; $params[':lab'] = $laboratorioId; }
-    if ($busca !== '') { $sql .= " AND i.nome LIKE :b"; $params[':b'] = "%{$busca}%"; }
-    if ($tipo !== 'todos') { $sql .= " AND m.tipo = :tipo"; $params[':tipo'] = $tipo; }
-    $sql .= " ORDER BY m.created_at DESC";
+    if ($laboratorio !== '') { $sql .= " AND md.laboratorio = :lab"; $params[':lab'] = $laboratorio; }
+    if ($busca !== '') { $sql .= " AND md.produto LIKE :b"; $params[':b'] = "%{$busca}%"; }
+    if ($tipo !== 'todos') { $sql .= " AND mv.tipo = :tipo"; $params[':tipo'] = $tipo; }
+    $sql .= " ORDER BY mv.created_at DESC";
     $stmt = $db->prepare($sql);
     $stmt->execute($params);
     $linhas = $stmt->fetchAll();
 
     if (($_GET['format'] ?? '') === 'csv') {
         $rows = array_map(function ($m) {
-            return [date('d/m/Y H:i', strtotime($m['created_at'])), $m['tipo'] === 'entrada' ? 'Entrada' : 'Saída', $m['insumo_nome'], $m['laboratorio_nome'], $m['lote'], $m['quantidade'], $m['unidade_medida'], $m['usuario'], $m['observacao']];
+            return [date('d/m/Y H:i', strtotime($m['created_at'])), $m['tipo'] === 'entrada' ? 'Entrada' : 'Saída', $m['medicamento_nome'], $m['laboratorio_nome'], $m['lote'], $m['quantidade'], $m['usuario'], $m['observacao']];
         }, $linhas);
-        csvOutput('relatorio_movimentacoes.csv', ['Data/Hora', 'Tipo', 'Insumo', 'Laboratório', 'Lote', 'Quantidade', 'Unidade', 'Usuário', 'Observação'], $rows);
+        csvOutput('relatorio_movimentacoes.csv', ['Data/Hora', 'Tipo', 'Medicamento', 'Laboratório', 'Lote', 'Quantidade', 'Usuário', 'Observação'], $rows);
     }
 }
 
@@ -95,19 +93,19 @@ $csvQs = http_build_query(array_merge($qs, ['format' => 'csv']));
     <form method="GET" class="entity-list-toolbar">
         <input type="hidden" name="page" value="relatorios">
         <input type="hidden" name="tab" value="estoque">
-        <select name="laboratorio_id" class="form-select" style="max-width:220px;">
-            <option value="0">Todos os laboratórios</option>
+        <select name="laboratorio" class="form-select" style="max-width:220px;">
+            <option value="">Todos os laboratórios</option>
             <?php foreach ($labs as $lab): ?>
-                <option value="<?= (int)$lab['id'] ?>" <?= $laboratorioId == $lab['id'] ? 'selected' : '' ?>><?= htmlspecialchars($lab['nome']) ?></option>
+                <option value="<?= htmlspecialchars($lab) ?>" <?= $laboratorio === $lab ? 'selected' : '' ?>><?= htmlspecialchars($lab) ?></option>
             <?php endforeach; ?>
         </select>
         <select name="status" class="form-select" style="max-width:220px;">
-            <option value="todos" <?= $status === 'todos' ? 'selected' : '' ?>>Todos os insumos</option>
+            <option value="todos" <?= $status === 'todos' ? 'selected' : '' ?>>Todos os medicamentos</option>
             <option value="alerta" <?= $status === 'alerta' ? 'selected' : '' ?>>A vencer em 30 dias</option>
             <option value="urgente" <?= $status === 'urgente' ? 'selected' : '' ?>>A vencer em 7 dias</option>
             <option value="vencido" <?= $status === 'vencido' ? 'selected' : '' ?>>Vencidos</option>
         </select>
-        <input type="text" name="busca" class="form-control" style="max-width:220px;" placeholder="Buscar insumo..." value="<?= htmlspecialchars($busca) ?>">
+        <input type="text" name="busca" class="form-control" style="max-width:220px;" placeholder="Buscar medicamento..." value="<?= htmlspecialchars($busca) ?>">
         <button class="btn btn-outline-primary">Filtrar</button>
         <a class="btn btn-outline-secondary ms-auto" href="?<?= htmlspecialchars($csvQs) ?>"><i class="bi bi-download"></i> Exportar CSV</a>
     </form>
@@ -115,7 +113,7 @@ $csvQs = http_build_query(array_merge($qs, ['format' => 'csv']));
     <div class="table-responsive">
         <table class="table table-striped table-hover bg-white align-middle">
             <thead class="table-dark">
-                <tr><th>Insumo</th><th>Laboratório</th><th>Lote</th><th>Validade</th><th class="text-center">Qtd.</th><th class="text-center">Status</th></tr>
+                <tr><th>Medicamento</th><th>Laboratório</th><th>Lote</th><th>Validade</th><th class="text-center">Qtd.</th><th class="text-center">Status</th></tr>
             </thead>
             <tbody>
                 <?php if (empty($linhas)): ?>
@@ -123,11 +121,11 @@ $csvQs = http_build_query(array_merge($qs, ['format' => 'csv']));
                 <?php else: ?>
                     <?php foreach ($linhas as $l): $st = statusVencimento($l['validade']); ?>
                         <tr class="<?= $st === 'vencido' ? 'table-danger' : ($st === 'urgente' ? 'table-warning' : '') ?>">
-                            <td><?= htmlspecialchars($l['insumo_nome']) ?></td>
+                            <td><?= htmlspecialchars($l['medicamento_nome']) ?></td>
                             <td><?= htmlspecialchars($l['laboratorio_nome'] ?: '—') ?></td>
                             <td class="mono"><?= htmlspecialchars($l['lote']) ?></td>
                             <td class="mono"><?= date('d/m/Y', strtotime($l['validade'])) ?></td>
-                            <td class="text-center"><?= (int)$l['quantidade'] ?> <?= htmlspecialchars($l['unidade_medida']) ?></td>
+                            <td class="text-center"><?= (int)$l['quantidade'] ?></td>
                             <td class="text-center"><span class="badge <?= statusVencimentoBadgeClass($st) ?>"><?= statusVencimentoLabel($st) ?></span></td>
                         </tr>
                     <?php endforeach; ?>
@@ -145,15 +143,15 @@ $csvQs = http_build_query(array_merge($qs, ['format' => 'csv']));
             <option value="entrada" <?= $tipo === 'entrada' ? 'selected' : '' ?>>Somente Entradas</option>
             <option value="saida" <?= $tipo === 'saida' ? 'selected' : '' ?>>Somente Saídas</option>
         </select>
-        <select name="laboratorio_id" class="form-select" style="max-width:200px;">
-            <option value="0">Todos os laboratórios</option>
+        <select name="laboratorio" class="form-select" style="max-width:200px;">
+            <option value="">Todos os laboratórios</option>
             <?php foreach ($labs as $lab): ?>
-                <option value="<?= (int)$lab['id'] ?>" <?= $laboratorioId == $lab['id'] ? 'selected' : '' ?>><?= htmlspecialchars($lab['nome']) ?></option>
+                <option value="<?= htmlspecialchars($lab) ?>" <?= $laboratorio === $lab ? 'selected' : '' ?>><?= htmlspecialchars($lab) ?></option>
             <?php endforeach; ?>
         </select>
         <input type="date" name="data_inicio" class="form-control" style="max-width:160px;" value="<?= htmlspecialchars($dataInicio) ?>">
         <input type="date" name="data_fim" class="form-control" style="max-width:160px;" value="<?= htmlspecialchars($dataFim) ?>">
-        <input type="text" name="busca" class="form-control" style="max-width:180px;" placeholder="Buscar insumo..." value="<?= htmlspecialchars($busca) ?>">
+        <input type="text" name="busca" class="form-control" style="max-width:180px;" placeholder="Buscar medicamento..." value="<?= htmlspecialchars($busca) ?>">
         <button class="btn btn-outline-primary">Filtrar</button>
         <a class="btn btn-outline-secondary ms-auto" href="?<?= htmlspecialchars($csvQs) ?>"><i class="bi bi-download"></i> Exportar CSV</a>
     </form>
@@ -161,7 +159,7 @@ $csvQs = http_build_query(array_merge($qs, ['format' => 'csv']));
     <div class="table-responsive">
         <table class="table table-striped table-hover bg-white align-middle">
             <thead class="table-dark">
-                <tr><th>Data/Hora</th><th>Tipo</th><th>Insumo</th><th>Laboratório</th><th>Lote</th><th class="text-center">Qtd.</th><th>Usuário</th><th>Observação</th></tr>
+                <tr><th>Data/Hora</th><th>Tipo</th><th>Medicamento</th><th>Laboratório</th><th>Lote</th><th class="text-center">Qtd.</th><th>Usuário</th><th>Observação</th></tr>
             </thead>
             <tbody>
                 <?php if (empty($linhas)): ?>
@@ -171,10 +169,10 @@ $csvQs = http_build_query(array_merge($qs, ['format' => 'csv']));
                         <tr>
                             <td class="mono text-nowrap"><?= date('d/m/Y H:i', strtotime($m['created_at'])) ?></td>
                             <td><span class="badge <?= $m['tipo'] === 'entrada' ? 'bg-success' : 'bg-danger' ?>"><?= $m['tipo'] === 'entrada' ? 'Entrada' : 'Saída' ?></span></td>
-                            <td><?= htmlspecialchars($m['insumo_nome']) ?></td>
+                            <td><?= htmlspecialchars($m['medicamento_nome']) ?></td>
                             <td><?= htmlspecialchars($m['laboratorio_nome'] ?: '—') ?></td>
                             <td class="mono"><?= htmlspecialchars($m['lote'] ?: '—') ?></td>
-                            <td class="text-center"><?= (int)$m['quantidade'] ?> <?= htmlspecialchars($m['unidade_medida']) ?></td>
+                            <td class="text-center"><?= (int)$m['quantidade'] ?></td>
                             <td><?= htmlspecialchars($m['usuario']) ?></td>
                             <td><?= htmlspecialchars($m['observacao']) ?></td>
                         </tr>

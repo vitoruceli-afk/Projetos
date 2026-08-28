@@ -3,10 +3,10 @@ require_once 'config.php';
 checkAuth();
 
 $page = $_GET['page'] ?? null;
-$allowed_pages = ['dashboard', 'laboratorios', 'insumos', 'movimentacao', 'relatorios', 'usuarios'];
+$allowed_pages = ['dashboard', 'movimentacao', 'relatorios', 'usuarios', 'medicamentos'];
 
 // Usuário padrão só enxerga Movimentação e Relatórios; qualquer outra página cai para Movimentação.
-$admin_only_pages = ['dashboard', 'laboratorios', 'insumos', 'usuarios'];
+$admin_only_pages = ['dashboard', 'usuarios', 'medicamentos'];
 
 if ($page === null || !in_array($page, $allowed_pages, true)) {
     $page = isAdmin() ? 'dashboard' : 'movimentacao';

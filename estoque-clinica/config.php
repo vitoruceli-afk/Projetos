@@ -24,9 +24,6 @@ define('DB_NAME', 'estoque_clinica');
 define('DB_USER', 'root');
 define('DB_PASS', '');
 
-define('UPLOAD_DIR', __DIR__ . '/uploads/insumos');
-define('UPLOAD_URL', 'uploads/insumos');
-
 // Janelas de alerta de vencimento usadas no Dashboard e nos Relatórios.
 define('VENCIMENTO_ALERTA_DIAS', 30);
 define('VENCIMENTO_URGENTE_DIAS', 7);
@@ -84,33 +81,97 @@ function getDB() {
             INDEX idx_insumos_nome (nome)
         )");
 
-        // Um insumo pode ter vários lotes em estoque ao mesmo tempo, cada um com seu próprio
+        // O catálogo próprio de insumos foi descontinuado (telas Insumos/Laboratórios removidas):
+        // o estoque agora é rastreado direto em cima da base de medicamentos da ANVISA/CMED. As
+        // tabelas abaixo guardavam lotes/movimentações por insumo_id; como nunca chegou a existir
+        // estoque real registrado (tabelas vazias), a migração troca a coluna para medicamento_id
+        // em vez de tentar remapear dados que não teriam correspondência em medicamentos_anvisa.
+        foreach (['movimentacoes', 'insumo_lotes'] as $tabelaAntiga) {
+            $temColunaInsumoId = (bool)$db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{$tabelaAntiga}' AND COLUMN_NAME = 'insumo_id'")->fetchColumn();
+            if ($temColunaInsumoId) {
+                $estaVazia = (int)$db->query("SELECT COUNT(*) FROM `{$tabelaAntiga}`")->fetchColumn() === 0;
+                if ($estaVazia) {
+                    $db->exec("DROP TABLE `{$tabelaAntiga}`");
+                }
+            }
+        }
+
+        // Um medicamento pode ter vários lotes em estoque ao mesmo tempo, cada um com seu próprio
         // vencimento — é o que permite calcular "a vencer em 30/7 dias" e "vencido" por lote,
         // e dar saída seguindo o vencimento mais próximo primeiro (FIFO por validade).
         $db->exec("CREATE TABLE IF NOT EXISTS insumo_lotes (
             id INT AUTO_INCREMENT PRIMARY KEY,
-            insumo_id INT NOT NULL,
+            medicamento_id INT NOT NULL,
             lote VARCHAR(80) NOT NULL,
             validade DATE NOT NULL,
             quantidade INT NOT NULL DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE KEY uq_insumo_lote (insumo_id, lote),
-            INDEX idx_lotes_validade (validade)
+            UNIQUE KEY uq_medicamento_lote (medicamento_id, lote),
+            INDEX idx_lotes_validade (validade),
+            INDEX idx_lotes_medicamento (medicamento_id)
         )");
 
         // Histórico de entradas/saídas — cada linha é um movimento aplicado a um lote específico.
         $db->exec("CREATE TABLE IF NOT EXISTS movimentacoes (
             id INT AUTO_INCREMENT PRIMARY KEY,
-            insumo_id INT NOT NULL,
+            medicamento_id INT NOT NULL,
             lote_id INT NULL,
             tipo VARCHAR(10) NOT NULL,
             quantidade INT NOT NULL,
             usuario VARCHAR(100) DEFAULT '',
             observacao VARCHAR(255) DEFAULT '',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            INDEX idx_mov_insumo (insumo_id),
+            INDEX idx_mov_medicamento (medicamento_id),
             INDEX idx_mov_created (created_at),
             INDEX idx_mov_tipo (tipo)
+        )");
+
+        // Base de referência da ANVISA/CMED (lista de preços de medicamentos), importada via CSV
+        // pelo administrador. codigo_ggrem é a chave de negócio do CMED (uma linha por apresentação),
+        // usada para decidir insert x update a cada reimportação. dados_completos guarda o registro
+        // inteiro (todas as colunas do CSV, inclusive as faixas de preço por regime tributário) em
+        // JSON, para não perder informação por causa de colunas que este app não modela individualmente.
+        $db->exec("CREATE TABLE IF NOT EXISTS medicamentos_anvisa (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            codigo_ggrem VARCHAR(30) NOT NULL,
+            substancia VARCHAR(255) DEFAULT '',
+            cnpj VARCHAR(30) DEFAULT '',
+            laboratorio VARCHAR(255) DEFAULT '',
+            registro VARCHAR(30) DEFAULT '',
+            ean_1 VARCHAR(20) DEFAULT '',
+            ean_2 VARCHAR(20) DEFAULT '',
+            ean_3 VARCHAR(20) DEFAULT '',
+            produto VARCHAR(255) DEFAULT '',
+            apresentacao VARCHAR(255) DEFAULT '',
+            classe_terapeutica VARCHAR(255) DEFAULT '',
+            tipo_produto VARCHAR(150) DEFAULT '',
+            regime_preco VARCHAR(100) DEFAULT '',
+            tarja VARCHAR(50) DEFAULT '',
+            restricao_hospitalar VARCHAR(20) DEFAULT '',
+            comercializacao_2025 VARCHAR(20) DEFAULT '',
+            dados_completos LONGTEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_medicamentos_ggrem (codigo_ggrem),
+            INDEX idx_medicamentos_substancia (substancia),
+            INDEX idx_medicamentos_produto (produto),
+            INDEX idx_medicamentos_laboratorio (laboratorio),
+            INDEX idx_medicamentos_registro (registro),
+            INDEX idx_medicamentos_ean1 (ean_1)
+        )");
+
+        // Histórico de importações da base da ANVISA/CMED, exibido na tela Medicamentos.
+        $db->exec("CREATE TABLE IF NOT EXISTS medicamentos_anvisa_imports (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            arquivo VARCHAR(255) DEFAULT '',
+            linha_cabecalho INT NOT NULL DEFAULT 1,
+            total_linhas INT NOT NULL DEFAULT 0,
+            inseridos INT NOT NULL DEFAULT 0,
+            atualizados INT NOT NULL DEFAULT 0,
+            ignorados INT NOT NULL DEFAULT 0,
+            usuario VARCHAR(100) DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )");
 
         // Primeiro acesso: sem nenhum usuário cadastrado ainda, semeia um Administrador padrão
@@ -223,21 +284,22 @@ function csrfVerify() {
 
 // ---- Regras de estoque / vencimento ----
 
-// Soma de todos os lotes com saldo do insumo.
-function insumoEstoqueTotal(PDO $db, $insumoId) {
-    $stmt = $db->prepare("SELECT COALESCE(SUM(quantidade), 0) FROM insumo_lotes WHERE insumo_id = :id AND quantidade > 0");
-    $stmt->bindValue(':id', $insumoId, PDO::PARAM_INT);
+// Soma de todos os lotes com saldo do medicamento.
+function medicamentoEstoqueTotal(PDO $db, $medicamentoId) {
+    $stmt = $db->prepare("SELECT COALESCE(SUM(quantidade), 0) FROM insumo_lotes WHERE medicamento_id = :id AND quantidade > 0");
+    $stmt->bindValue(':id', $medicamentoId, PDO::PARAM_INT);
     $stmt->execute();
     return (int)$stmt->fetchColumn();
 }
 
-// Lote com saldo cujo vencimento é o mais próximo (usado para dar saída por FIFO de validade
-// e para exibir o resumo ao ler o código de barras).
-function insumoProximoLote(PDO $db, $insumoId) {
-    $stmt = $db->prepare("SELECT * FROM insumo_lotes WHERE insumo_id = :id AND quantidade > 0 ORDER BY validade ASC LIMIT 1");
-    $stmt->bindValue(':id', $insumoId, PDO::PARAM_INT);
+// Todos os lotes com saldo do medicamento, do vencimento mais próximo para o mais distante —
+// usada para o operador escolher de qual lote específico dar saída (o mesmo medicamento pode
+// ter vários lotes com validades diferentes em estoque ao mesmo tempo).
+function medicamentoLotesComSaldo(PDO $db, $medicamentoId) {
+    $stmt = $db->prepare("SELECT * FROM insumo_lotes WHERE medicamento_id = :id AND quantidade > 0 ORDER BY validade ASC");
+    $stmt->bindValue(':id', $medicamentoId, PDO::PARAM_INT);
     $stmt->execute();
-    return $stmt->fetch() ?: null;
+    return $stmt->fetchAll();
 }
 
 // 'vencido' | 'urgente' (<= 7 dias) | 'alerta' (<= 30 dias) | 'ok' | null (sem lote com saldo)
@@ -272,46 +334,219 @@ function statusVencimentoBadgeClass($status) {
     };
 }
 
-function findInsumoByBarcode(PDO $db, $codigo) {
-    $stmt = $db->prepare("SELECT i.*, l.nome AS laboratorio_nome FROM insumos i
-        LEFT JOIN laboratorios l ON l.id = i.laboratorio_id
-        WHERE i.codigo_barras = :c LIMIT 1");
+// Busca por qualquer um dos códigos de barras (EAN 1/2/3) cadastrados na base da ANVISA/CMED,
+// ou pelo próprio Código GGREM (para permitir digitar/colar esse código diretamente).
+function findMedicamentoByBarcode(PDO $db, $codigo) {
+    $stmt = $db->prepare("SELECT * FROM medicamentos_anvisa
+        WHERE ean_1 = :c OR ean_2 = :c OR ean_3 = :c OR codigo_ggrem = :c LIMIT 1");
     $stmt->bindValue(':c', $codigo);
     $stmt->execute();
     return $stmt->fetch() ?: null;
 }
 
-// Salva a foto enviada em uploads/insumos com um nome único; devolve o nome do arquivo salvo
-// (ou '' se nenhum arquivo válido foi enviado). Lança RuntimeException em caso de erro real de upload.
-function salvarFotoInsumo(array $file) {
-    if (!isset($file['error']) || $file['error'] === UPLOAD_ERR_NO_FILE) {
-        return '';
-    }
-    if ($file['error'] !== UPLOAD_ERR_OK) {
-        throw new RuntimeException('Falha ao enviar a foto (código ' . $file['error'] . ').');
-    }
+// ---- Base de Medicamentos (ANVISA/CMED) ----
 
-    $allowed = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp', 'image/gif' => 'gif'];
-    $mime = mime_content_type($file['tmp_name']);
-    if (!isset($allowed[$mime])) {
-        throw new RuntimeException('Formato de imagem não suportado. Use JPG, PNG, WEBP ou GIF.');
-    }
-    if ($file['size'] > 5 * 1024 * 1024) {
-        throw new RuntimeException('A foto deve ter no máximo 5MB.');
-    }
+// Cabeçalhos do CSV da ANVISA/CMED que mapeamos para colunas próprias (para busca/listagem).
+// Todas as demais colunas do arquivo (inclusive as dezenas de faixas de preço PF/PMVG) são
+// preservadas em conjunto no campo dados_completos, sem perda de informação.
+const MEDICAMENTOS_ANVISA_COLUNAS = [
+    'SUBSTÂNCIA' => 'substancia',
+    'CNPJ' => 'cnpj',
+    'LABORATÓRIO' => 'laboratorio',
+    'CÓDIGO GGREM' => 'codigo_ggrem',
+    'REGISTRO' => 'registro',
+    'EAN 1' => 'ean_1',
+    'EAN 2' => 'ean_2',
+    'EAN 3' => 'ean_3',
+    'PRODUTO' => 'produto',
+    'APRESENTAÇÃO' => 'apresentacao',
+    'CLASSE TERAPÊUTICA' => 'classe_terapeutica',
+    'TIPO DE PRODUTO (STATUS DO PRODUTO)' => 'tipo_produto',
+    'REGIME DE PREÇO' => 'regime_preco',
+    'TARJA' => 'tarja',
+    'RESTRIÇÃO HOSPITALAR' => 'restricao_hospitalar',
+    'COMERCIALIZAÇÃO 2025' => 'comercializacao_2025',
+];
 
-    if (!is_dir(UPLOAD_DIR)) {
-        mkdir(UPLOAD_DIR, 0755, true);
-    }
-
-    $filename = bin2hex(random_bytes(16)) . '.' . $allowed[$mime];
-    if (!move_uploaded_file($file['tmp_name'], UPLOAD_DIR . '/' . $filename)) {
-        throw new RuntimeException('Não foi possível salvar a foto enviada.');
-    }
-    return $filename;
+// Reduz o nome de uma coluna ao seu "esqueleto" ASCII: maiúsculas, sem acentos nem caracteres
+// de controle/corrompidos, espaços colapsados. Usada para casar o cabeçalho do CSV com
+// MEDICAMENTOS_ANVISA_COLUNAS mesmo quando o arquivo chega com a acentuação corrompida (comum
+// nos exports da ANVISA/CMED) — funciona porque bytes de acentuação/corrupção nunca caem na
+// faixa ASCII imprimível, então descartá-los sempre resulta no mesmo "esqueleto", não importa
+// qual tenha sido a codificação original.
+function normalizarNomeColunaAnvisa($s) {
+    $s = preg_replace('/[^\x20-\x7E]+/', '', (string)$s) ?? '';
+    $s = preg_replace('/\s+/', ' ', $s) ?? '';
+    return strtoupper(trim($s));
 }
 
-function insumoFotoUrl($foto) {
-    if (empty($foto)) return null;
-    return UPLOAD_URL . '/' . rawurlencode($foto);
+// Versão de MEDICAMENTOS_ANVISA_COLUNAS indexada pelo esqueleto normalizado (calculada uma vez,
+// a partir da constante acima, para não duplicar/errar a lista à mão).
+function medicamentosAnvisaColunasNormalizadas() {
+    static $mapa = null;
+    if ($mapa === null) {
+        $mapa = [];
+        foreach (MEDICAMENTOS_ANVISA_COLUNAS as $original => $campo) {
+            $mapa[normalizarNomeColunaAnvisa($original)] = $campo;
+        }
+    }
+    return $mapa;
+}
+
+// Lê o CSV a partir da linha de cabeçalho informada pelo administrador, faz upsert por
+// CÓDIGO GGREM (chave de negócio do CMED) e registra o resultado em medicamentos_anvisa_imports.
+// Lança RuntimeException com mensagem amigável em caso de arquivo inválido.
+function importarMedicamentosCsv(PDO $db, string $caminhoArquivo, int $linhaCabecalho, string $nomeArquivo, string $usuario) {
+    set_time_limit(0);
+    ini_set('memory_limit', '512M');
+
+    $handle = fopen($caminhoArquivo, 'r');
+    if (!$handle) {
+        throw new RuntimeException('Não foi possível abrir o arquivo enviado.');
+    }
+
+    $delimiter = ';';
+    // Corrige tanto arquivos em ISO-8859-1 puro (bytes inválidos como UTF-8) quanto o problema
+    // recorrente nos exports públicos da ANVISA/CMED: texto UTF-8 correto que foi decodificado
+    // como Latin-1 e regravado como UTF-8, produzindo "SUBSTÃNCIA" em vez de "SUBSTÂNCIA" (esse
+    // texto já É um UTF-8 tecnicamente válido, só que com o conteúdo errado, por isso o simples
+    // teste de mb_check_encoding não pega esse caso). Reinterpretar os bytes como Latin-1 desfaz
+    // a dupla codificação; se o resultado não virar UTF-8 válido, o texto original é mantido.
+    $toUtf8 = function ($v) {
+        $v = (string)$v;
+        if (!mb_check_encoding($v, 'UTF-8')) {
+            return mb_convert_encoding($v, 'UTF-8', 'ISO-8859-1');
+        }
+        $reparado = @mb_convert_encoding($v, 'ISO-8859-1', 'UTF-8');
+        if ($reparado !== false && $reparado !== '' && $reparado !== $v && mb_check_encoding($reparado, 'UTF-8')) {
+            return $reparado;
+        }
+        return $v;
+    };
+
+    $linhaAtual = 0;
+    $header = null;
+    while (($row = fgetcsv($handle, 0, $delimiter)) !== false) {
+        $linhaAtual++;
+        if ($linhaAtual === $linhaCabecalho) {
+            $header = array_map(function ($h) use ($toUtf8) {
+                return trim($toUtf8($h), " \t\n\r\0\x0B\xEF\xBB\xBF");
+            }, $row);
+            break;
+        }
+    }
+    if ($header === null) {
+        fclose($handle);
+        throw new RuntimeException("O arquivo tem menos de {$linhaCabecalho} linha(s); a linha de cabeçalho informada não foi encontrada.");
+    }
+
+    // Os exports públicos da ANVISA/CMED costumam vir com a acentuação corrompida de formas
+    // imprevisíveis (ISO-8859-1 puro, UTF-8 duplamente codificado, bytes de controle perdidos
+    // no caminho até chegar aqui...). Em vez de tentar adivinhar/reverter a codificação exata,
+    // casa os nomes das colunas comparando só o "esqueleto" ASCII (letras/números/espaços/
+    // pontuação comuns), descartando qualquer acento ou caractere corrompido — assim o
+    // casamento funciona independentemente de qual seja a codificação real do arquivo.
+    $colunasNormalizadas = medicamentosAnvisaColunasNormalizadas();
+    $colIndex = []; // campo canônico => índice da coluna no CSV
+    foreach ($header as $idx => $h) {
+        $norm = normalizarNomeColunaAnvisa($h);
+        if (isset($colunasNormalizadas[$norm])) {
+            $colIndex[$colunasNormalizadas[$norm]] = $idx;
+        }
+    }
+    if (!isset($colIndex['codigo_ggrem'])) {
+        fclose($handle);
+        throw new RuntimeException('A coluna "CÓDIGO GGREM" não foi encontrada na linha de cabeçalho informada. Confira o número da linha e tente novamente.');
+    }
+
+    $valor = function (array $row, string $campo) use ($colIndex) {
+        $idx = $colIndex[$campo] ?? null;
+        return ($idx !== null && isset($row[$idx])) ? trim($row[$idx]) : '';
+    };
+
+    $upsert = $db->prepare("INSERT INTO medicamentos_anvisa
+        (codigo_ggrem, substancia, cnpj, laboratorio, registro, ean_1, ean_2, ean_3, produto, apresentacao,
+         classe_terapeutica, tipo_produto, regime_preco, tarja, restricao_hospitalar, comercializacao_2025, dados_completos)
+        VALUES (:ggrem, :subst, :cnpj, :lab, :reg, :ean1, :ean2, :ean3, :prod, :apres, :classe, :tipo, :regime, :tarja, :restr, :comerc, :dados)
+        ON DUPLICATE KEY UPDATE
+            substancia = VALUES(substancia), cnpj = VALUES(cnpj), laboratorio = VALUES(laboratorio),
+            registro = VALUES(registro), ean_1 = VALUES(ean_1), ean_2 = VALUES(ean_2), ean_3 = VALUES(ean_3),
+            produto = VALUES(produto), apresentacao = VALUES(apresentacao), classe_terapeutica = VALUES(classe_terapeutica),
+            tipo_produto = VALUES(tipo_produto), regime_preco = VALUES(regime_preco), tarja = VALUES(tarja),
+            restricao_hospitalar = VALUES(restricao_hospitalar), comercializacao_2025 = VALUES(comercializacao_2025),
+            dados_completos = VALUES(dados_completos)");
+
+    $totalLinhas = 0;
+    $processadas = 0;
+    $ignoradas = 0;
+    $antesTotal = (int)$db->query("SELECT COUNT(*) FROM medicamentos_anvisa")->fetchColumn();
+
+    $db->beginTransaction();
+    while (($row = fgetcsv($handle, 0, $delimiter)) !== false) {
+        if (count($row) === 1 && trim((string)$row[0]) === '') {
+            continue; // linha em branco, não conta como registro
+        }
+        $totalLinhas++;
+        $row = array_map($toUtf8, $row);
+
+        $ggrem = $valor($row, 'codigo_ggrem');
+        if ($ggrem === '') {
+            $ignoradas++;
+            continue;
+        }
+
+        $dadosCompletos = [];
+        foreach ($header as $idx => $label) {
+            if ($label === '') continue;
+            $dadosCompletos[$label] = $row[$idx] ?? '';
+        }
+
+        $upsert->execute([
+            ':ggrem' => $ggrem,
+            ':subst' => $valor($row, 'substancia'),
+            ':cnpj' => $valor($row, 'cnpj'),
+            ':lab' => $valor($row, 'laboratorio'),
+            ':reg' => $valor($row, 'registro'),
+            ':ean1' => $valor($row, 'ean_1'),
+            ':ean2' => $valor($row, 'ean_2'),
+            ':ean3' => $valor($row, 'ean_3'),
+            ':prod' => $valor($row, 'produto'),
+            ':apres' => $valor($row, 'apresentacao'),
+            ':classe' => $valor($row, 'classe_terapeutica'),
+            ':tipo' => $valor($row, 'tipo_produto'),
+            ':regime' => $valor($row, 'regime_preco'),
+            ':tarja' => $valor($row, 'tarja'),
+            ':restr' => $valor($row, 'restricao_hospitalar'),
+            ':comerc' => $valor($row, 'comercializacao_2025'),
+            ':dados' => json_encode($dadosCompletos, JSON_UNESCAPED_UNICODE),
+        ]);
+        $processadas++;
+
+        // Confirma em lotes para não segurar uma transação gigante em arquivos com dezenas de milhares de linhas.
+        if ($processadas % 500 === 0) {
+            $db->commit();
+            $db->beginTransaction();
+        }
+    }
+    $db->commit();
+    fclose($handle);
+
+    $depoisTotal = (int)$db->query("SELECT COUNT(*) FROM medicamentos_anvisa")->fetchColumn();
+    $inseridos = max(0, $depoisTotal - $antesTotal);
+    $atualizados = max(0, $processadas - $inseridos);
+
+    $log = $db->prepare("INSERT INTO medicamentos_anvisa_imports
+        (arquivo, linha_cabecalho, total_linhas, inseridos, atualizados, ignorados, usuario)
+        VALUES (:a, :l, :t, :i, :u, :ig, :us)");
+    $log->execute([
+        ':a' => $nomeArquivo, ':l' => $linhaCabecalho, ':t' => $totalLinhas,
+        ':i' => $inseridos, ':u' => $atualizados, ':ig' => $ignoradas, ':us' => $usuario,
+    ]);
+
+    return [
+        'total' => $totalLinhas,
+        'inseridos' => $inseridos,
+        'atualizados' => $atualizados,
+        'ignorados' => $ignoradas,
+    ];
 }

@@ -47,8 +47,7 @@ function navLink($targetPage, $currentPage, $label, $iconPath) {
         <div class="rail-nav">
             <div class="rail-section-label">Cadastros</div>
             <?php
-            navLink('laboratorios', $page, 'Laboratórios', '<rect x="4" y="3.5" width="16" height="6" rx="1"/><rect x="4" y="14.5" width="16" height="6" rx="1"/><circle cx="7.5" cy="6.5" r=".6" fill="currentColor" stroke="none"/><circle cx="7.5" cy="17.5" r=".6" fill="currentColor" stroke="none"/>');
-            navLink('insumos', $page, 'Insumos', '<path d="M20.5 7.5l-8.5-5-8.5 5 8.5 5 8.5-5z"/><path d="M3.5 7.5v9l8.5 5 8.5-5v-9"/><path d="M12 12.5v9"/>');
+            navLink('medicamentos', $page, 'Medicamentos', '<path d="M10.5 3.5h3a2 2 0 012 2V7h-7V5.5a2 2 0 012-2z"/><rect x="4" y="7" width="16" height="13.5" rx="2"/><path d="M9 13h6M12 10v6"/>');
             ?>
         </div>
         <div class="rail-nav">
