@@ -21,6 +21,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             try {
                 $stmt = $db->prepare("INSERT INTO local_users (username, password_hash, full_name, enabled, role) VALUES (:u, :p, :n, 1, :r)");
                 $stmt->execute([':u' => $username, ':p' => password_hash($password, PASSWORD_DEFAULT), ':n' => $fullName, ':r' => $role]);
+                registrarLog('Usuários', 'Usuário criado', "usuário: {$username}, perfil: {$role}");
                 header("Location: index.php?page=usuarios");
                 exit;
             } catch (PDOException $e) {
@@ -53,6 +54,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $stmt = $db->prepare("UPDATE local_users SET full_name = :n, role = :r WHERE id = :id");
                 $stmt->execute([':n' => $fullName, ':r' => $role, ':id' => $id]);
             }
+            registrarLog('Usuários', 'Usuário editado', "usuário: {$target['username']}, perfil: {$role}" . ($password !== '' ? ', senha alterada' : ''));
             header("Location: index.php?page=usuarios");
             exit;
         }
@@ -68,6 +70,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         } elseif ($target) {
             $db->prepare("UPDATE local_users SET enabled = :e WHERE id = :id")
                ->execute([':e' => $action === 'enable' ? 1 : 0, ':id' => $id]);
+            registrarLog('Usuários', $action === 'enable' ? 'Usuário habilitado' : 'Usuário desabilitado', "usuário: {$target['username']}");
             header("Location: index.php?page=usuarios");
             exit;
         }
@@ -82,6 +85,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $formError = 'Você não pode excluir sua própria conta enquanto estiver logado com ela.';
         } elseif ($target) {
             $db->prepare("DELETE FROM local_users WHERE id = :id")->execute([':id' => $id]);
+            registrarLog('Usuários', 'Usuário excluído', "usuário: {$target['username']}");
             header("Location: index.php?page=usuarios");
             exit;
         }

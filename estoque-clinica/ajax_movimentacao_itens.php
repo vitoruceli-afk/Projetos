@@ -9,6 +9,7 @@ if (!isset($_SESSION['user_logged_in'])) {
 }
 
 $grupo = trim($_GET['grupo'] ?? '');
+$tipo = ($_GET['tipo'] ?? '') === 'saida' ? 'saida' : 'entrada';
 if ($grupo === '') {
     echo json_encode(['found' => false, 'error' => 'Grupo inválido.']);
     exit;
@@ -16,13 +17,21 @@ if ($grupo === '') {
 
 $db = getDB();
 $grupoSql = movimentacaoGrupoChaveSql('mv');
-$stmt = $db->prepare("SELECT mv.quantidade, mv.observacao, md.produto, md.laboratorio, md.apresentacao, l.lote, l.validade
+// LEFT JOIN nas duas origens possíveis (medicamento ou insumo — mv.medicamento_id/insumo_id são
+// mutuamente exclusivos) e COALESCE pra exibir o nome/lote/validade de qual delas bateu.
+$stmt = $db->prepare("SELECT mv.quantidade, mv.observacao,
+        COALESCE(md.produto, ins.nome_comercial) AS produto,
+        COALESCE(md.laboratorio, ins.marca) AS laboratorio,
+        COALESCE(md.apresentacao, ins.categoria) AS apresentacao,
+        COALESCE(l.lote, ins.lote) AS lote,
+        COALESCE(l.validade, ins.validade) AS validade
     FROM movimentacoes mv
-    JOIN medicamentos_anvisa md ON md.id = mv.medicamento_id
+    LEFT JOIN medicamentos_anvisa md ON md.id = mv.medicamento_id
+    LEFT JOIN insumos ins ON ins.id = mv.insumo_id
     LEFT JOIN insumo_lotes l ON l.id = mv.lote_id
-    WHERE mv.tipo = 'entrada' AND {$grupoSql} = :grupo
+    WHERE mv.tipo = :tipo AND {$grupoSql} = :grupo
     ORDER BY mv.id ASC");
-$stmt->execute([':grupo' => $grupo]);
+$stmt->execute([':tipo' => $tipo, ':grupo' => $grupo]);
 $itens = $stmt->fetchAll();
 
 if (!$itens) {

@@ -22,6 +22,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'impor
             $resultado = importarMedicamentosCsv($db, $_FILES['csv']['tmp_name'], $linhaCabecalho, $_FILES['csv']['name'], $_SESSION['user_logged_in']);
             $formSuccess = "Importação concluída: {$resultado['total']} linha(s) lida(s), {$resultado['inseridos']} inserida(s), {$resultado['atualizados']} atualizada(s)"
                 . ($resultado['ignorados'] > 0 ? ", {$resultado['ignorados']} ignorada(s) por não ter CÓDIGO GGREM" : '') . '.';
+            registrarLog('Medicamentos', 'Importação de base CSV', "arquivo: {$_FILES['csv']['name']}, {$resultado['inseridos']} inserido(s), {$resultado['atualizados']} atualizado(s), {$resultado['ignorados']} ignorado(s)");
         } catch (RuntimeException $e) {
             $formError = $e->getMessage();
         }

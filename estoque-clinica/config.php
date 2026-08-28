@@ -66,30 +66,59 @@ function getDB() {
             INDEX idx_laboratorios_nome (nome)
         )");
 
+        // A tabela insumos foi originalmente o catálogo ligado a laboratorio_id/codigo_barras (tela
+        // removida quando Entrada/Saída passou a usar a base da ANVISA/CMED). Como nunca chegou a
+        // existir cadastro real nela, a migração troca o schema direto em vez de conviver com as
+        // colunas antigas — a tela Insumos agora é um catálogo simples de itens de uso/consumo da
+        // clínica (luvas, seringas, material de limpeza etc.), sem relação com medicamentos.
+        $temColunaLaboratorioId = (bool)$db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'insumos' AND COLUMN_NAME = 'laboratorio_id'")->fetchColumn();
+        if ($temColunaLaboratorioId) {
+            $estaVazia = (int)$db->query("SELECT COUNT(*) FROM insumos")->fetchColumn() === 0;
+            if ($estaVazia) {
+                $db->exec("DROP TABLE insumos");
+            }
+        }
+
         $db->exec("CREATE TABLE IF NOT EXISTS insumos (
             id INT AUTO_INCREMENT PRIMARY KEY,
-            nome VARCHAR(200) NOT NULL,
-            laboratorio_id INT NOT NULL,
-            composicao TEXT,
-            codigo_barras VARCHAR(64) NOT NULL UNIQUE,
+            nome_comercial VARCHAR(200) NOT NULL,
+            descricao TEXT,
+            marca VARCHAR(150) DEFAULT '',
+            categoria VARCHAR(100) DEFAULT '',
+            codigo_barras VARCHAR(64) DEFAULT '',
+            quantidade INT NOT NULL DEFAULT 0,
+            estoque_minimo INT NOT NULL DEFAULT 0,
             unidade_medida VARCHAR(30) NOT NULL DEFAULT 'unidade',
-            observacoes TEXT,
-            foto VARCHAR(255) DEFAULT '',
-            ativo TINYINT(1) NOT NULL DEFAULT 1,
+            lote VARCHAR(80) DEFAULT '',
+            validade DATE NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            INDEX idx_insumos_laboratorio (laboratorio_id),
-            INDEX idx_insumos_nome (nome)
+            atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_insumos_nome (nome_comercial),
+            INDEX idx_insumos_categoria (categoria),
+            INDEX idx_insumos_validade (validade),
+            INDEX idx_insumos_codigo_barras (codigo_barras)
         )");
 
-        // O catálogo próprio de insumos foi descontinuado (telas Insumos/Laboratórios removidas):
-        // o estoque agora é rastreado direto em cima da base de medicamentos da ANVISA/CMED. As
-        // tabelas abaixo guardavam lotes/movimentações por insumo_id; como nunca chegou a existir
-        // estoque real registrado (tabelas vazias), a migração troca a coluna para medicamento_id
-        // em vez de tentar remapear dados que não teriam correspondência em medicamentos_anvisa.
+        // Migração leve: instalações que já tinham a tabela insumos no schema novo (sem EAN) ganham
+        // a coluna agora.
+        $temCodigoBarrasInsumo = (bool)$db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'insumos' AND COLUMN_NAME = 'codigo_barras'")->fetchColumn();
+        if (!$temCodigoBarrasInsumo) {
+            $db->exec("ALTER TABLE insumos ADD COLUMN codigo_barras VARCHAR(64) DEFAULT '' AFTER categoria, ADD INDEX idx_insumos_codigo_barras (codigo_barras)");
+        }
+
+        // Migração histórica de uma versão bem antiga, onde insumo_id referenciava o catálogo de
+        // insumos que existia ANTES da base da ANVISA/CMED (schema totalmente diferente do atual:
+        // sem medicamento_id). Checa as duas colunas para não confundir com o schema atual — que
+        // também tem insumo_id (agora com outro significado: Entrada/Saída movimenta insumos além
+        // de medicamentos) — e só dropa se realmente for aquele schema antigo e a tabela seguir vazia.
         foreach (['movimentacoes', 'insumo_lotes'] as $tabelaAntiga) {
             $temColunaInsumoId = (bool)$db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
                 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{$tabelaAntiga}' AND COLUMN_NAME = 'insumo_id'")->fetchColumn();
-            if ($temColunaInsumoId) {
+            $temColunaMedicamentoId = (bool)$db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{$tabelaAntiga}' AND COLUMN_NAME = 'medicamento_id'")->fetchColumn();
+            if ($temColunaInsumoId && !$temColunaMedicamentoId) {
                 $estaVazia = (int)$db->query("SELECT COUNT(*) FROM `{$tabelaAntiga}`")->fetchColumn() === 0;
                 if ($estaVazia) {
                     $db->exec("DROP TABLE `{$tabelaAntiga}`");
@@ -125,10 +154,14 @@ function getDB() {
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )");
 
-        // Histórico de entradas/saídas — cada linha é um movimento aplicado a um lote específico.
+        // Histórico de entradas/saídas — cada linha é um movimento de um medicamento (com lote
+        // específico via lote_id) OU de um insumo (sem lote — o insumo tem uma única quantidade),
+        // nunca os dois ao mesmo tempo: exatamente uma das colunas medicamento_id/insumo_id é
+        // preenchida por linha.
         $db->exec("CREATE TABLE IF NOT EXISTS movimentacoes (
             id INT AUTO_INCREMENT PRIMARY KEY,
-            medicamento_id INT NOT NULL,
+            medicamento_id INT NULL,
+            insumo_id INT NULL,
             lote_id INT NULL,
             confirmacao_id INT NULL,
             tipo VARCHAR(10) NOT NULL,
@@ -137,6 +170,7 @@ function getDB() {
             observacao VARCHAR(255) DEFAULT '',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             INDEX idx_mov_medicamento (medicamento_id),
+            INDEX idx_mov_insumo (insumo_id),
             INDEX idx_mov_created (created_at),
             INDEX idx_mov_tipo (tipo),
             INDEX idx_mov_confirmacao (confirmacao_id)
@@ -150,6 +184,33 @@ function getDB() {
         if (!$temConfirmacaoId) {
             $db->exec("ALTER TABLE movimentacoes ADD COLUMN confirmacao_id INT NULL AFTER lote_id, ADD INDEX idx_mov_confirmacao (confirmacao_id)");
         }
+
+        // Migração leve: Entrada/Saída passou a também movimentar insumos (não só medicamentos).
+        // medicamento_id precisa virar NULLable e ganhar a coluna irmã insumo_id.
+        $temInsumoIdMov = (bool)$db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'movimentacoes' AND COLUMN_NAME = 'insumo_id'")->fetchColumn();
+        if (!$temInsumoIdMov) {
+            $db->exec("ALTER TABLE movimentacoes
+                MODIFY COLUMN medicamento_id INT NULL,
+                ADD COLUMN insumo_id INT NULL AFTER medicamento_id,
+                ADD INDEX idx_mov_insumo (insumo_id)");
+        }
+
+        // Log de auditoria: uma linha por ação relevante executada na aplicação (login/logout,
+        // CRUD de usuários, importação de medicamentos, entrada/saída de estoque...), exibida na
+        // tela Log (admin). categoria agrupa a origem da ação; detalhes guarda um resumo em texto
+        // livre (não estruturado, já que cada categoria tem informações bem diferentes entre si).
+        $db->exec("CREATE TABLE IF NOT EXISTS logs (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            categoria VARCHAR(50) NOT NULL,
+            acao VARCHAR(255) NOT NULL,
+            usuario VARCHAR(100) DEFAULT '',
+            detalhes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_logs_categoria (categoria),
+            INDEX idx_logs_usuario (usuario),
+            INDEX idx_logs_created (created_at)
+        )");
 
         // Base de referência da ANVISA/CMED (lista de preços de medicamentos), importada via CSV
         // pelo administrador. codigo_ggrem é a chave de negócio do CMED (uma linha por apresentação),
@@ -223,6 +284,7 @@ function checkAuth() {
     }
 
     if (isset($_SESSION['last_activity']) && (time() - $_SESSION['last_activity']) > SESSION_IDLE_TIMEOUT) {
+        registrarLog('Autenticação', 'Sessão expirada por inatividade', '', $_SESSION['user_logged_in']);
         session_unset();
         session_destroy();
         header("Location: login.php?timeout=1");
@@ -237,6 +299,7 @@ function checkAuth() {
     $stmt->execute();
     $enabled = $stmt->fetchColumn();
     if ($enabled === false || (int)$enabled === 0) {
+        registrarLog('Autenticação', 'Sessão encerrada (conta desabilitada)', '', $_SESSION['user_logged_in']);
         session_unset();
         session_destroy();
         header("Location: login.php");
@@ -306,6 +369,20 @@ function csrfVerify() {
     }
 }
 
+// ---- Log de auditoria ----
+
+const LOG_CATEGORIAS = ['Autenticação', 'Usuários', 'Medicamentos', 'Movimentação', 'Insumos'];
+
+// Registra uma linha no log de auditoria. $usuario pode ser informado explicitamente para casos
+// em que a ação altera a própria sessão (ex.: logout, timeout) — nesses casos o valor precisa ser
+// capturado antes da sessão ser destruída; nos demais, usa o usuário logado automaticamente.
+function registrarLog(string $categoria, string $acao, string $detalhes = '', ?string $usuario = null) {
+    $db = getDB();
+    $usuario = $usuario ?? ($_SESSION['user_logged_in'] ?? 'sistema');
+    $stmt = $db->prepare("INSERT INTO logs (categoria, acao, usuario, detalhes) VALUES (:c, :a, :u, :d)");
+    $stmt->execute([':c' => $categoria, ':a' => $acao, ':u' => $usuario, ':d' => $detalhes]);
+}
+
 // ---- Regras de estoque / vencimento ----
 
 // Soma de todos os lotes com saldo do medicamento.
@@ -366,6 +443,29 @@ function findMedicamentoByBarcode(PDO $db, $codigo) {
     $stmt->bindValue(':c', $codigo);
     $stmt->execute();
     return $stmt->fetch() ?: null;
+}
+
+// Busca pelo EAN cadastrado na tela Insumos.
+function findInsumoByBarcode(PDO $db, $codigo) {
+    $stmt = $db->prepare("SELECT * FROM insumos WHERE codigo_barras = :c AND codigo_barras <> '' LIMIT 1");
+    $stmt->bindValue(':c', $codigo);
+    $stmt->execute();
+    return $stmt->fetch() ?: null;
+}
+
+// Busca usada por Entrada/Saída: procura o código tanto na base de medicamentos (ANVISA/CMED)
+// quanto no catálogo de Insumos, e devolve o resultado marcado com o tipo encontrado. Medicamento
+// tem prioridade em caso de colisão de código (cenário raro, já que são catálogos independentes).
+function buscarItemMovimentacao(PDO $db, $codigo) {
+    $medicamento = findMedicamentoByBarcode($db, $codigo);
+    if ($medicamento) {
+        return ['tipo' => 'medicamento', 'dados' => $medicamento];
+    }
+    $insumo = findInsumoByBarcode($db, $codigo);
+    if ($insumo) {
+        return ['tipo' => 'insumo', 'dados' => $insumo];
+    }
+    return null;
 }
 
 // Expressão SQL que identifica a qual "lote de confirmação" (clique em Confirmar Entrada) uma

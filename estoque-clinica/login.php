@@ -24,14 +24,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if (!$user) {
             $error = 'Usuário ou senha incorretos.';
+            registrarLog('Autenticação', 'Tentativa de login falhou (usuário inexistente)', "usuário informado: {$username}", $username);
         } elseif (!$user['enabled']) {
             $error = 'Esta conta está desabilitada. Contate um administrador.';
+            registrarLog('Autenticação', 'Tentativa de login falhou (conta desabilitada)', '', $user['username']);
         } elseif (!password_verify($password, $user['password_hash'])) {
             $error = 'Usuário ou senha incorretos.';
+            registrarLog('Autenticação', 'Tentativa de login falhou (senha incorreta)', '', $user['username']);
         } else {
             session_regenerate_id(true);
             $_SESSION['user_logged_in'] = $user['username'];
             $_SESSION['last_activity'] = time();
+            registrarLog('Autenticação', 'Login realizado', '', $user['username']);
             header("Location: index.php");
             exit;
         }
