@@ -12,15 +12,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $fullName = trim($_POST['full_name'] ?? '');
         $password = $_POST['password'] ?? '';
         $role = ($_POST['role'] ?? '') === 'admin' ? 'admin' : 'usuario';
+        $email = trim($_POST['email'] ?? '');
+        $notificarEmail = isset($_POST['notificar_email']) ? 1 : 0;
 
         if ($username === '' || $password === '') {
             $formError = 'Usuário e senha são obrigatórios.';
         } elseif (strlen($password) < 8) {
             $formError = 'A senha deve ter pelo menos 8 caracteres.';
+        } elseif ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $formError = 'Informe um e-mail válido.';
         } else {
             try {
-                $stmt = $db->prepare("INSERT INTO local_users (username, password_hash, full_name, enabled, role) VALUES (:u, :p, :n, 1, :r)");
-                $stmt->execute([':u' => $username, ':p' => password_hash($password, PASSWORD_DEFAULT), ':n' => $fullName, ':r' => $role]);
+                $stmt = $db->prepare("INSERT INTO local_users (username, password_hash, full_name, enabled, role, email, notificar_email) VALUES (:u, :p, :n, 1, :r, :e, :ne)");
+                $stmt->execute([':u' => $username, ':p' => password_hash($password, PASSWORD_DEFAULT), ':n' => $fullName, ':r' => $role, ':e' => $email, ':ne' => $notificarEmail]);
                 registrarLog('Usuários', 'Usuário criado', "usuário: {$username}, perfil: {$role}");
                 header("Location: index.php?page=usuarios");
                 exit;
@@ -35,6 +39,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $fullName = trim($_POST['full_name'] ?? '');
         $password = $_POST['password'] ?? '';
         $role = ($_POST['role'] ?? '') === 'admin' ? 'admin' : 'usuario';
+        $email = trim($_POST['email'] ?? '');
+        $notificarEmail = isset($_POST['notificar_email']) ? 1 : 0;
 
         $stmt = $db->prepare("SELECT username, role FROM local_users WHERE id = :id");
         $stmt->bindValue(':id', $id, PDO::PARAM_INT);
@@ -46,13 +52,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $formError = 'Você não pode remover seu próprio perfil de Administrador.';
         } elseif ($password !== '' && strlen($password) < 8) {
             $formError = 'A senha deve ter pelo menos 8 caracteres.';
+        } elseif ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $formError = 'Informe um e-mail válido.';
         } else {
             if ($password !== '') {
-                $stmt = $db->prepare("UPDATE local_users SET full_name = :n, password_hash = :p, role = :r WHERE id = :id");
-                $stmt->execute([':n' => $fullName, ':p' => password_hash($password, PASSWORD_DEFAULT), ':r' => $role, ':id' => $id]);
+                $stmt = $db->prepare("UPDATE local_users SET full_name = :n, password_hash = :p, role = :r, email = :e, notificar_email = :ne WHERE id = :id");
+                $stmt->execute([':n' => $fullName, ':p' => password_hash($password, PASSWORD_DEFAULT), ':r' => $role, ':e' => $email, ':ne' => $notificarEmail, ':id' => $id]);
             } else {
-                $stmt = $db->prepare("UPDATE local_users SET full_name = :n, role = :r WHERE id = :id");
-                $stmt->execute([':n' => $fullName, ':r' => $role, ':id' => $id]);
+                $stmt = $db->prepare("UPDATE local_users SET full_name = :n, role = :r, email = :e, notificar_email = :ne WHERE id = :id");
+                $stmt->execute([':n' => $fullName, ':r' => $role, ':e' => $email, ':ne' => $notificarEmail, ':id' => $id]);
             }
             registrarLog('Usuários', 'Usuário editado', "usuário: {$target['username']}, perfil: {$role}" . ($password !== '' ? ', senha alterada' : ''));
             header("Location: index.php?page=usuarios");
@@ -147,6 +155,14 @@ $users = $db->query("SELECT * FROM local_users ORDER BY username ASC");
                         <label class="form-label">Senha</label>
                         <input type="password" name="password" class="form-control" placeholder="<?= $editing ? 'Deixe em branco para manter' : 'Mínimo 8 caracteres' ?>" <?= $editing ? '' : 'required' ?>>
                     </div>
+                    <div class="mb-2">
+                        <label class="form-label">E-mail</label>
+                        <input type="email" name="email" class="form-control" value="<?= htmlspecialchars($editing['email'] ?? '') ?>">
+                    </div>
+                    <div class="form-check mb-2">
+                        <input class="form-check-input" type="checkbox" name="notificar_email" id="notificarEmailCheck" <?= !empty($editing['notificar_email']) ? 'checked' : '' ?>>
+                        <label class="form-check-label" for="notificarEmailCheck">Receber notificações por e-mail (vencimentos e estoque mínimo)</label>
+                    </div>
                     <button class="btn btn-outline-success w-100"><?= $editing ? 'Salvar Alterações' : 'Criar Usuário' ?></button>
                     <?php if ($editing): ?>
                         <a href="index.php?page=usuarios" class="btn btn-outline-secondary w-100 mt-2">Cancelar Edição</a>
@@ -158,12 +174,16 @@ $users = $db->query("SELECT * FROM local_users ORDER BY username ASC");
     <div class="col-md-8">
         <div class="table-responsive">
         <table class="table table-bordered bg-white align-middle table-actions-sticky">
-            <thead class="table-dark"><tr><th>Usuário</th><th>Nome</th><th>Perfil</th><th>Status</th><th>Criado em</th><th>Ações</th></tr></thead>
+            <thead class="table-dark"><tr><th>Usuário</th><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Status</th><th>Criado em</th><th>Ações</th></tr></thead>
             <tbody>
                 <?php $count = 0; while ($u = $users->fetch()): $count++; $isSelf = $u['username'] === $_SESSION['user_logged_in']; ?>
                 <tr>
                     <td><?= htmlspecialchars($u['username']) ?> <?php if ($isSelf): ?><span class="badge bg-info">Você</span><?php endif; ?></td>
                     <td><?= htmlspecialchars($u['full_name']) ?></td>
+                    <td>
+                        <?= htmlspecialchars($u['email'] ?: '—') ?>
+                        <?php if (!empty($u['notificar_email'])): ?><i class="bi bi-bell-fill text-primary ms-1" title="Recebe notificações"></i><?php endif; ?>
+                    </td>
                     <td><?= $u['role'] === 'admin' ? '<span class="badge bg-warning text-dark">Administrador</span>' : '<span class="badge bg-secondary">Usuário Padrão</span>' ?></td>
                     <td><?= $u['enabled'] ? '<span class="badge bg-success">Habilitado</span>' : '<span class="badge bg-danger">Desabilitado</span>' ?></td>
                     <td><small class="mono text-muted"><?= htmlspecialchars($u['created_at']) ?></small></td>
@@ -190,7 +210,7 @@ $users = $db->query("SELECT * FROM local_users ORDER BY username ASC");
                 </tr>
                 <?php endwhile; ?>
                 <?php if ($count === 0): ?>
-                    <tr><td colspan="6" class="text-center text-muted py-3">Nenhum usuário cadastrado.</td></tr>
+                    <tr><td colspan="7" class="text-center text-muted py-3">Nenhum usuário cadastrado.</td></tr>
                 <?php endif; ?>
             </tbody>
         </table>

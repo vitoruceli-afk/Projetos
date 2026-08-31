@@ -1,6 +1,6 @@
 <?php
 $db = getDB();
-$tab = in_array($_GET['tab'] ?? '', ['movimentacoes', 'historico'], true) ? $_GET['tab'] : 'estoque';
+$tab = in_array($_GET['tab'] ?? '', ['movimentacoes', 'historico', 'estoque_minimo'], true) ? $_GET['tab'] : 'estoque';
 $labs = $db->query("SELECT DISTINCT laboratorio FROM medicamentos_anvisa WHERE laboratorio <> '' ORDER BY laboratorio ASC")->fetchAll(PDO::FETCH_COLUMN);
 
 $laboratorio = trim($_GET['laboratorio'] ?? '');
@@ -23,9 +23,16 @@ function csvOutput($filename, $header, $rows) {
 // medicamento a medicamento.
 function buscarMovimentacoesAgrupadas(PDO $db, string $tipo, string $dataInicio, string $dataFim) {
     $grupoSql = movimentacaoGrupoChaveSql('mv');
+    // LEFT JOIN só bate pra confirmações novas (confirmacao_id real); entradas antigas agrupadas
+    // pela chave aproximada (usuário+minuto) simplesmente ficam sem paciente_nome, o que é
+    // esperado, já que esse campo nem existia quando foram feitas.
     $sql = "SELECT {$grupoSql} AS grupo_chave, MIN(mv.created_at) AS created_at, MAX(mv.usuario) AS usuario,
-            COUNT(*) AS total_itens, SUM(mv.quantidade) AS total_quantidade
+            COUNT(*) AS total_itens, SUM(mv.quantidade) AS total_quantidade,
+            SUM(mv.quantidade * mv.valor_unitario) AS valor_total,
+            MAX(p.nome_completo) AS paciente_nome
         FROM movimentacoes mv
+        LEFT JOIN movimentacao_confirmacoes mc ON mc.id = mv.confirmacao_id
+        LEFT JOIN pacientes p ON p.id = mc.paciente_id
         WHERE mv.tipo = :tipo AND DATE(mv.created_at) BETWEEN :di AND :df
         GROUP BY grupo_chave
         ORDER BY created_at DESC";
@@ -38,7 +45,7 @@ function buscarMovimentacoesAgrupadas(PDO $db, string $tipo, string $dataInicio,
 // LEFT JOIN nas duas origens possíveis (medicamento ou insumo) e COALESCE pra exibir a de qual
 // delas bateu — medicamento_id/insumo_id são mutuamente exclusivos em cada linha.
 function buscarMovimentacoesDetalhado(PDO $db, string $tipo, string $dataInicio, string $dataFim) {
-    $sql = "SELECT mv.created_at, mv.quantidade, mv.usuario,
+    $sql = "SELECT mv.created_at, mv.quantidade, mv.valor_unitario, mv.usuario,
             COALESCE(md.produto, ins.nome_comercial) AS medicamento_nome,
             COALESCE(md.laboratorio, ins.marca) AS laboratorio_nome,
             COALESCE(l.lote, ins.lote) AS lote
@@ -82,6 +89,35 @@ if ($tab === 'estoque') {
         }, $linhas);
         csvOutput('relatorio_estoque.csv', ['Medicamento', 'Laboratório', 'Código GGREM', 'Lote', 'Validade', 'Quantidade', 'Status'], $rows);
     }
+} elseif ($tab === 'estoque_minimo') {
+    // Medicamentos e insumos juntos numa lista só, já que os dois têm o mesmo conceito de
+    // "estoque mínimo" e o objetivo do relatório é mostrar quem precisa de reposição.
+    $itensMinimo = [];
+    foreach (medicamentosAbaixoDoMinimo($db) as $m) {
+        $itensMinimo[] = [
+            'tipo' => 'medicamento', 'nome' => $m['produto'], 'origem' => $m['laboratorio'],
+            'estoque_atual' => (int)$m['estoque_atual'], 'estoque_minimo' => (int)$m['estoque_minimo'], 'unidade' => 'un.',
+        ];
+    }
+    foreach (insumosAbaixoDoMinimo($db) as $i) {
+        $itensMinimo[] = [
+            'tipo' => 'insumo', 'nome' => $i['nome_comercial'], 'origem' => $i['marca'],
+            'estoque_atual' => (int)$i['quantidade'], 'estoque_minimo' => (int)$i['estoque_minimo'], 'unidade' => $i['unidade_medida'],
+        ];
+    }
+    if ($busca !== '') {
+        $itensMinimo = array_values(array_filter($itensMinimo, function ($it) use ($busca) {
+            return mb_stripos($it['nome'], $busca) !== false;
+        }));
+    }
+    usort($itensMinimo, function ($a, $b) { return strcasecmp($a['nome'], $b['nome']); });
+
+    if (($_GET['format'] ?? '') === 'csv') {
+        $rows = array_map(function ($it) {
+            return [$it['tipo'] === 'medicamento' ? 'Medicamento' : 'Insumo', $it['nome'], $it['origem'], $it['estoque_atual'], $it['estoque_minimo'], $it['unidade']];
+        }, $itensMinimo);
+        csvOutput('relatorio_estoque_minimo.csv', ['Tipo', 'Nome', 'Laboratório/Marca', 'Estoque Atual', 'Estoque Mínimo', 'Unidade'], $rows);
+    }
 } elseif ($tab === 'movimentacoes') {
     $dataInicio = trim($_GET['data_inicio'] ?? date('Y-m-01'));
     $dataFim = trim($_GET['data_fim'] ?? date('Y-m-d'));
@@ -108,9 +144,11 @@ if ($tab === 'estoque') {
 
     if (($_GET['format'] ?? '') === 'csv') {
         $rows = array_map(function ($m) {
-            return [date('d/m/Y H:i', strtotime($m['created_at'])), $m['tipo'] === 'entrada' ? 'Entrada' : 'Saída', $m['medicamento_nome'], $m['laboratorio_nome'], $m['lote'], $m['quantidade'], $m['usuario'], $m['observacao']];
+            $valorUnit = number_format((float)$m['valor_unitario'], 2, ',', '');
+            $subtotal = number_format((float)$m['valor_unitario'] * (int)$m['quantidade'], 2, ',', '');
+            return [date('d/m/Y H:i', strtotime($m['created_at'])), $m['tipo'] === 'entrada' ? 'Entrada' : 'Saída', $m['medicamento_nome'], $m['laboratorio_nome'], $m['lote'], $m['quantidade'], $valorUnit, $subtotal, $m['usuario'], $m['observacao']];
         }, $linhas);
-        csvOutput('relatorio_movimentacoes.csv', ['Data/Hora', 'Tipo', 'Medicamento', 'Laboratório', 'Lote', 'Quantidade', 'Usuário', 'Observação'], $rows);
+        csvOutput('relatorio_movimentacoes.csv', ['Data/Hora', 'Tipo', 'Medicamento', 'Laboratório', 'Lote', 'Quantidade', 'Valor Unitário', 'Subtotal', 'Usuário', 'Observação'], $rows);
     }
 } else {
     // historico: entradas e saídas, ambas agrupadas por confirmação, lado a lado.
@@ -123,10 +161,12 @@ if ($tab === 'estoque') {
     $csvTipo = $_GET['csv_tipo'] ?? '';
     if (($_GET['format'] ?? '') === 'csv' && in_array($csvTipo, ['entrada', 'saida'], true)) {
         $rows = array_map(function ($m) {
-            return [date('d/m/Y', strtotime($m['created_at'])), date('H:i', strtotime($m['created_at'])), $m['medicamento_nome'], $m['laboratorio_nome'], $m['lote'], $m['quantidade'], $m['usuario']];
+            $valorUnit = number_format((float)$m['valor_unitario'], 2, ',', '');
+            $subtotal = number_format((float)$m['valor_unitario'] * (int)$m['quantidade'], 2, ',', '');
+            return [date('d/m/Y', strtotime($m['created_at'])), date('H:i', strtotime($m['created_at'])), $m['medicamento_nome'], $m['laboratorio_nome'], $m['lote'], $m['quantidade'], $valorUnit, $subtotal, $m['usuario']];
         }, buscarMovimentacoesDetalhado($db, $csvTipo, $dataInicio, $dataFim));
         $nome = $csvTipo === 'entrada' ? 'relatorio_entradas.csv' : 'relatorio_saidas.csv';
-        csvOutput($nome, ['Data', 'Hora', 'Medicamento', 'Laboratório', 'Lote', 'Quantidade', 'Usuário'], $rows);
+        csvOutput($nome, ['Data', 'Hora', 'Medicamento', 'Laboratório', 'Lote', 'Quantidade', 'Valor Unitário', 'Subtotal', 'Usuário'], $rows);
     }
 }
 
@@ -145,6 +185,7 @@ $csvSaidasQs = http_build_query(array_merge($qs, ['format' => 'csv', 'csv_tipo' 
 
 <ul class="nav nav-tabs mb-4">
     <li class="nav-item"><a class="nav-link <?= $tab === 'estoque' ? 'active' : '' ?>" href="index.php?page=relatorios&tab=estoque">Estoque por Vencimento</a></li>
+    <li class="nav-item"><a class="nav-link <?= $tab === 'estoque_minimo' ? 'active' : '' ?>" href="index.php?page=relatorios&tab=estoque_minimo">Estoque Mínimo</a></li>
     <li class="nav-item"><a class="nav-link <?= $tab === 'historico' ? 'active' : '' ?>" href="index.php?page=relatorios&tab=historico">Entradas e Saídas</a></li>
     <li class="nav-item"><a class="nav-link <?= $tab === 'movimentacoes' ? 'active' : '' ?>" href="index.php?page=relatorios&tab=movimentacoes">Movimentações</a></li>
 </ul>
@@ -194,6 +235,38 @@ $csvSaidasQs = http_build_query(array_merge($qs, ['format' => 'csv', 'csv_tipo' 
         </table>
     </div>
 
+<?php elseif ($tab === 'estoque_minimo'): ?>
+    <form method="GET" class="entity-list-toolbar">
+        <input type="hidden" name="page" value="relatorios">
+        <input type="hidden" name="tab" value="estoque_minimo">
+        <input type="text" name="busca" class="form-control" style="max-width:240px;" placeholder="Buscar por nome..." value="<?= htmlspecialchars($busca) ?>">
+        <button class="btn btn-outline-primary">Filtrar</button>
+        <a class="btn btn-outline-secondary ms-auto" href="?<?= htmlspecialchars($csvQs) ?>"><i class="bi bi-download"></i> Exportar CSV</a>
+    </form>
+
+    <div class="table-responsive">
+        <table class="table table-striped table-hover bg-white align-middle">
+            <thead class="table-dark">
+                <tr><th>Tipo</th><th>Nome</th><th>Laboratório/Marca</th><th class="text-center">Estoque Atual</th><th class="text-center">Estoque Mínimo</th></tr>
+            </thead>
+            <tbody>
+                <?php if (empty($itensMinimo)): ?>
+                    <tr><td colspan="5" class="text-center text-muted py-4">Nenhum medicamento ou insumo atingiu o estoque mínimo.</td></tr>
+                <?php else: ?>
+                    <?php foreach ($itensMinimo as $it): ?>
+                        <tr class="<?= $it['estoque_atual'] <= 0 ? 'table-danger' : 'table-warning' ?>">
+                            <td><span class="badge <?= $it['tipo'] === 'medicamento' ? 'bg-info text-dark' : 'bg-secondary' ?>"><?= $it['tipo'] === 'medicamento' ? 'Medicamento' : 'Insumo' ?></span></td>
+                            <td><?= htmlspecialchars($it['nome']) ?></td>
+                            <td><?= htmlspecialchars($it['origem'] ?: '—') ?></td>
+                            <td class="text-center"><?= $it['estoque_atual'] ?> <?= htmlspecialchars($it['unidade']) ?></td>
+                            <td class="text-center"><?= $it['estoque_minimo'] ?> <?= htmlspecialchars($it['unidade']) ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+            </tbody>
+        </table>
+    </div>
+
 <?php elseif ($tab === 'historico'): ?>
     <form method="GET" class="entity-list-toolbar">
         <input type="hidden" name="page" value="relatorios">
@@ -203,6 +276,10 @@ $csvSaidasQs = http_build_query(array_merge($qs, ['format' => 'csv', 'csv_tipo' 
         <button class="btn btn-outline-primary">Filtrar</button>
     </form>
 
+    <?php
+    $valorTotalEntradas = array_sum(array_map(function ($e) { return (float)$e['valor_total']; }, $entradasAgrupadas));
+    $valorTotalSaidas = array_sum(array_map(function ($s) { return (float)$s['valor_total']; }, $saidasAgrupadas));
+    ?>
     <div class="row g-3">
         <div class="col-lg-6">
             <div class="card h-100">
@@ -211,14 +288,18 @@ $csvSaidasQs = http_build_query(array_merge($qs, ['format' => 'csv', 'csv_tipo' 
                     <a class="small fw-bold" href="?<?= htmlspecialchars($csvEntradasQs) ?>"><i class="bi bi-download"></i> Exportar CSV</a>
                 </div>
                 <div class="form-text px-3 pt-2">Cada linha é uma confirmação de entrada — clique em "Ver Itens" para conferir os medicamentos incluídos.</div>
+                <div class="d-flex justify-content-between align-items-center px-3 py-2 border-bottom bg-light">
+                    <span class="small text-muted">Valor total investido no período</span>
+                    <span class="fw-bold">R$ <?= number_format($valorTotalEntradas, 2, ',', '.') ?></span>
+                </div>
                 <div class="table-responsive">
                     <table class="table table-striped table-hover bg-white align-middle mb-0">
                         <thead class="table-dark">
-                            <tr><th>Data</th><th>Hora</th><th>Usuário</th><th class="text-center">Itens</th><th class="text-center">Qtd. Total</th><th></th></tr>
+                            <tr><th>Data</th><th>Hora</th><th>Usuário</th><th class="text-center">Itens</th><th class="text-center">Qtd. Total</th><th class="text-end">Valor Total</th><th></th></tr>
                         </thead>
                         <tbody>
                             <?php if (empty($entradasAgrupadas)): ?>
-                                <tr><td colspan="6" class="text-center text-muted py-4">Nenhuma entrada neste período.</td></tr>
+                                <tr><td colspan="7" class="text-center text-muted py-4">Nenhuma entrada neste período.</td></tr>
                             <?php else: ?>
                                 <?php foreach ($entradasAgrupadas as $e): ?>
                                     <tr>
@@ -227,6 +308,7 @@ $csvSaidasQs = http_build_query(array_merge($qs, ['format' => 'csv', 'csv_tipo' 
                                         <td><?= htmlspecialchars($e['usuario']) ?></td>
                                         <td class="text-center"><?= (int)$e['total_itens'] ?></td>
                                         <td class="text-center"><?= (int)$e['total_quantidade'] ?></td>
+                                        <td class="text-end mono">R$ <?= number_format((float)$e['valor_total'], 2, ',', '.') ?></td>
                                         <td class="text-nowrap">
                                             <button type="button" class="btn btn-sm btn-outline-primary btn-ver-itens" data-grupo="<?= htmlspecialchars($e['grupo_chave']) ?>" data-tipo="entrada">
                                                 <i class="bi bi-list-ul"></i> Ver Itens
@@ -246,23 +328,29 @@ $csvSaidasQs = http_build_query(array_merge($qs, ['format' => 'csv', 'csv_tipo' 
                     <span><i class="bi bi-arrow-up-circle text-danger"></i> Saídas</span>
                     <a class="small fw-bold" href="?<?= htmlspecialchars($csvSaidasQs) ?>"><i class="bi bi-download"></i> Exportar CSV</a>
                 </div>
-                <div class="form-text px-3 pt-2">Cada linha é uma confirmação de saída — clique em "Ver Itens" para conferir os medicamentos incluídos.</div>
+                <div class="form-text px-3 pt-2">Cada linha é uma confirmação de saída — clique em "Ver Itens" para conferir o resumo financeiro da operação.</div>
+                <div class="d-flex justify-content-between align-items-center px-3 py-2 border-bottom bg-light">
+                    <span class="small text-muted">Valor total retirado no período</span>
+                    <span class="fw-bold">R$ <?= number_format($valorTotalSaidas, 2, ',', '.') ?></span>
+                </div>
                 <div class="table-responsive">
                     <table class="table table-striped table-hover bg-white align-middle mb-0">
                         <thead class="table-dark">
-                            <tr><th>Data</th><th>Hora</th><th>Usuário</th><th class="text-center">Itens</th><th class="text-center">Qtd. Total</th><th></th></tr>
+                            <tr><th>Data</th><th>Hora</th><th>Usuário</th><th>Paciente</th><th class="text-center">Itens</th><th class="text-center">Qtd. Total</th><th class="text-end">Valor Total</th><th></th></tr>
                         </thead>
                         <tbody>
                             <?php if (empty($saidasAgrupadas)): ?>
-                                <tr><td colspan="6" class="text-center text-muted py-4">Nenhuma saída neste período.</td></tr>
+                                <tr><td colspan="8" class="text-center text-muted py-4">Nenhuma saída neste período.</td></tr>
                             <?php else: ?>
                                 <?php foreach ($saidasAgrupadas as $s): ?>
                                     <tr>
                                         <td class="mono text-nowrap"><?= date('d/m/Y', strtotime($s['created_at'])) ?></td>
                                         <td class="mono"><?= date('H:i', strtotime($s['created_at'])) ?></td>
                                         <td><?= htmlspecialchars($s['usuario']) ?></td>
+                                        <td><?= htmlspecialchars($s['paciente_nome'] ?: '—') ?></td>
                                         <td class="text-center"><?= (int)$s['total_itens'] ?></td>
                                         <td class="text-center"><?= (int)$s['total_quantidade'] ?></td>
+                                        <td class="text-end mono">R$ <?= number_format((float)$s['valor_total'], 2, ',', '.') ?></td>
                                         <td class="text-nowrap">
                                             <button type="button" class="btn btn-sm btn-outline-primary btn-ver-itens" data-grupo="<?= htmlspecialchars($s['grupo_chave']) ?>" data-tipo="saida">
                                                 <i class="bi bi-list-ul"></i> Ver Itens
@@ -321,6 +409,9 @@ $csvSaidasQs = http_build_query(array_merge($qs, ['format' => 'csv', 'csv_tipo' 
                             modalBody.innerHTML = '<div class="alert alert-danger mb-0">' + esc(data.error) + '</div>';
                             return;
                         }
+                        function fmtMoeda(v) {
+                            return 'R$ ' + (Number(v) || 0).toFixed(2).replace('.', ',');
+                        }
                         var linhas = data.itens.map(function (i) {
                             return '<tr>' +
                                 '<td>' + esc(i.produto) + (i.apresentacao ? '<div class="entity-sub">' + esc(i.apresentacao) + '</div>' : '') + '</td>' +
@@ -328,11 +419,17 @@ $csvSaidasQs = http_build_query(array_merge($qs, ['format' => 'csv', 'csv_tipo' 
                                 '<td class="mono">' + esc(i.lote || '—') + '</td>' +
                                 '<td class="mono">' + esc(i.validade_br || '—') + '</td>' +
                                 '<td class="text-center">' + esc(i.quantidade) + '</td>' +
+                                '<td class="text-end mono">' + fmtMoeda(i.valor_unitario) + '</td>' +
+                                '<td class="text-end mono">' + fmtMoeda(i.subtotal) + '</td>' +
                                 '</tr>';
                         }).join('');
                         modalBody.innerHTML = '<div class="table-responsive"><table class="table table-sm table-striped mb-0">' +
-                            '<thead><tr><th>Medicamento</th><th>Laboratório</th><th>Lote</th><th>Validade</th><th class="text-center">Qtd.</th></tr></thead>' +
-                            '<tbody>' + linhas + '</tbody></table></div>';
+                            '<thead><tr><th>Medicamento</th><th>Laboratório</th><th>Lote</th><th>Validade</th><th class="text-center">Qtd.</th><th class="text-end">Valor Unit.</th><th class="text-end">Subtotal</th></tr></thead>' +
+                            '<tbody>' + linhas + '</tbody></table></div>' +
+                            '<div class="d-flex justify-content-between align-items-center border-top mt-2 pt-2">' +
+                                '<span class="fw-bold">Resumo financeiro da operação</span>' +
+                                '<span class="fw-bold fs-5">' + fmtMoeda(data.valor_total) + '</span>' +
+                            '</div>';
                     })
                     .catch(function () {
                         modalBody.innerHTML = '<div class="alert alert-danger mb-0">Erro ao carregar os itens.</div>';
@@ -367,11 +464,11 @@ $csvSaidasQs = http_build_query(array_merge($qs, ['format' => 'csv', 'csv_tipo' 
     <div class="table-responsive">
         <table class="table table-striped table-hover bg-white align-middle">
             <thead class="table-dark">
-                <tr><th>Data/Hora</th><th>Tipo</th><th>Medicamento</th><th>Laboratório</th><th>Lote</th><th class="text-center">Qtd.</th><th>Usuário</th><th>Observação</th></tr>
+                <tr><th>Data/Hora</th><th>Tipo</th><th>Medicamento</th><th>Laboratório</th><th>Lote</th><th class="text-center">Qtd.</th><th class="text-end">Valor Unit.</th><th class="text-end">Subtotal</th><th>Usuário</th><th>Observação</th></tr>
             </thead>
             <tbody>
                 <?php if (empty($linhas)): ?>
-                    <tr><td colspan="8" class="text-center text-muted py-4">Nenhuma movimentação neste período.</td></tr>
+                    <tr><td colspan="10" class="text-center text-muted py-4">Nenhuma movimentação neste período.</td></tr>
                 <?php else: ?>
                     <?php foreach ($linhas as $m): ?>
                         <tr>
@@ -381,6 +478,8 @@ $csvSaidasQs = http_build_query(array_merge($qs, ['format' => 'csv', 'csv_tipo' 
                             <td><?= htmlspecialchars($m['laboratorio_nome'] ?: '—') ?></td>
                             <td class="mono"><?= htmlspecialchars($m['lote'] ?: '—') ?></td>
                             <td class="text-center"><?= (int)$m['quantidade'] ?></td>
+                            <td class="text-end mono">R$ <?= number_format((float)$m['valor_unitario'], 2, ',', '.') ?></td>
+                            <td class="text-end mono">R$ <?= number_format((float)$m['valor_unitario'] * (int)$m['quantidade'], 2, ',', '.') ?></td>
                             <td><?= htmlspecialchars($m['usuario']) ?></td>
                             <td><?= htmlspecialchars($m['observacao']) ?></td>
                         </tr>

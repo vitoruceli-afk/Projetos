@@ -20,6 +20,9 @@ $totalVencidos = $countMedicamentosComLote('validade < :hoje', [':hoje' => $hoje
 $totalAVencer7 = $countMedicamentosComLote('validade >= :hoje AND validade <= :em7', [':hoje' => $hoje, ':em7' => $em7]);
 $totalAVencer30 = $countMedicamentosComLote('validade >= :hoje AND validade <= :em30', [':hoje' => $hoje, ':em30' => $em30]);
 
+// Medicamentos + insumos cujo estoque atual já chegou no mínimo cadastrado (ou passou dele).
+$totalEstoqueMinimo = count(medicamentosAbaixoDoMinimo($db)) + count(insumosAbaixoDoMinimo($db));
+
 $recentMov = $db->query("SELECT mv.*, md.produto AS medicamento_nome FROM movimentacoes mv
     JOIN medicamentos_anvisa md ON md.id = mv.medicamento_id
     ORDER BY mv.created_at DESC, mv.id DESC LIMIT 8")->fetchAll();
@@ -78,6 +81,14 @@ function timeAgoEC($datetime) {
             <div class="stat-note">precisam ser retirados</div>
         </div>
         <div class="stat-icon red"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/></svg></div>
+    </a>
+    <a class="stat-tile" href="index.php?page=relatorios&tab=estoque_minimo">
+        <div>
+            <div class="stat-label">Estoque Mínimo Atingido</div>
+            <div class="stat-value warning-c"><?= $totalEstoqueMinimo ?></div>
+            <div class="stat-note">medicamentos e insumos a repor</div>
+        </div>
+        <div class="stat-icon orange"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 3v12M12 15l-4-4M12 15l4-4"/><path d="M4 19h16"/></svg></div>
     </a>
 </div>
 

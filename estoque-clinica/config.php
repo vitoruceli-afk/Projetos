@@ -28,6 +28,9 @@ define('DB_PASS', '');
 define('VENCIMENTO_ALERTA_DIAS', 30);
 define('VENCIMENTO_URGENTE_DIAS', 7);
 
+define('UPLOAD_DIR_PACIENTES', __DIR__ . '/uploads/pacientes');
+define('UPLOAD_URL_PACIENTES', 'uploads/pacientes');
+
 function getDB() {
     // Conexão + schema são cacheados numa estática por requisição (mesmo motivo documentado
     // em ../mikrotik/config.php: evita repetir os CREATE TABLE IF NOT EXISTS em toda chamada).
@@ -50,10 +53,21 @@ function getDB() {
             username VARCHAR(100) NOT NULL UNIQUE,
             password_hash VARCHAR(255) NOT NULL,
             full_name VARCHAR(255) DEFAULT '',
+            email VARCHAR(150) DEFAULT '',
+            notificar_email TINYINT(1) NOT NULL DEFAULT 0,
             enabled TINYINT(1) NOT NULL DEFAULT 1,
             role VARCHAR(20) NOT NULL DEFAULT 'usuario',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )");
+
+        // Migração leve: instalações que já tinham local_users sem email/notificar_email.
+        $temEmailUsuario = (bool)$db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'local_users' AND COLUMN_NAME = 'email'")->fetchColumn();
+        if (!$temEmailUsuario) {
+            $db->exec("ALTER TABLE local_users
+                ADD COLUMN email VARCHAR(150) DEFAULT '' AFTER full_name,
+                ADD COLUMN notificar_email TINYINT(1) NOT NULL DEFAULT 0 AFTER email");
+        }
 
         $db->exec("CREATE TABLE IF NOT EXISTS laboratorios (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -92,6 +106,7 @@ function getDB() {
             unidade_medida VARCHAR(30) NOT NULL DEFAULT 'unidade',
             lote VARCHAR(80) DEFAULT '',
             validade DATE NULL,
+            valor_unitario DECIMAL(10,2) NOT NULL DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             INDEX idx_insumos_nome (nome_comercial),
@@ -106,6 +121,14 @@ function getDB() {
             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'insumos' AND COLUMN_NAME = 'codigo_barras'")->fetchColumn();
         if (!$temCodigoBarrasInsumo) {
             $db->exec("ALTER TABLE insumos ADD COLUMN codigo_barras VARCHAR(64) DEFAULT '' AFTER categoria, ADD INDEX idx_insumos_codigo_barras (codigo_barras)");
+        }
+
+        // Migração leve: valor unitário (custo de aquisição) informado na Entrada, pra Saída poder
+        // trazer o valor automaticamente e montar o resumo financeiro.
+        $temValorInsumo = (bool)$db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'insumos' AND COLUMN_NAME = 'valor_unitario'")->fetchColumn();
+        if (!$temValorInsumo) {
+            $db->exec("ALTER TABLE insumos ADD COLUMN valor_unitario DECIMAL(10,2) NOT NULL DEFAULT 0 AFTER validade");
         }
 
         // Migração histórica de uma versão bem antiga, onde insumo_id referenciava o catálogo de
@@ -135,11 +158,19 @@ function getDB() {
             lote VARCHAR(80) NOT NULL,
             validade DATE NOT NULL,
             quantidade INT NOT NULL DEFAULT 0,
+            valor_unitario DECIMAL(10,2) NOT NULL DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE KEY uq_medicamento_lote (medicamento_id, lote),
             INDEX idx_lotes_validade (validade),
             INDEX idx_lotes_medicamento (medicamento_id)
         )");
+
+        // Migração leve: valor unitário (custo de aquisição) do lote, informado na Entrada.
+        $temValorLote = (bool)$db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'insumo_lotes' AND COLUMN_NAME = 'valor_unitario'")->fetchColumn();
+        if (!$temValorLote) {
+            $db->exec("ALTER TABLE insumo_lotes ADD COLUMN valor_unitario DECIMAL(10,2) NOT NULL DEFAULT 0 AFTER quantidade");
+        }
 
         // Cabeçalho de uma confirmação em lote (tela Entrada: vários itens conferidos juntos e
         // gravados de uma vez em "Confirmar Entrada"). Cada linha de movimentacoes gerada por essa
@@ -149,10 +180,20 @@ function getDB() {
             id INT AUTO_INCREMENT PRIMARY KEY,
             tipo VARCHAR(10) NOT NULL DEFAULT 'entrada',
             usuario VARCHAR(100) DEFAULT '',
+            paciente_id INT NULL,
             total_itens INT NOT NULL DEFAULT 0,
             total_quantidade INT NOT NULL DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_confirmacoes_paciente (paciente_id)
         )");
+
+        // Migração leve: instalações que já tinham movimentacao_confirmacoes sem paciente_id
+        // (recurso da tela Saída: selecionar a quem os itens retirados se destinam).
+        $temPacienteIdConfirmacao = (bool)$db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'movimentacao_confirmacoes' AND COLUMN_NAME = 'paciente_id'")->fetchColumn();
+        if (!$temPacienteIdConfirmacao) {
+            $db->exec("ALTER TABLE movimentacao_confirmacoes ADD COLUMN paciente_id INT NULL AFTER usuario, ADD INDEX idx_confirmacoes_paciente (paciente_id)");
+        }
 
         // Histórico de entradas/saídas — cada linha é um movimento de um medicamento (com lote
         // específico via lote_id) OU de um insumo (sem lote — o insumo tem uma única quantidade),
@@ -166,6 +207,7 @@ function getDB() {
             confirmacao_id INT NULL,
             tipo VARCHAR(10) NOT NULL,
             quantidade INT NOT NULL,
+            valor_unitario DECIMAL(10,2) NOT NULL DEFAULT 0,
             usuario VARCHAR(100) DEFAULT '',
             observacao VARCHAR(255) DEFAULT '',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -175,6 +217,15 @@ function getDB() {
             INDEX idx_mov_tipo (tipo),
             INDEX idx_mov_confirmacao (confirmacao_id)
         )");
+
+        // Migração leve: valor unitário congelado no momento do movimento (o que foi pago na
+        // entrada, ou o valor do lote/insumo no momento da saída) — histórico não muda mesmo que o
+        // valor cadastrado no lote/insumo seja atualizado depois por uma entrada mais recente.
+        $temValorMov = (bool)$db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'movimentacoes' AND COLUMN_NAME = 'valor_unitario'")->fetchColumn();
+        if (!$temValorMov) {
+            $db->exec("ALTER TABLE movimentacoes ADD COLUMN valor_unitario DECIMAL(10,2) NOT NULL DEFAULT 0 AFTER quantidade");
+        }
 
         // Migração leve: se movimentacoes já existia (de uma versão anterior a este recurso) sem
         // a coluna confirmacao_id, adiciona agora. Entradas antigas ficam com confirmacao_id NULL
@@ -212,6 +263,70 @@ function getDB() {
             INDEX idx_logs_created (created_at)
         )");
 
+        // Cadastro de pacientes da clínica.
+        $db->exec("CREATE TABLE IF NOT EXISTS pacientes (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            nome_completo VARCHAR(200) NOT NULL,
+            data_nascimento DATE NOT NULL,
+            foto VARCHAR(255) DEFAULT '',
+            sexo VARCHAR(20) NOT NULL DEFAULT 'prefiro_nao_informar',
+            cpf VARCHAR(14) NOT NULL,
+            nome_mae VARCHAR(200) NOT NULL,
+            telefone_celular VARCHAR(20) DEFAULT '',
+            email VARCHAR(150) DEFAULT '',
+            cep VARCHAR(10) DEFAULT '',
+            logradouro VARCHAR(200) DEFAULT '',
+            numero VARCHAR(20) DEFAULT '',
+            complemento VARCHAR(100) DEFAULT '',
+            bairro VARCHAR(100) DEFAULT '',
+            cidade VARCHAR(100) DEFAULT '',
+            uf VARCHAR(2) DEFAULT '',
+            tipo_atendimento VARCHAR(20) NOT NULL DEFAULT 'particular',
+            convenio_nome VARCHAR(150) DEFAULT '',
+            convenio_carteirinha VARCHAR(80) DEFAULT '',
+            emergencia_nome VARCHAR(200) DEFAULT '',
+            emergencia_telefone VARCHAR(20) DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_pacientes_cpf (cpf),
+            INDEX idx_pacientes_nome (nome_completo)
+        )");
+
+        // Configuração do servidor SMTP usado para as notificações diárias por e-mail (vencimento
+        // e estoque mínimo). Linha única (id sempre 1) — mais simples que uma tabela chave/valor
+        // pra um conjunto de campos fixo e pequeno como esse.
+        $db->exec("CREATE TABLE IF NOT EXISTS notificacao_config (
+            id INT PRIMARY KEY DEFAULT 1,
+            ativo TINYINT(1) NOT NULL DEFAULT 0,
+            modo VARCHAR(10) NOT NULL DEFAULT 'legacy',
+            horario_envio TIME NOT NULL DEFAULT '07:00:00',
+            remetente_nome VARCHAR(150) DEFAULT 'Estoque Clínica',
+            remetente_email VARCHAR(150) DEFAULT '',
+            smtp_host VARCHAR(150) DEFAULT '',
+            smtp_porta INT NOT NULL DEFAULT 587,
+            smtp_seguranca VARCHAR(10) NOT NULL DEFAULT 'tls',
+            smtp_usuario VARCHAR(150) DEFAULT '',
+            smtp_senha VARCHAR(255) DEFAULT '',
+            oauth_provedor VARCHAR(20) DEFAULT 'google',
+            oauth_client_id VARCHAR(255) DEFAULT '',
+            oauth_client_secret VARCHAR(255) DEFAULT '',
+            oauth_refresh_token TEXT,
+            oauth_tenant VARCHAR(150) DEFAULT '',
+            atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        )");
+
+        // Histórico de tentativas de envio da notificação diária — evita mandar duas vezes no
+        // mesmo dia e dá pra tela de Notificações mostrar quando/se o último envio funcionou.
+        $db->exec("CREATE TABLE IF NOT EXISTS notificacoes_envios (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            data_referencia DATE NOT NULL,
+            sucesso TINYINT(1) NOT NULL DEFAULT 0,
+            destinatarios INT NOT NULL DEFAULT 0,
+            mensagem TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_envios_data (data_referencia)
+        )");
+
         // Base de referência da ANVISA/CMED (lista de preços de medicamentos), importada via CSV
         // pelo administrador. codigo_ggrem é a chave de negócio do CMED (uma linha por apresentação),
         // usada para decidir insert x update a cada reimportação. dados_completos guarda o registro
@@ -235,6 +350,7 @@ function getDB() {
             tarja VARCHAR(50) DEFAULT '',
             restricao_hospitalar VARCHAR(20) DEFAULT '',
             comercializacao_2025 VARCHAR(20) DEFAULT '',
+            estoque_minimo INT NULL,
             dados_completos LONGTEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -245,6 +361,17 @@ function getDB() {
             INDEX idx_medicamentos_registro (registro),
             INDEX idx_medicamentos_ean1 (ean_1)
         )");
+
+        // Migração leve: instalações que já tinham medicamentos_anvisa sem estoque_minimo ganham
+        // a coluna agora. Fica de fora do mapeamento de colunas do CSV da ANVISA (ver
+        // MEDICAMENTOS_ANVISA_COLUNAS/importarMedicamentosCsv) de propósito — é um dado que o
+        // próprio app gerencia (informado na tela de Entrada), não algo que vem do arquivo
+        // importado, então reimportar a base não pode sobrescrevê-lo.
+        $temEstoqueMinimoMedicamento = (bool)$db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'medicamentos_anvisa' AND COLUMN_NAME = 'estoque_minimo'")->fetchColumn();
+        if (!$temEstoqueMinimoMedicamento) {
+            $db->exec("ALTER TABLE medicamentos_anvisa ADD COLUMN estoque_minimo INT NULL AFTER comercializacao_2025");
+        }
 
         // Histórico de importações da base da ANVISA/CMED, exibido na tela Medicamentos.
         $db->exec("CREATE TABLE IF NOT EXISTS medicamentos_anvisa_imports (
@@ -371,7 +498,7 @@ function csrfVerify() {
 
 // ---- Log de auditoria ----
 
-const LOG_CATEGORIAS = ['Autenticação', 'Usuários', 'Medicamentos', 'Movimentação', 'Insumos'];
+const LOG_CATEGORIAS = ['Autenticação', 'Usuários', 'Medicamentos', 'Movimentação', 'Insumos', 'Pacientes', 'Notificações'];
 
 // Registra uma linha no log de auditoria. $usuario pode ser informado explicitamente para casos
 // em que a ação altera a própria sessão (ex.: logout, timeout) — nesses casos o valor precisa ser
@@ -401,6 +528,30 @@ function medicamentoLotesComSaldo(PDO $db, $medicamentoId) {
     $stmt->bindValue(':id', $medicamentoId, PDO::PARAM_INT);
     $stmt->execute();
     return $stmt->fetchAll();
+}
+
+// Medicamentos cujo estoque atual (soma de todos os lotes com saldo) já está no mínimo
+// cadastrado ou abaixo dele. Só considera quem TEM um mínimo definido — estoque_minimo NULL
+// significa "nunca configurado", não "mínimo zero", então fica de fora da comparação.
+function medicamentosAbaixoDoMinimo(PDO $db) {
+    $sql = "SELECT ma.id, ma.produto, ma.laboratorio, ma.estoque_minimo,
+            COALESCE(SUM(il.quantidade), 0) AS estoque_atual
+        FROM medicamentos_anvisa ma
+        LEFT JOIN insumo_lotes il ON il.medicamento_id = ma.id AND il.quantidade > 0
+        WHERE ma.estoque_minimo IS NOT NULL
+        GROUP BY ma.id, ma.produto, ma.laboratorio, ma.estoque_minimo
+        HAVING estoque_atual <= ma.estoque_minimo
+        ORDER BY ma.produto ASC";
+    return $db->query($sql)->fetchAll();
+}
+
+// Insumos cuja quantidade atual já está no estoque mínimo cadastrado ou abaixo dele.
+function insumosAbaixoDoMinimo(PDO $db) {
+    $sql = "SELECT id, nome_comercial, marca, categoria, quantidade, estoque_minimo, unidade_medida
+        FROM insumos
+        WHERE quantidade <= estoque_minimo
+        ORDER BY nome_comercial ASC";
+    return $db->query($sql)->fetchAll();
 }
 
 // 'vencido' | 'urgente' (<= 7 dias) | 'alerta' (<= 30 dias) | 'ok' | null (sem lote com saldo)
@@ -681,4 +832,374 @@ function importarMedicamentosCsv(PDO $db, string $caminhoArquivo, int $linhaCabe
         'atualizados' => $atualizados,
         'ignorados' => $ignoradas,
     ];
+}
+
+// ---- Pacientes ----
+
+// Valida um CPF pelo algoritmo oficial de dígitos verificadores (não apenas o formato). Aceita
+// tanto "000.000.000-00" quanto só os 11 dígitos.
+function validarCPF($cpf) {
+    $cpf = preg_replace('/\D/', '', (string)$cpf);
+    if (strlen($cpf) !== 11 || preg_match('/^(\d)\1{10}$/', $cpf)) {
+        return false; // tamanho errado ou os 11 dígitos iguais (000.000.000-00 etc., sempre inválido)
+    }
+    for ($t = 9; $t <= 10; $t++) {
+        $soma = 0;
+        for ($i = 0; $i < $t; $i++) {
+            $soma += (int)$cpf[$i] * (($t + 1) - $i);
+        }
+        $digito = ((10 * $soma) % 11) % 10;
+        if ((int)$cpf[$t] !== $digito) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function formatarCPF($cpf) {
+    $cpf = preg_replace('/\D/', '', (string)$cpf);
+    if (strlen($cpf) !== 11) return $cpf;
+    return substr($cpf, 0, 3) . '.' . substr($cpf, 3, 3) . '.' . substr($cpf, 6, 3) . '-' . substr($cpf, 9, 2);
+}
+
+// Salva a foto do paciente em uploads/pacientes com um nome único; devolve o nome do arquivo
+// salvo (ou '' se nenhum arquivo válido foi enviado). Só aceita JPG/JPEG/PNG, conforme pedido.
+function salvarFotoPaciente(array $file) {
+    if (!isset($file['error']) || $file['error'] === UPLOAD_ERR_NO_FILE) {
+        return '';
+    }
+    if ($file['error'] !== UPLOAD_ERR_OK) {
+        throw new RuntimeException('Falha ao enviar a foto (código ' . $file['error'] . ').');
+    }
+
+    $allowed = ['image/jpeg' => 'jpg', 'image/png' => 'png'];
+    $mime = mime_content_type($file['tmp_name']);
+    if (!isset($allowed[$mime])) {
+        throw new RuntimeException('Formato de imagem não suportado. Use JPG, JPEG ou PNG.');
+    }
+    if ($file['size'] > 5 * 1024 * 1024) {
+        throw new RuntimeException('A foto deve ter no máximo 5MB.');
+    }
+
+    if (!is_dir(UPLOAD_DIR_PACIENTES)) {
+        mkdir(UPLOAD_DIR_PACIENTES, 0755, true);
+    }
+
+    $filename = bin2hex(random_bytes(16)) . '.' . $allowed[$mime];
+    if (!move_uploaded_file($file['tmp_name'], UPLOAD_DIR_PACIENTES . '/' . $filename)) {
+        throw new RuntimeException('Não foi possível salvar a foto enviada.');
+    }
+    return $filename;
+}
+
+function pacienteFotoUrl($foto) {
+    if (empty($foto)) return null;
+    return UPLOAD_URL_PACIENTES . '/' . rawurlencode($foto);
+}
+
+// ---- Notificações por e-mail (vencimento + estoque mínimo) ----
+
+// Linha única de configuração (id=1), criada com valores padrão se ainda não existir.
+function notificacaoConfig(PDO $db) {
+    $cfg = $db->query("SELECT * FROM notificacao_config WHERE id = 1")->fetch();
+    if (!$cfg) {
+        $db->exec("INSERT INTO notificacao_config (id) VALUES (1)");
+        $cfg = $db->query("SELECT * FROM notificacao_config WHERE id = 1")->fetch();
+    }
+    return $cfg;
+}
+
+// Troca o refresh_token por um access_token novo junto ao provedor (Google ou Microsoft). É uma
+// chamada HTTP simples (POST com client_id/secret/refresh_token) — não precisa de nenhuma
+// biblioteca de OAuth, só cURL, que já vem com o PHP.
+function obterAccessTokenOAuth(array $cfg) {
+    $endpoints = [
+        'google' => 'https://oauth2.googleapis.com/token',
+        'microsoft' => 'https://login.microsoftonline.com/' . ($cfg['oauth_tenant'] ?: 'common') . '/oauth2/v2.0/token',
+    ];
+    $url = $endpoints[$cfg['oauth_provedor']] ?? null;
+    if (!$url) {
+        return ['token' => null, 'erro' => 'Provedor OAuth desconhecido.'];
+    }
+
+    $params = [
+        'client_id' => $cfg['oauth_client_id'],
+        'client_secret' => $cfg['oauth_client_secret'],
+        'refresh_token' => $cfg['oauth_refresh_token'],
+        'grant_type' => 'refresh_token',
+    ];
+    if ($cfg['oauth_provedor'] === 'microsoft') {
+        $params['scope'] = 'https://outlook.office365.com/.default offline_access';
+    }
+
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => http_build_query($params),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 15,
+        CURLOPT_SSL_VERIFYPEER => true,
+    ]);
+    $resposta = curl_exec($ch);
+    $erroCurl = curl_error($ch);
+    curl_close($ch);
+
+    if ($resposta === false) {
+        return ['token' => null, 'erro' => "Falha na conexão com o provedor OAuth: {$erroCurl}"];
+    }
+    $json = json_decode($resposta, true);
+    if (!isset($json['access_token'])) {
+        $msg = $json['error_description'] ?? $json['error'] ?? $resposta;
+        return ['token' => null, 'erro' => "Provedor OAuth recusou a renovação do token: {$msg}"];
+    }
+    return ['token' => $json['access_token'], 'erro' => null];
+}
+
+// Cliente SMTP mínimo via socket puro (sem biblioteca externa): EHLO, STARTTLS opcional, AUTH
+// LOGIN (modo legacy) ou AUTH XOAUTH2 (modo oauth), MAIL FROM/RCPT TO/DATA. Servidor de teste
+// (botão "Enviar teste" na tela Notificações) e o envio diário de verdade usam a mesma função.
+function enviarEmailSmtp(array $cfg, array $destinatarios, string $assunto, string $corpoHtml) {
+    if (empty($destinatarios)) {
+        return ['sucesso' => false, 'mensagem' => 'Nenhum destinatário informado.'];
+    }
+    if ($cfg['smtp_host'] === '' || $cfg['remetente_email'] === '') {
+        return ['sucesso' => false, 'mensagem' => 'Configure o servidor SMTP e o e-mail do remetente antes de enviar.'];
+    }
+
+    $host = $cfg['smtp_host'];
+    $porta = (int)$cfg['smtp_porta'];
+    $seguranca = $cfg['smtp_seguranca']; // 'tls' | 'ssl' | 'none'
+    $timeout = 15;
+
+    $enderecoConexao = ($seguranca === 'ssl' ? 'ssl://' : '') . $host;
+    $fp = @fsockopen($enderecoConexao, $porta, $errno, $errstr, $timeout);
+    if (!$fp) {
+        return ['sucesso' => false, 'mensagem' => "Não foi possível conectar em {$host}:{$porta} — {$errstr}"];
+    }
+    stream_set_timeout($fp, $timeout);
+
+    $ler = function () use ($fp) {
+        $resp = '';
+        while (($linha = fgets($fp, 515)) !== false) {
+            $resp .= $linha;
+            if (isset($linha[3]) && $linha[3] === ' ') break;
+        }
+        return $resp;
+    };
+    $enviar = function ($cmd) use ($fp) { fwrite($fp, $cmd . "\r\n"); };
+    $codigo = function ($resp) { return (int)substr(trim($resp), 0, 3); };
+
+    $resp = $ler();
+    if ($codigo($resp) !== 220) { fclose($fp); return ['sucesso' => false, 'mensagem' => "Servidor recusou a conexão: {$resp}"]; }
+
+    $heloNome = $_SERVER['SERVER_NAME'] ?? 'localhost';
+    $enviar("EHLO {$heloNome}");
+    $resp = $ler();
+    if ($codigo($resp) !== 250) { fclose($fp); return ['sucesso' => false, 'mensagem' => "EHLO falhou: {$resp}"]; }
+
+    if ($seguranca === 'tls') {
+        $enviar("STARTTLS");
+        $resp = $ler();
+        if ($codigo($resp) !== 220) { fclose($fp); return ['sucesso' => false, 'mensagem' => "STARTTLS falhou: {$resp}"]; }
+        if (!stream_socket_enable_crypto($fp, true, STREAM_CRYPTO_METHOD_TLS_CLIENT)) {
+            fclose($fp);
+            return ['sucesso' => false, 'mensagem' => 'Falha ao negociar TLS com o servidor.'];
+        }
+        $enviar("EHLO {$heloNome}");
+        $resp = $ler();
+    }
+
+    if ($cfg['modo'] === 'oauth') {
+        $tokenResp = obterAccessTokenOAuth($cfg);
+        if (!$tokenResp['token']) {
+            fclose($fp);
+            return ['sucesso' => false, 'mensagem' => $tokenResp['erro']];
+        }
+        $authStr = base64_encode("user=" . $cfg['remetente_email'] . "\x01auth=Bearer " . $tokenResp['token'] . "\x01\x01");
+        $enviar("AUTH XOAUTH2 {$authStr}");
+        $resp = $ler();
+        if ($codigo($resp) !== 235) { fclose($fp); return ['sucesso' => false, 'mensagem' => "Autenticação OAuth recusada: {$resp}"]; }
+    } else {
+        $enviar("AUTH LOGIN");
+        $resp = $ler();
+        if ($codigo($resp) !== 334) { fclose($fp); return ['sucesso' => false, 'mensagem' => "AUTH LOGIN não suportado: {$resp}"]; }
+        $enviar(base64_encode($cfg['smtp_usuario']));
+        $resp = $ler();
+        $enviar(base64_encode($cfg['smtp_senha']));
+        $resp = $ler();
+        if ($codigo($resp) !== 235) { fclose($fp); return ['sucesso' => false, 'mensagem' => "Usuário ou senha recusados pelo servidor: {$resp}"]; }
+    }
+
+    $enviar("MAIL FROM:<{$cfg['remetente_email']}>");
+    $resp = $ler();
+    if ($codigo($resp) !== 250) { fclose($fp); return ['sucesso' => false, 'mensagem' => "MAIL FROM recusado: {$resp}"]; }
+
+    foreach ($destinatarios as $dest) {
+        $enviar("RCPT TO:<{$dest}>");
+        $resp = $ler();
+        if ($codigo($resp) >= 500) { fclose($fp); return ['sucesso' => false, 'mensagem' => "Destinatário recusado ({$dest}): {$resp}"]; }
+    }
+
+    $enviar("DATA");
+    $resp = $ler();
+    if ($codigo($resp) !== 354) { fclose($fp); return ['sucesso' => false, 'mensagem' => "DATA recusado: {$resp}"]; }
+
+    $dataAtual = date('r');
+    $cabecalhos = "From: {$cfg['remetente_nome']} <{$cfg['remetente_email']}>\r\n"
+        . "To: " . implode(', ', $destinatarios) . "\r\n"
+        . "Subject: =?UTF-8?B?" . base64_encode($assunto) . "?=\r\n"
+        . "Date: {$dataAtual}\r\n"
+        . "MIME-Version: 1.0\r\n"
+        . "Content-Type: text/html; charset=UTF-8\r\n"
+        . "Content-Transfer-Encoding: 8bit\r\n";
+
+    // Dot-stuffing: uma linha começando com "." sozinha encerraria a mensagem prematuramente.
+    $corpoEscapado = preg_replace('/^\./m', '..', $corpoHtml);
+    $enviar($cabecalhos . "\r\n" . $corpoEscapado . "\r\n.");
+    $resp = $ler();
+    if ($codigo($resp) !== 250) { fclose($fp); return ['sucesso' => false, 'mensagem' => "Servidor recusou a mensagem: {$resp}"]; }
+
+    $enviar("QUIT");
+    fclose($fp);
+    return ['sucesso' => true, 'mensagem' => 'E-mail enviado com sucesso.'];
+}
+
+// Monta o e-mail diário: vencendo em até 7 dias, vencendo em até 30 dias (excluindo os já
+// listados em 7) e itens no estoque mínimo (medicamentos + insumos). Retorna null se não há
+// nada a notificar hoje, pra não mandar e-mail vazio todo dia sem necessidade.
+function montarConteudoNotificacaoDiaria(PDO $db) {
+    $hoje = date('Y-m-d');
+    $em7 = date('Y-m-d', strtotime('+' . VENCIMENTO_URGENTE_DIAS . ' days'));
+    $em30 = date('Y-m-d', strtotime('+' . VENCIMENTO_ALERTA_DIAS . ' days'));
+
+    $stmt = $db->prepare("SELECT md.produto AS nome, l.lote, l.validade, l.quantidade
+        FROM insumo_lotes l JOIN medicamentos_anvisa md ON md.id = l.medicamento_id
+        WHERE l.quantidade > 0 AND l.validade >= :hoje AND l.validade <= :em30
+        ORDER BY l.validade ASC");
+    $stmt->execute([':hoje' => $hoje, ':em30' => $em30]);
+    $vencendo30 = $stmt->fetchAll();
+    $vencendo7 = array_values(array_filter($vencendo30, function ($l) use ($em7) { return $l['validade'] <= $em7; }));
+    $vencendo30 = array_values(array_filter($vencendo30, function ($l) use ($em7) { return $l['validade'] > $em7; }));
+
+    $abaixoMinimo = [];
+    foreach (medicamentosAbaixoDoMinimo($db) as $m) {
+        $abaixoMinimo[] = ['tipo' => 'Medicamento', 'nome' => $m['produto'], 'atual' => (int)$m['estoque_atual'], 'minimo' => (int)$m['estoque_minimo']];
+    }
+    foreach (insumosAbaixoDoMinimo($db) as $i) {
+        $abaixoMinimo[] = ['tipo' => 'Insumo', 'nome' => $i['nome_comercial'], 'atual' => (int)$i['quantidade'], 'minimo' => (int)$i['estoque_minimo']];
+    }
+
+    if (!$vencendo7 && !$vencendo30 && !$abaixoMinimo) {
+        return null;
+    }
+
+    $linkApp = (!empty($_SERVER['HTTP_HOST']) ? ((!empty($_SERVER['HTTPS']) ? 'https' : 'http') . '://' . $_SERVER['HTTP_HOST']) : '') . '/estoque-clinica/index.php';
+
+    $secao = function ($titulo, $corBadge, $linhas, $montarLinha) {
+        if (!$linhas) return '';
+        $corpo = '<h3 style="margin:24px 0 8px;font-size:15px;">' . htmlspecialchars($titulo) . ' <span style="background:' . $corBadge . ';color:#fff;border-radius:10px;padding:2px 8px;font-size:12px;">' . count($linhas) . '</span></h3>';
+        $corpo .= '<table style="width:100%;border-collapse:collapse;font-size:13px;">' . implode('', array_map($montarLinha, $linhas)) . '</table>';
+        return $corpo;
+    };
+
+    $html = '<div style="font-family:Segoe UI,Arial,sans-serif;color:#1a2233;max-width:640px;">';
+    $html .= '<h2 style="margin:0 0 4px;">Estoque Clínica — Resumo diário</h2>';
+    $html .= '<p style="color:#5c6b80;font-size:13px;margin:0 0 16px;">' . date('d/m/Y') . '</p>';
+
+    $html .= $secao('Vencendo em até 7 dias', '#dc2626', $vencendo7, function ($l) {
+        return '<tr style="border-bottom:1px solid #eee;"><td style="padding:6px 4px;">' . htmlspecialchars($l['nome']) . '</td>'
+            . '<td style="padding:6px 4px;">Lote ' . htmlspecialchars($l['lote']) . '</td>'
+            . '<td style="padding:6px 4px;">' . date('d/m/Y', strtotime($l['validade'])) . '</td>'
+            . '<td style="padding:6px 4px;text-align:right;">' . (int)$l['quantidade'] . ' un.</td></tr>';
+    });
+    $html .= $secao('Vencendo em até 30 dias', '#f97803', $vencendo30, function ($l) {
+        return '<tr style="border-bottom:1px solid #eee;"><td style="padding:6px 4px;">' . htmlspecialchars($l['nome']) . '</td>'
+            . '<td style="padding:6px 4px;">Lote ' . htmlspecialchars($l['lote']) . '</td>'
+            . '<td style="padding:6px 4px;">' . date('d/m/Y', strtotime($l['validade'])) . '</td>'
+            . '<td style="padding:6px 4px;text-align:right;">' . (int)$l['quantidade'] . ' un.</td></tr>';
+    });
+    $html .= $secao('Estoque mínimo atingido', '#b8790a', $abaixoMinimo, function ($it) {
+        return '<tr style="border-bottom:1px solid #eee;"><td style="padding:6px 4px;">' . htmlspecialchars($it['tipo']) . '</td>'
+            . '<td style="padding:6px 4px;">' . htmlspecialchars($it['nome']) . '</td>'
+            . '<td style="padding:6px 4px;text-align:right;">' . $it['atual'] . '</td>'
+            . '<td style="padding:6px 4px;text-align:right;">mín. ' . $it['minimo'] . '</td></tr>';
+    });
+
+    $html .= '<p style="margin-top:24px;"><a href="' . htmlspecialchars($linkApp) . '" style="color:#178ec8;">Abrir o Estoque Clínica</a></p>';
+    $html .= '</div>';
+
+    $totalItens = count($vencendo7) + count($vencendo30) + count($abaixoMinimo);
+    $assunto = "Estoque Clínica: {$totalItens} alerta(s) hoje";
+
+    return ['assunto' => $assunto, 'corpo' => $html];
+}
+
+// Monta e manda o e-mail de verdade e grava o resultado em notificacoes_envios (um upsert do dia).
+// Usada tanto pelo gatilho automático quanto pelo botão "Reenviar agora" da tela de Notificações.
+function executarNotificacaoDiaria(PDO $db, array $cfg) {
+    $hoje = date('Y-m-d');
+    $destinatarios = $db->query("SELECT email FROM local_users WHERE notificar_email = 1 AND enabled = 1 AND email <> ''")->fetchAll(PDO::FETCH_COLUMN);
+    $conteudo = $destinatarios ? montarConteudoNotificacaoDiaria($db) : null;
+
+    if (!$destinatarios) {
+        $resultado = ['sucesso' => true, 'mensagem' => 'Nenhum usuário está marcado para receber notificações por e-mail.'];
+    } elseif (!$conteudo) {
+        $resultado = ['sucesso' => true, 'mensagem' => 'Nada a notificar hoje (sem vencimentos próximos nem estoque mínimo atingido).'];
+    } else {
+        $resultado = enviarEmailSmtp($cfg, $destinatarios, $conteudo['assunto'], $conteudo['corpo']);
+    }
+
+    $db->prepare("INSERT INTO notificacoes_envios (data_referencia, sucesso, destinatarios, mensagem) VALUES (:d, :s, :dc, :m)
+        ON DUPLICATE KEY UPDATE sucesso = VALUES(sucesso), destinatarios = VALUES(destinatarios), mensagem = VALUES(mensagem), created_at = NOW()")
+       ->execute([
+           ':d' => $hoje,
+           ':s' => $resultado['sucesso'] ? 1 : 0,
+           ':dc' => count($destinatarios),
+           ':m' => $resultado['mensagem'],
+       ]);
+
+    registrarLog('Notificações', $resultado['sucesso'] ? 'Notificação diária enviada' : 'Falha ao enviar notificação diária',
+        $resultado['mensagem'] . ' (' . count($destinatarios) . ' destinatário(s))', 'sistema');
+
+    return $resultado;
+}
+
+// Chamada em toda requisição autenticada (ver index.php): se a notificação diária está ativa,
+// ainda não foi enviada com sucesso hoje e já passou do horário configurado, envia agora — sem
+// depender de nenhum agendador do sistema operacional. O primeiro SELECT é sempre leve; só monta
+// e-mail e conecta no SMTP quando realmente está na hora.
+function verificarEnviarNotificacaoDiaria(PDO $db) {
+    $cfg = $db->query("SELECT * FROM notificacao_config WHERE id = 1")->fetch();
+    if (!$cfg || !$cfg['ativo']) return;
+
+    $hoje = date('Y-m-d');
+    if (date('H:i:s') < $cfg['horario_envio']) return;
+
+    $stmt = $db->prepare("SELECT * FROM notificacoes_envios WHERE data_referencia = :d");
+    $stmt->execute([':d' => $hoje]);
+    $envio = $stmt->fetch();
+
+    if ($envio) {
+        if ($envio['sucesso']) return; // já enviado com sucesso hoje
+        // Já falhou antes hoje: só tenta de novo depois de um tempo, pra uma falha de SMTP (ex.:
+        // configuração errada) não virar uma tentativa de conexão em todo carregamento de página.
+        if (strtotime($envio['created_at']) > strtotime('-30 minutes')) return;
+    }
+
+    // "Reserva"/atualiza a tentativa do dia antes de fazer qualquer trabalho pesado (montar e-mail,
+    // conectar no SMTP), pra duas requisições simultâneas não tentarem mandar ao mesmo tempo.
+    try {
+        if ($envio) {
+            $upd = $db->prepare("UPDATE notificacoes_envios SET mensagem = 'Em andamento...', created_at = NOW() WHERE data_referencia = :d AND created_at = :antigo");
+            $upd->execute([':d' => $hoje, ':antigo' => $envio['created_at']]);
+            if ($upd->rowCount() === 0) return; // outra requisição já pegou essa nova tentativa
+        } else {
+            $db->prepare("INSERT INTO notificacoes_envios (data_referencia, sucesso, destinatarios, mensagem) VALUES (:d, 0, 0, 'Em andamento...')")
+               ->execute([':d' => $hoje]);
+        }
+    } catch (PDOException $e) {
+        return; // outra requisição já reservou o dia entre o SELECT e o INSERT
+    }
+
+    executarNotificacaoDiaria($db, $cfg);
 }

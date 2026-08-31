@@ -19,7 +19,7 @@ $db = getDB();
 $grupoSql = movimentacaoGrupoChaveSql('mv');
 // LEFT JOIN nas duas origens possíveis (medicamento ou insumo — mv.medicamento_id/insumo_id são
 // mutuamente exclusivos) e COALESCE pra exibir o nome/lote/validade de qual delas bateu.
-$stmt = $db->prepare("SELECT mv.quantidade, mv.observacao,
+$stmt = $db->prepare("SELECT mv.quantidade, mv.valor_unitario, mv.observacao,
         COALESCE(md.produto, ins.nome_comercial) AS produto,
         COALESCE(md.laboratorio, ins.marca) AS laboratorio,
         COALESCE(md.apresentacao, ins.categoria) AS apresentacao,
@@ -39,17 +39,25 @@ if (!$itens) {
     exit;
 }
 
+$valorTotal = 0;
+$itensSaida = array_map(function ($i) use (&$valorTotal) {
+    $subtotal = (float)$i['valor_unitario'] * (int)$i['quantidade'];
+    $valorTotal += $subtotal;
+    return [
+        'produto' => $i['produto'],
+        'laboratorio' => $i['laboratorio'],
+        'apresentacao' => $i['apresentacao'],
+        'lote' => $i['lote'],
+        'validade_br' => $i['validade'] ? date('d/m/Y', strtotime($i['validade'])) : null,
+        'quantidade' => (int)$i['quantidade'],
+        'valor_unitario' => (float)$i['valor_unitario'],
+        'subtotal' => $subtotal,
+        'observacao' => $i['observacao'],
+    ];
+}, $itens);
+
 echo json_encode([
     'found' => true,
-    'itens' => array_map(function ($i) {
-        return [
-            'produto' => $i['produto'],
-            'laboratorio' => $i['laboratorio'],
-            'apresentacao' => $i['apresentacao'],
-            'lote' => $i['lote'],
-            'validade_br' => $i['validade'] ? date('d/m/Y', strtotime($i['validade'])) : null,
-            'quantidade' => (int)$i['quantidade'],
-            'observacao' => $i['observacao'],
-        ];
-    }, $itens),
+    'itens' => $itensSaida,
+    'valor_total' => $valorTotal,
 ]);
