@@ -1,0 +1,344 @@
+<?php
+$db = getDB();
+
+// ---- Filtros (período + máquina) ----
+$periodo = $_GET['periodo'] ?? '7d';
+if (!in_array($periodo, ['hoje', '7d', '30d', 'custom'], true)) $periodo = '7d';
+$maquinaId = (int)($_GET['maquina_id'] ?? 0);
+
+$tz = new DateTimeZone('America/Sao_Paulo');
+$agoraLocal = new DateTime('now', $tz);
+
+if ($periodo === 'custom' && !empty($_GET['data_ini']) && !empty($_GET['data_fim'])) {
+    $inicioLocal = DateTime::createFromFormat('Y-m-d H:i:s', $_GET['data_ini'] . ' 00:00:00', $tz);
+    $fimLocal = DateTime::createFromFormat('Y-m-d H:i:s', $_GET['data_fim'] . ' 23:59:59', $tz);
+} elseif ($periodo === 'hoje') {
+    $inicioLocal = (clone $agoraLocal)->setTime(0, 0, 0);
+    $fimLocal = (clone $agoraLocal)->setTime(23, 59, 59);
+} elseif ($periodo === '30d') {
+    $inicioLocal = (clone $agoraLocal)->modify('-29 days')->setTime(0, 0, 0);
+    $fimLocal = (clone $agoraLocal)->setTime(23, 59, 59);
+} else {
+    $inicioLocal = (clone $agoraLocal)->modify('-6 days')->setTime(0, 0, 0);
+    $fimLocal = (clone $agoraLocal)->setTime(23, 59, 59);
+}
+// eventos.ts é gravado em UTC (vem direto do timestamp ISO8601 do ActivityWatch); as datas do
+// filtro são pensadas em horário local, então convertemos as bordas para UTC na hora de consultar.
+$inicioUtc = (clone $inicioLocal)->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+$fimUtc = (clone $fimLocal)->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+
+$maquinas = $db->query("SELECT id, nome, ativo FROM maquinas ORDER BY nome ASC")->fetchAll();
+
+$filtroMaquinaSql = '';
+$params = [':ini' => $inicioUtc, ':fim' => $fimUtc];
+if ($maquinaId > 0) {
+    $filtroMaquinaSql = ' AND e.maquina_id = :mid';
+    $params[':mid'] = $maquinaId;
+}
+
+// ---- KPIs: distribuição por categoria (janelas + navegador) ----
+$stmt = $db->prepare("SELECT
+        COALESCE(c.pontuacao, 99) AS pontuacao,
+        c.nome AS categoria_nome,
+        c.cor AS categoria_cor,
+        SUM(e.duracao) AS total
+    FROM eventos e
+    LEFT JOIN categorias c ON c.id = e.categoria_id
+    WHERE e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql}
+    GROUP BY COALESCE(c.pontuacao, 99), c.nome, c.cor
+    ORDER BY total DESC");
+$stmt->execute($params);
+$porCategoria = $stmt->fetchAll();
+
+$totalMonitorado = 0; $produtivo = 0; $neutro = 0; $improdutivo = 0; $semCategoria = 0;
+foreach ($porCategoria as $row) {
+    $totalMonitorado += $row['total'];
+    if ($row['pontuacao'] == 1) $produtivo += $row['total'];
+    elseif ($row['pontuacao'] == 0) $neutro += $row['total'];
+    elseif ($row['pontuacao'] == -1) $improdutivo += $row['total'];
+    else $semCategoria += $row['total'];
+}
+$pctProdutivo = $totalMonitorado > 0 ? round($produtivo / $totalMonitorado * 100) : 0;
+
+// ---- KPI: tempo ativo x ausente (bucket afk) ----
+$stmt = $db->prepare("SELECT status, SUM(duracao) AS total FROM eventos e
+    WHERE tipo = 'afk' AND ts BETWEEN :ini AND :fim {$filtroMaquinaSql}
+    GROUP BY status");
+$stmt->execute($params);
+$tempoAtivo = 0; $tempoAusente = 0;
+foreach ($stmt->fetchAll() as $row) {
+    if ($row['status'] === 'not-afk') $tempoAtivo = (float)$row['total'];
+    elseif ($row['status'] === 'afk') $tempoAusente = (float)$row['total'];
+}
+
+// ---- Top 10 aplicativos ----
+$stmt = $db->prepare("SELECT app, SUM(duracao) AS total FROM eventos e
+    WHERE tipo = 'window' AND app IS NOT NULL AND app <> '' AND ts BETWEEN :ini AND :fim {$filtroMaquinaSql}
+    GROUP BY app ORDER BY total DESC LIMIT 10");
+$stmt->execute($params);
+$topApps = $stmt->fetchAll();
+
+// ---- Top 10 sites (agrega por domínio; parte de um top-300 por URL para não estourar memória) ----
+$stmt = $db->prepare("SELECT url, SUM(duracao) AS total FROM eventos e
+    WHERE tipo = 'web' AND url IS NOT NULL AND url <> '' AND ts BETWEEN :ini AND :fim {$filtroMaquinaSql}
+    GROUP BY url ORDER BY total DESC LIMIT 300");
+$stmt->execute($params);
+$porDominio = [];
+foreach ($stmt->fetchAll() as $row) {
+    $host = parse_url($row['url'], PHP_URL_HOST) ?: $row['url'];
+    $host = preg_replace('/^www\./', '', $host);
+    $porDominio[$host] = ($porDominio[$host] ?? 0) + (float)$row['total'];
+}
+arsort($porDominio);
+$topSites = array_slice($porDominio, 0, 10, true);
+
+// ---- Tendência diária (produtivo/neutro/improdutivo) — data local via offset fixo de Brasília ----
+$stmt = $db->prepare("SELECT
+        DATE(CONVERT_TZ(e.ts, '+00:00', '-03:00')) AS dia,
+        COALESCE(c.pontuacao, 99) AS pontuacao,
+        SUM(e.duracao) AS total
+    FROM eventos e
+    LEFT JOIN categorias c ON c.id = e.categoria_id
+    WHERE e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql}
+    GROUP BY dia, pontuacao ORDER BY dia ASC");
+$stmt->execute($params);
+$tendenciaRaw = $stmt->fetchAll();
+$dias = [];
+$periodoDias = new DatePeriod(clone $inicioLocal, new DateInterval('P1D'), (clone $fimLocal)->modify('+1 day'));
+foreach ($periodoDias as $d) { $dias[$d->format('Y-m-d')] = ['produtivo' => 0, 'neutro' => 0, 'improdutivo' => 0]; }
+foreach ($tendenciaRaw as $row) {
+    if (!isset($dias[$row['dia']])) continue;
+    if ($row['pontuacao'] == 1) $dias[$row['dia']]['produtivo'] += (float)$row['total'];
+    elseif ($row['pontuacao'] == -1) $dias[$row['dia']]['improdutivo'] += (float)$row['total'];
+    else $dias[$row['dia']]['neutro'] += (float)$row['total'];
+}
+
+// ---- Tabela por máquina ----
+$stmt = $db->prepare("SELECT
+        m.id, m.nome, m.ativo, m.ultimo_sync_at, m.ultimo_sync_status,
+        SUM(e.duracao) AS total,
+        SUM(CASE WHEN c.pontuacao = 1 THEN e.duracao ELSE 0 END) AS produtivo
+    FROM maquinas m
+    LEFT JOIN eventos e ON e.maquina_id = m.id AND e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim
+    LEFT JOIN categorias c ON c.id = e.categoria_id
+    " . ($maquinaId > 0 ? 'WHERE m.id = :mid2' : '') . "
+    GROUP BY m.id, m.nome, m.ativo, m.ultimo_sync_at, m.ultimo_sync_status
+    ORDER BY total DESC");
+$paramsTabela = [':ini' => $inicioUtc, ':fim' => $fimUtc];
+if ($maquinaId > 0) $paramsTabela[':mid2'] = $maquinaId;
+$stmt->execute($paramsTabela);
+$porMaquina = $stmt->fetchAll();
+
+function qs($extra) {
+    return htmlspecialchars('index.php?page=dashboard&' . http_build_query(array_merge($_GET, $extra)));
+}
+?>
+<div class="page-head">
+    <div>
+        <h1 class="page-title">Dashboard de Produtividade</h1>
+        <div class="page-sub">Dados coletados via ActivityWatch nas máquinas da rede</div>
+    </div>
+</div>
+
+<div class="entity-list-toolbar">
+    <span class="elt-label">Período</span>
+    <div class="btn-group btn-group-sm" role="group">
+        <a href="<?= qs(['periodo' => 'hoje']) ?>" class="btn btn-outline-primary <?= $periodo === 'hoje' ? 'active' : '' ?>">Hoje</a>
+        <a href="<?= qs(['periodo' => '7d']) ?>" class="btn btn-outline-primary <?= $periodo === '7d' ? 'active' : '' ?>">7 dias</a>
+        <a href="<?= qs(['periodo' => '30d']) ?>" class="btn btn-outline-primary <?= $periodo === '30d' ? 'active' : '' ?>">30 dias</a>
+    </div>
+    <form method="GET" class="d-flex align-items-center gap-2">
+        <input type="hidden" name="page" value="dashboard">
+        <input type="hidden" name="periodo" value="custom">
+        <input type="date" name="data_ini" class="form-control form-control-sm" value="<?= htmlspecialchars($_GET['data_ini'] ?? $inicioLocal->format('Y-m-d')) ?>">
+        <span class="text-muted small">até</span>
+        <input type="date" name="data_fim" class="form-control form-control-sm" value="<?= htmlspecialchars($_GET['data_fim'] ?? $fimLocal->format('Y-m-d')) ?>">
+        <?php if ($maquinaId > 0): ?><input type="hidden" name="maquina_id" value="<?= (int)$maquinaId ?>"><?php endif; ?>
+        <button class="btn btn-sm btn-outline-secondary">Aplicar</button>
+    </form>
+    <div class="topbar-spacer"></div>
+    <form method="GET" class="d-flex align-items-center gap-2">
+        <input type="hidden" name="page" value="dashboard">
+        <input type="hidden" name="periodo" value="<?= htmlspecialchars($periodo) ?>">
+        <?php if ($periodo === 'custom'): ?>
+            <input type="hidden" name="data_ini" value="<?= htmlspecialchars($inicioLocal->format('Y-m-d')) ?>">
+            <input type="hidden" name="data_fim" value="<?= htmlspecialchars($fimLocal->format('Y-m-d')) ?>">
+        <?php endif; ?>
+        <select name="maquina_id" class="form-select form-select-sm" onchange="this.form.submit()">
+            <option value="0">Todas as máquinas</option>
+            <?php foreach ($maquinas as $m): ?>
+                <option value="<?= (int)$m['id'] ?>" <?= $maquinaId === (int)$m['id'] ? 'selected' : '' ?>><?= htmlspecialchars($m['nome']) ?></option>
+            <?php endforeach; ?>
+        </select>
+    </form>
+</div>
+
+<?php if (empty($maquinas)): ?>
+    <div class="alert alert-info">Nenhuma máquina cadastrada ainda. <?php if (isAdmin()): ?><a href="index.php?page=maquinas">Cadastre a primeira máquina</a> para começar a coletar dados do ActivityWatch.<?php endif; ?></div>
+<?php endif; ?>
+
+<div class="stat-strip">
+    <div class="stat-tile">
+        <div><div class="stat-label">Tempo Monitorado</div><div class="stat-value"><?= formatarDuracao($totalMonitorado) ?></div><div class="stat-note">janela + navegador</div></div>
+        <div class="stat-icon blue"><i class="bi bi-clock-history"></i></div>
+    </div>
+    <div class="stat-tile">
+        <div><div class="stat-label">Produtivo</div><div class="stat-value online-c"><?= formatarDuracao($produtivo) ?></div><div class="stat-note"><?= $pctProdutivo ?>% do tempo monitorado</div></div>
+        <div class="stat-icon green"><i class="bi bi-graph-up-arrow"></i></div>
+    </div>
+    <div class="stat-tile">
+        <div><div class="stat-label">Improdutivo</div><div class="stat-value critical-c"><?= formatarDuracao($improdutivo) ?></div><div class="stat-note">entretenimento, redes sociais...</div></div>
+        <div class="stat-icon red"><i class="bi bi-graph-down-arrow"></i></div>
+    </div>
+    <div class="stat-tile">
+        <div><div class="stat-label">Ativo x Ausente</div><div class="stat-value"><?= formatarDuracao($tempoAtivo) ?></div><div class="stat-note"><?= formatarDuracao($tempoAusente) ?> ausente (AFK)</div></div>
+        <div class="stat-icon orange"><i class="bi bi-person-check"></i></div>
+    </div>
+</div>
+
+<div class="row g-3">
+    <div class="col-lg-4">
+        <div class="card h-100">
+            <div class="card-header">Distribuição por Categoria</div>
+            <div class="card-body chart-card-body">
+                <div class="chart-wrap"><canvas id="chartCategoria"></canvas></div>
+                <div class="legend-list mt-3">
+                    <?php foreach ($porCategoria as $row): $pct = $totalMonitorado > 0 ? round($row['total'] / $totalMonitorado * 100, 1) : 0; ?>
+                    <div class="legend-row">
+                        <span class="cat-dot" style="background: <?= htmlspecialchars($row['categoria_cor'] ?? '#c7c5da') ?>"></span>
+                        <span class="legend-name"><?= htmlspecialchars($row['categoria_nome'] ?? 'Sem categoria') ?></span>
+                        <span class="legend-value"><?= formatarDuracao($row['total']) ?> (<?= $pct ?>%)</span>
+                    </div>
+                    <?php endforeach; ?>
+                    <?php if (empty($porCategoria)): ?><div class="text-muted small">Sem dados no período.</div><?php endif; ?>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-8">
+        <div class="card h-100">
+            <div class="card-header">Tendência Diária</div>
+            <div class="card-body chart-card-body">
+                <div class="chart-wrap"><canvas id="chartTendencia"></canvas></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-3 mt-1">
+    <div class="col-lg-6">
+        <div class="card h-100">
+            <div class="card-header">Top 10 Aplicativos</div>
+            <div class="card-body chart-card-body">
+                <div class="chart-wrap"><canvas id="chartApps"></canvas></div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-6">
+        <div class="card h-100">
+            <div class="card-header">Top 10 Sites</div>
+            <div class="card-body chart-card-body">
+                <?php if (empty($topSites)): ?>
+                    <div class="text-muted small py-4 text-center">Nenhum dado de navegador (aw-watcher-web) no período.</div>
+                <?php else: ?>
+                    <div class="chart-wrap"><canvas id="chartSites"></canvas></div>
+                <?php endif; ?>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card mt-3">
+    <div class="card-header">Por Máquina</div>
+    <div class="table-responsive">
+        <table class="table table-bordered bg-white align-middle mb-0">
+            <thead class="table-dark"><tr><th>Máquina</th><th>Tempo Total</th><th>% Produtivo</th><th>Última Sincronização</th><th>Status</th></tr></thead>
+            <tbody>
+                <?php foreach ($porMaquina as $m): $pct = $m['total'] > 0 ? round($m['produtivo'] / $m['total'] * 100) : 0; ?>
+                <tr>
+                    <td><?= htmlspecialchars($m['nome']) ?> <?php if (!$m['ativo']): ?><span class="badge bg-secondary">Inativa</span><?php endif; ?></td>
+                    <td><?= formatarDuracao($m['total'] ?: 0) ?></td>
+                    <td><?= $m['total'] > 0 ? $pct . '%' : '—' ?></td>
+                    <td><small class="mono text-muted"><?= $m['ultimo_sync_at'] ? htmlspecialchars($m['ultimo_sync_at']) : 'nunca' ?></small></td>
+                    <td>
+                        <?php if ($m['ultimo_sync_status'] === 'ok'): ?><span class="badge bg-success">OK</span>
+                        <?php elseif ($m['ultimo_sync_status'] === 'parcial'): ?><span class="badge bg-warning">Parcial</span>
+                        <?php elseif ($m['ultimo_sync_status'] === 'erro'): ?><span class="badge bg-danger">Erro</span>
+                        <?php else: ?><span class="badge bg-secondary">—</span><?php endif; ?>
+                    </td>
+                </tr>
+                <?php endforeach; ?>
+                <?php if (empty($porMaquina)): ?><tr><td colspan="5" class="text-center text-muted py-3">Nenhuma máquina cadastrada.</td></tr><?php endif; ?>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+(function () {
+    var corTexto = getComputedStyle(document.documentElement).getPropertyValue('--text-600').trim();
+    Chart.defaults.color = corTexto || '#5f5d78';
+    Chart.defaults.font.family = "'Segoe UI', sans-serif";
+
+    new Chart(document.getElementById('chartCategoria'), {
+        type: 'doughnut',
+        data: {
+            labels: <?= json_encode(array_map(fn($r) => $r['categoria_nome'] ?? 'Sem categoria', $porCategoria)) ?>,
+            datasets: [{
+                data: <?= json_encode(array_map(fn($r) => round($r['total']), $porCategoria)) ?>,
+                backgroundColor: <?= json_encode(array_map(fn($r) => $r['categoria_cor'] ?? '#c7c5da', $porCategoria)) ?>,
+                borderWidth: 0,
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false }, tooltip: { callbacks: { label: (ctx) => ctx.label + ': ' + Math.round(ctx.raw/60) + ' min' } } }
+        }
+    });
+
+    new Chart(document.getElementById('chartTendencia'), {
+        type: 'bar',
+        data: {
+            labels: <?= json_encode(array_map(fn($k) => (new DateTime($k))->format('d/m'), array_keys($dias))) ?>,
+            datasets: [
+                { label: 'Produtivo', data: <?= json_encode(array_map(fn($d) => round($d['produtivo']/60), $dias)) ?>, backgroundColor: '#16a34a', stack: 's' },
+                { label: 'Neutro', data: <?= json_encode(array_map(fn($d) => round($d['neutro']/60), $dias)) ?>, backgroundColor: '#94a2b8', stack: 's' },
+                { label: 'Improdutivo', data: <?= json_encode(array_map(fn($d) => round($d['improdutivo']/60), $dias)) ?>, backgroundColor: '#dc2626', stack: 's' },
+            ]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            scales: { x: { stacked: true, grid: { display: false } }, y: { stacked: true, title: { display: true, text: 'minutos' } } },
+            plugins: { legend: { position: 'bottom' } }
+        }
+    });
+
+    new Chart(document.getElementById('chartApps'), {
+        type: 'bar',
+        data: {
+            labels: <?= json_encode(array_map(fn($r) => $r['app'], $topApps)) ?>,
+            datasets: [{ data: <?= json_encode(array_map(fn($r) => round($r['total']/60), $topApps)) ?>, backgroundColor: '#6d4de6' }]
+        },
+        options: {
+            indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false }, tooltip: { callbacks: { label: (ctx) => ctx.raw + ' min' } } },
+            scales: { x: { title: { display: true, text: 'minutos' } } }
+        }
+    });
+
+    <?php if (!empty($topSites)): ?>
+    new Chart(document.getElementById('chartSites'), {
+        type: 'bar',
+        data: {
+            labels: <?= json_encode(array_keys($topSites)) ?>,
+            datasets: [{ data: <?= json_encode(array_map(fn($v) => round($v/60), $topSites)) ?>, backgroundColor: '#12b7a8' }]
+        },
+        options: {
+            indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false }, tooltip: { callbacks: { label: (ctx) => ctx.raw + ' min' } } },
+            scales: { x: { title: { display: true, text: 'minutos' } } }
+        }
+    });
+    <?php endif; ?>
+})();
+</script>
