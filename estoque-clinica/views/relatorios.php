@@ -33,7 +33,7 @@ function buscarMovimentacoesAgrupadas(PDO $db, string $tipo, string $dataInicio,
         FROM movimentacoes mv
         LEFT JOIN movimentacao_confirmacoes mc ON mc.id = mv.confirmacao_id
         LEFT JOIN pacientes p ON p.id = mc.paciente_id
-        WHERE mv.tipo = :tipo AND DATE(mv.created_at) BETWEEN :di AND :df
+        WHERE mv.tipo = :tipo AND mv.created_at >= :di AND mv.created_at < DATE_ADD(:df, INTERVAL 1 DAY)
         GROUP BY grupo_chave
         ORDER BY created_at DESC";
     $stmt = $db->prepare($sql);
@@ -53,7 +53,7 @@ function buscarMovimentacoesDetalhado(PDO $db, string $tipo, string $dataInicio,
         LEFT JOIN medicamentos_anvisa md ON md.id = mv.medicamento_id
         LEFT JOIN insumos ins ON ins.id = mv.insumo_id
         LEFT JOIN insumo_lotes l ON l.id = mv.lote_id
-        WHERE mv.tipo = :tipo AND DATE(mv.created_at) BETWEEN :di AND :df
+        WHERE mv.tipo = :tipo AND mv.created_at >= :di AND mv.created_at < DATE_ADD(:df, INTERVAL 1 DAY)
         ORDER BY mv.created_at DESC";
     $stmt = $db->prepare($sql);
     $stmt->execute([':tipo' => $tipo, ':di' => $dataInicio, ':df' => $dataFim]);
@@ -132,7 +132,7 @@ if ($tab === 'estoque') {
         LEFT JOIN medicamentos_anvisa md ON md.id = mv.medicamento_id
         LEFT JOIN insumos ins ON ins.id = mv.insumo_id
         LEFT JOIN insumo_lotes l ON l.id = mv.lote_id
-        WHERE DATE(mv.created_at) BETWEEN :di AND :df";
+        WHERE mv.created_at >= :di AND mv.created_at < DATE_ADD(:df, INTERVAL 1 DAY)";
     $params = [':di' => $dataInicio, ':df' => $dataFim];
     if ($laboratorio !== '') { $sql .= " AND md.laboratorio = :lab"; $params[':lab'] = $laboratorio; }
     if ($busca !== '') { $sql .= " AND (md.produto LIKE :b OR ins.nome_comercial LIKE :b)"; $params[':b'] = "%{$busca}%"; }

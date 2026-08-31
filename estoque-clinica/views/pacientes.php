@@ -1,5 +1,4 @@
 <?php
-requireAdmin();
 $db = getDB();
 $formError = '';
 

@@ -9,8 +9,9 @@ verificarEnviarNotificacaoDiaria(getDB());
 $page = $_GET['page'] ?? null;
 $allowed_pages = ['dashboard', 'movimentacao', 'estoque', 'relatorios', 'usuarios', 'medicamentos', 'insumos', 'pacientes', 'notificacoes', 'logs'];
 
-// Usuário padrão só enxerga Movimentação e Relatórios; qualquer outra página cai para Movimentação.
-$admin_only_pages = ['dashboard', 'usuarios', 'medicamentos', 'insumos', 'pacientes', 'notificacoes', 'logs'];
+// Usuário padrão acessa Dashboard, Entrada/Saída, Estoque, Relatórios, Insumos e Pacientes;
+// Usuários, Medicamentos, Notificações e Log continuam restritos ao Administrador.
+$admin_only_pages = ['usuarios', 'medicamentos', 'notificacoes', 'logs'];
 
 if ($page === null || !in_array($page, $allowed_pages, true)) {
     $page = isAdmin() ? 'dashboard' : 'movimentacao';

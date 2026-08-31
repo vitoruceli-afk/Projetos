@@ -30,11 +30,9 @@ function navLink($targetPage, $currentPage, $label, $iconPath) {
             <span class="rail-brand-name">ESTOQUE<span>·</span>CLÍNICA</span>
         </div>
 
-        <?php if ($is_admin): ?>
         <div class="rail-nav">
             <?php navLink('dashboard', $page, 'Dashboard', '<path d="M4 13l4-4 4 3 8-9M4 20h16"/>'); ?>
         </div>
-        <?php endif; ?>
 
         <div class="rail-nav">
             <?php
@@ -44,18 +42,19 @@ function navLink($targetPage, $currentPage, $label, $iconPath) {
             ?>
         </div>
 
-        <?php if ($is_admin): ?>
         <div class="rail-nav">
             <div class="rail-section-label">Cadastros</div>
             <?php
-            navLink('medicamentos', $page, 'Medicamentos', '<path d="M10.5 3.5h3a2 2 0 012 2V7h-7V5.5a2 2 0 012-2z"/><rect x="4" y="7" width="16" height="13.5" rx="2"/><path d="M9 13h6M12 10v6"/>');
             navLink('insumos', $page, 'Insumos', '<path d="M20.5 7.5l-8.5-5-8.5 5 8.5 5 8.5-5z"/><path d="M3.5 7.5v9l8.5 5 8.5-5v-9"/><path d="M12 12.5v9"/>');
             navLink('pacientes', $page, 'Pacientes', '<circle cx="12" cy="8" r="3.5"/><path d="M4.5 20c0-4.14 3.36-7.5 7.5-7.5s7.5 3.36 7.5 7.5"/>');
             ?>
         </div>
+
+        <?php if ($is_admin): ?>
         <div class="rail-nav">
             <div class="rail-section-label">Administração</div>
             <?php
+            navLink('medicamentos', $page, 'Medicamentos', '<path d="M10.5 3.5h3a2 2 0 012 2V7h-7V5.5a2 2 0 012-2z"/><rect x="4" y="7" width="16" height="13.5" rx="2"/><path d="M9 13h6M12 10v6"/>');
             navLink('usuarios', $page, 'Usuários', '<circle cx="9" cy="8" r="3"/><path d="M3.5 20c0-3.5 2.5-6 5.5-6s5.5 2.5 5.5 6"/><path d="M16 8.2a3 3 0 010 5.6M19 20c0-2.8-1.6-5-3.5-5.8"/>');
             navLink('notificacoes', $page, 'Notificações', '<path d="M12 3.5a5.5 5.5 0 00-5.5 5.5v3.5L4.5 16h15L17.5 12.5V9A5.5 5.5 0 0012 3.5z"/><path d="M9.5 19a2.5 2.5 0 005 0"/>');
             navLink('logs', $page, 'Log', '<path d="M6 3.5h9l4 4V20a1 1 0 01-1 1H6a1 1 0 01-1-1V4.5a1 1 0 011-1z"/><path d="M15 3.5V8h4"/><path d="M8 12h8M8 15.5h8M8 8.5h3"/>');

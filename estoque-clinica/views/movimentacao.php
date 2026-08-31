@@ -36,6 +36,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         } elseif (!is_array($itens) || count($itens) === 0) {
             $formError = $ehEntrada ? 'Nenhum item foi adicionado para confirmar a entrada.' : 'Nenhum item foi adicionado para confirmar a saída.';
         } else {
+          try {
             $erroItem = null;
             $db->beginTransaction();
 
@@ -117,7 +118,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                             break;
                         }
 
-                        $stmt = $db->prepare("SELECT * FROM insumo_lotes WHERE id = :id AND medicamento_id = :m");
+                        // FOR UPDATE: trava a linha do lote até o fim da transação, pra duas saídas
+                        // concorrentes do mesmo lote não aprovarem a mesma checagem de saldo antes de
+                        // qualquer uma delas descontar (o que deixaria a quantidade negativa).
+                        $stmt = $db->prepare("SELECT * FROM insumo_lotes WHERE id = :id AND medicamento_id = :m FOR UPDATE");
                         $stmt->execute([':id' => $loteId, ':m' => $medicamento['id']]);
                         $loteRow = $stmt->fetch();
 
@@ -181,15 +185,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         $db->prepare("UPDATE insumos SET quantidade = quantidade + :q, lote = :l, validade = :v, valor_unitario = :vu WHERE id = :id")
                            ->execute([':q' => $quantidade, ':l' => $lote, ':v' => $validade, ':vu' => $valorUnitario, ':id' => $insumo['id']]);
                     } else {
-                        if ($quantidade > (int)$insumo['quantidade']) {
-                            $erroItem = "Item {$numero} (" . htmlspecialchars($insumo['nome_comercial']) . '): estoque insuficiente (há apenas ' . (int)$insumo['quantidade'] . ' ' . htmlspecialchars($insumo['unidade_medida']) . '(s)).';
+                        // FOR UPDATE: relê quantidade/valor sob lock, pra duas saídas concorrentes do
+                        // mesmo insumo não aprovarem a mesma checagem de saldo antes de qualquer uma
+                        // delas descontar (o que deixaria a quantidade negativa).
+                        $stmtLock = $db->prepare("SELECT quantidade, valor_unitario FROM insumos WHERE id = :id FOR UPDATE");
+                        $stmtLock->bindValue(':id', $insumo['id'], PDO::PARAM_INT);
+                        $stmtLock->execute();
+                        $insumoLocked = $stmtLock->fetch();
+
+                        if ($quantidade > (int)$insumoLocked['quantidade']) {
+                            $erroItem = "Item {$numero} (" . htmlspecialchars($insumo['nome_comercial']) . '): estoque insuficiente (há apenas ' . (int)$insumoLocked['quantidade'] . ' ' . htmlspecialchars($insumo['unidade_medida']) . '(s)).';
                             break;
                         }
                         $db->prepare("UPDATE insumos SET quantidade = quantidade - :q WHERE id = :id")
                            ->execute([':q' => $quantidade, ':id' => $insumo['id']]);
                         // Valor não vem do formulário na Saída — sempre o valor cadastrado no insumo
                         // (a última entrada), pra não deixar o operador alterar na retirada.
-                        $valorUnitario = (float)$insumo['valor_unitario'];
+                        $valorUnitario = (float)$insumoLocked['valor_unitario'];
                     }
 
                     $db->prepare("INSERT INTO movimentacoes (insumo_id, confirmacao_id, tipo, quantidade, valor_unitario, usuario, observacao) VALUES (:i, :c, :t, :q, :vu, :u, :o)")
@@ -213,6 +225,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 header('Location: index.php?page=movimentacao&tab=' . $tipoMov . '&ok=1&qtd=' . count($itens));
                 exit;
             }
+          } catch (PDOException $e) {
+              // Erro inesperado do banco no meio da transação (ex.: dois operadores cadastrando o
+              // mesmo lote novo ao mesmo tempo, timeout de lock, conexão caindo) — sem isso, a
+              // exceção não tratada derrubava a página com um erro fatal cru no meio da conferência
+              // do operador. Com o rollback, nada fica gravado pela metade; a mensagem orienta a
+              // tentar de novo (na maioria dos casos, como o do lote duplicado, a segunda tentativa
+              // já funciona, pois na primeira o lote acabou sendo criado por outra requisição).
+              if ($db->inTransaction()) {
+                  $db->rollBack();
+              }
+              $formError = 'Ocorreu um erro inesperado ao gravar a movimentação. Nenhum item foi salvo — confira a lista e tente confirmar novamente.';
+          }
         }
     }
 }

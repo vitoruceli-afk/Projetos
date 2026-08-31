@@ -1,5 +1,4 @@
 <?php
-requireAdmin();
 $db = getDB();
 
 $totalMedicamentosEstoque = (int)$db->query("SELECT COUNT(DISTINCT medicamento_id) FROM insumo_lotes WHERE quantidade > 0")->fetchColumn();

@@ -31,6 +31,10 @@ define('VENCIMENTO_URGENTE_DIAS', 7);
 define('UPLOAD_DIR_PACIENTES', __DIR__ . '/uploads/pacientes');
 define('UPLOAD_URL_PACIENTES', 'uploads/pacientes');
 
+// Incrementar sempre que uma migração (CREATE TABLE/ALTER TABLE) for adicionada em getDB() — é o
+// que faz o bloco de migração rodar de novo (uma única vez) na próxima requisição após o deploy.
+define('SCHEMA_VERSION', 1);
+
 function getDB() {
     // Conexão + schema são cacheados numa estática por requisição (mesmo motivo documentado
     // em ../mikrotik/config.php: evita repetir os CREATE TABLE IF NOT EXISTS em toda chamada).
@@ -47,6 +51,14 @@ function getDB() {
         ]);
         $db->exec("CREATE DATABASE IF NOT EXISTS `" . DB_NAME . "` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
         $db->exec("USE `" . DB_NAME . "`");
+
+        // As migrações abaixo (CREATE TABLE/ALTER TABLE, ~30 idas ao banco) são idempotentes mas
+        // caras para rodar em toda requisição — só precisam rodar de novo quando SCHEMA_VERSION
+        // muda. schema_migrations guarda a última versão já aplicada nesta base.
+        $db->exec("CREATE TABLE IF NOT EXISTS schema_migrations (versao INT NOT NULL)");
+        $versaoAplicada = (int)($db->query("SELECT versao FROM schema_migrations LIMIT 1")->fetchColumn() ?: 0);
+
+        if ($versaoAplicada < SCHEMA_VERSION) {
 
         $db->exec("CREATE TABLE IF NOT EXISTS local_users (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -359,8 +371,24 @@ function getDB() {
             INDEX idx_medicamentos_produto (produto),
             INDEX idx_medicamentos_laboratorio (laboratorio),
             INDEX idx_medicamentos_registro (registro),
-            INDEX idx_medicamentos_ean1 (ean_1)
+            INDEX idx_medicamentos_ean1 (ean_1),
+            INDEX idx_medicamentos_ean2 (ean_2),
+            INDEX idx_medicamentos_ean3 (ean_3),
+            INDEX idx_medicamentos_estoque_minimo (estoque_minimo)
         )");
+
+        // Migração leve: instalações que já tinham a tabela sem esses índices. ean_2/ean_3 são
+        // consultados a cada leitura de código de barras em Entrada/Saída (findMedicamentoByBarcode)
+        // — sem índice, cada leitura varria as ~25 mil linhas do catálogo ANVISA/CMED importado.
+        // estoque_minimo é filtrado no Dashboard, no Relatório de Estoque Mínimo e na notificação
+        // diária; como só uma fração dos medicamentos tem mínimo configurado, o índice é bem seletivo.
+        foreach (['idx_medicamentos_ean2' => 'ean_2', 'idx_medicamentos_ean3' => 'ean_3', 'idx_medicamentos_estoque_minimo' => 'estoque_minimo'] as $nomeIndice => $coluna) {
+            $temIndice = (bool)$db->query("SELECT COUNT(*) FROM information_schema.STATISTICS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'medicamentos_anvisa' AND INDEX_NAME = '{$nomeIndice}'")->fetchColumn();
+            if (!$temIndice) {
+                $db->exec("ALTER TABLE medicamentos_anvisa ADD INDEX {$nomeIndice} ({$coluna})");
+            }
+        }
 
         // Migração leve: instalações que já tinham medicamentos_anvisa sem estoque_minimo ganham
         // a coluna agora. Fica de fora do mapeamento de colunas do CSV da ANVISA (ver
@@ -386,8 +414,16 @@ function getDB() {
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )");
 
+        if ($versaoAplicada === 0) {
+            $db->exec("INSERT INTO schema_migrations (versao) VALUES (" . SCHEMA_VERSION . ")");
+        } else {
+            $db->exec("UPDATE schema_migrations SET versao = " . SCHEMA_VERSION);
+        }
+        } // fim do if ($versaoAplicada < SCHEMA_VERSION)
+
         // Primeiro acesso: sem nenhum usuário cadastrado ainda, semeia um Administrador padrão
-        // para não deixar a aplicação sem porta de entrada.
+        // para não deixar a aplicação sem porta de entrada. Fica FORA do bloco de migração (é
+        // barato — 1 SELECT — e precisa continuar valendo mesmo que o schema já esteja atualizado).
         $count = (int)$db->query("SELECT COUNT(*) FROM local_users")->fetchColumn();
         if ($count === 0) {
             $stmt = $db->prepare("INSERT INTO local_users (username, password_hash, full_name, enabled, role) VALUES ('admin', :hash, 'Administrador', 1, 'admin')");
@@ -404,6 +440,29 @@ function getDB() {
 
 // ---- Autenticação ----
 
+// checkAuth() (enabled) e currentUserRole() (role) precisavam do mesmo registro de local_users —
+// cada uma rodava sua própria SELECT a cada requisição. Uma função só, cacheada por requisição,
+// atende as duas com uma única ida ao banco.
+function dadosUsuarioAtual() {
+    $username = $_SESSION['user_logged_in'] ?? null;
+    if (!$username) return null;
+    static $cache = null; // ['username' => ..., 'enabled' => 0|1|null, 'role' => ...]
+    if ($cache !== null && $cache['username'] === $username) {
+        return $cache;
+    }
+    $db = getDB();
+    $stmt = $db->prepare("SELECT enabled, role FROM local_users WHERE username = :u");
+    $stmt->bindValue(':u', $username);
+    $stmt->execute();
+    $row = $stmt->fetch();
+    $cache = [
+        'username' => $username,
+        'enabled' => $row ? (int)$row['enabled'] : null,
+        'role' => $row ? $row['role'] : 'usuario',
+    ];
+    return $cache;
+}
+
 function checkAuth() {
     if (!isset($_SESSION['user_logged_in'])) {
         header("Location: login.php");
@@ -418,14 +477,10 @@ function checkAuth() {
         exit;
     }
 
-    // Conta pode ter sido desabilitada por um administrador depois do login — encerra a sessão
-    // imediatamente em vez de deixar a próxima requisição autenticada passar mesmo assim.
-    $db = getDB();
-    $stmt = $db->prepare("SELECT enabled FROM local_users WHERE username = :u");
-    $stmt->bindValue(':u', $_SESSION['user_logged_in']);
-    $stmt->execute();
-    $enabled = $stmt->fetchColumn();
-    if ($enabled === false || (int)$enabled === 0) {
+    // Conta pode ter sido desabilitada (ou excluída) por um administrador depois do login — encerra
+    // a sessão imediatamente em vez de deixar a próxima requisição autenticada passar mesmo assim.
+    $dados = dadosUsuarioAtual();
+    if ($dados === null || $dados['enabled'] === null || $dados['enabled'] === 0) {
         registrarLog('Autenticação', 'Sessão encerrada (conta desabilitada)', '', $_SESSION['user_logged_in']);
         session_unset();
         session_destroy();
@@ -439,21 +494,8 @@ function checkAuth() {
 // Consulta o perfil sempre no banco (não na sessão) para que uma mudança de perfil feita por um
 // administrador tenha efeito imediato, mesmo que o usuário afetado já esteja com sessão aberta.
 function currentUserRole() {
-    $username = $_SESSION['user_logged_in'] ?? null;
-    if (!$username) return 'usuario';
-    static $cachedRole = null;
-    static $cachedUser = null;
-    if ($cachedUser === $username && $cachedRole !== null) {
-        return $cachedRole;
-    }
-    $db = getDB();
-    $stmt = $db->prepare("SELECT role FROM local_users WHERE username = :u");
-    $stmt->bindValue(':u', $username);
-    $stmt->execute();
-    $role = $stmt->fetchColumn();
-    $cachedUser = $username;
-    $cachedRole = $role !== false ? $role : 'usuario';
-    return $cachedRole;
+    $dados = dadosUsuarioAtual();
+    return $dados ? $dados['role'] : 'usuario';
 }
 
 function isAdmin() {
