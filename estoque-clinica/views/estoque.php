@@ -53,6 +53,8 @@ usort($itens, function ($a, $b) { return strcasecmp($a['nome'], $b['nome']); });
     </div>
 </div>
 
+<input type="hidden" id="csrfTokenValue" value="<?= htmlspecialchars(csrfToken()) ?>">
+
 <div class="entity-list-toolbar">
     <form method="GET" class="d-flex gap-2 flex-grow-1">
         <input type="hidden" name="page" value="estoque">
@@ -71,13 +73,18 @@ usort($itens, function ($a, $b) { return strcasecmp($a['nome'], $b['nome']); });
                 <tr><td colspan="7" class="text-center text-muted py-4">Nenhum medicamento ou insumo encontrado.</td></tr>
             <?php else: ?>
                 <?php foreach ($itens as $it): $abaixoMinimo = $it['estoque_minimo'] !== null && $it['estoque_minimo'] > 0 && $it['estoque_total'] <= $it['estoque_minimo']; ?>
-                    <tr class="<?= $abaixoMinimo ? ($it['estoque_total'] <= 0 ? 'table-danger' : 'table-warning') : '' ?>">
+                    <tr class="linha-estoque <?= $abaixoMinimo ? ($it['estoque_total'] <= 0 ? 'table-danger' : 'table-warning') : '' ?>" data-estoque-total="<?= $it['estoque_total'] ?>">
                         <td><span class="badge <?= $it['tipo'] === 'medicamento' ? 'bg-info text-dark' : 'bg-secondary' ?>"><?= $it['tipo'] === 'medicamento' ? 'Medicamento' : 'Insumo' ?></span></td>
                         <td><?= htmlspecialchars($it['nome']) ?></td>
                         <td><?= htmlspecialchars($it['apresentacao'] ?: '—') ?></td>
                         <td class="text-center fw-bold"><?= $it['estoque_total'] ?></td>
                         <td class="text-center"><?= $it['qtd_lotes'] ?></td>
-                        <td class="text-center"><?= $it['estoque_minimo'] !== null ? $it['estoque_minimo'] : '<span class="text-muted">—</span>' ?></td>
+                        <td class="text-center">
+                            <input type="number" class="form-control form-control-sm minimo-input mx-auto" style="width:90px;" min="0" step="1"
+                                data-id="<?= $it['id'] ?>" data-tipo="<?= $it['tipo'] ?>"
+                                data-original="<?= $it['estoque_minimo'] !== null ? $it['estoque_minimo'] : '' ?>"
+                                value="<?= $it['estoque_minimo'] !== null ? $it['estoque_minimo'] : '' ?>" placeholder="—">
+                        </td>
                         <td class="text-nowrap">
                             <button type="button" class="btn btn-sm btn-outline-primary btn-ver-estoque" data-id="<?= $it['id'] ?>" data-tipo="<?= $it['tipo'] ?>">
                                 <i class="bi bi-list-ul"></i> Detalhes
@@ -169,6 +176,63 @@ document.addEventListener('DOMContentLoaded', function () {
                 })
                 .catch(function () {
                     modalBody.innerHTML = '<div class="alert alert-danger mb-0">Erro ao carregar os detalhes.</div>';
+                });
+        });
+    });
+
+    // ---- Edição rápida do estoque mínimo: clica no campo, digita e confirma com Enter ----
+    var csrfTokenValue = document.getElementById('csrfTokenValue').value;
+
+    function atualizarDestaqueLinha(linha, minimo) {
+        var estoqueTotal = parseInt(linha.getAttribute('data-estoque-total'), 10) || 0;
+        var abaixoMinimo = minimo > 0 && estoqueTotal <= minimo;
+        linha.classList.remove('table-warning', 'table-danger');
+        if (abaixoMinimo) {
+            linha.classList.add(estoqueTotal <= 0 ? 'table-danger' : 'table-warning');
+        }
+    }
+
+    document.querySelectorAll('.minimo-input').forEach(function (input) {
+        input.addEventListener('keydown', function (e) {
+            if (e.key !== 'Enter') return;
+            e.preventDefault();
+
+            var novoValorStr = input.value.trim();
+            var original = input.getAttribute('data-original');
+            if (novoValorStr === '' || !/^\d+$/.test(novoValorStr)) {
+                alert('Informe um valor válido (número inteiro maior ou igual a zero).');
+                input.value = original;
+                return;
+            }
+            var novoValor = parseInt(novoValorStr, 10);
+            if (String(novoValor) === original) { input.blur(); return; }
+
+            input.disabled = true;
+            var body = new URLSearchParams();
+            body.set('csrf_token', csrfTokenValue);
+            body.set('id', input.getAttribute('data-id'));
+            body.set('tipo', input.getAttribute('data-tipo'));
+            body.set('valor', novoValor);
+
+            fetch('ajax_estoque_atualizar_minimo.php', { method: 'POST', body: body })
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    input.disabled = false;
+                    if (!data.sucesso) {
+                        alert(data.error || 'Não foi possível atualizar o estoque mínimo.');
+                        input.value = original;
+                        return;
+                    }
+                    input.setAttribute('data-original', String(data.valor));
+                    input.classList.add('border-success');
+                    setTimeout(function () { input.classList.remove('border-success'); }, 1200);
+                    atualizarDestaqueLinha(input.closest('tr'), data.valor);
+                    input.blur();
+                })
+                .catch(function () {
+                    input.disabled = false;
+                    alert('Erro ao atualizar. Tente novamente.');
+                    input.value = original;
                 });
         });
     });
