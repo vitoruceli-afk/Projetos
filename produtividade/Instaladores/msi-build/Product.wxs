@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Empacota o instalador oficial do ActivityWatch (Inno Setup, em ..\activitywatch-v0.13.2-windows-x86_64-setup.exe)
+  num MSI autonomo que, alem de instalar o AW silenciosamente, ja deixa tudo pronto para conversar
+  com a aplicacao de Produtividade:
+    - aw-server.toml gravado com host = 0.0.0.0 (sem isso a API so aceita conexao local, ver
+      runbook de provisionamento)
+    - regra de firewall de entrada liberando a porta 5600 apenas para o servidor da aplicacao
+    - autostart via HKLM Run (nao a chave de usuario que o instalador do AW cria sozinho) - e o
+      unico jeito de garantir que o ActivityWatch suba para QUALQUER usuario que logar na maquina,
+      inclusive quando o MSI e empurrado via ferramenta de descoberta de rede rodando como SYSTEM,
+      sem ninguem logado no momento da instalacao.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:fw="http://schemas.microsoft.com/wix/FirewallExtension">
+
+  <Product Id="*"
+           Name="ActivityWatch (Produtividade FAESA)"
+           Language="1046"
+           Version="0.13.2.1"
+           Manufacturer="FAESA - Nucleo de Tecnologia da Informacao"
+           UpgradeCode="9F1B7C2A-4E3D-4B8A-9C6E-7A2F5D1B0E44">
+
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x86"
+             Description="Instala o ActivityWatch e configura a maquina para ser monitorada pela aplicacao de Produtividade"
+             Comments="Gerado a partir do instalador oficial ActivityWatch v0.13.2" />
+
+    <MajorUpgrade DowngradeErrorMessage="Ja existe uma versao mais nova deste pacote instalada." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- IP do servidor onde a aplicacao de Produtividade roda hoje (mesma maquina, NO01-017461).
+         Sobrescreva na linha de comando se a aplicacao for movida para outro servidor:
+           msiexec /i ActivityWatch-Produtividade.msi SERVERIP="10.1.100.50" /quiet -->
+    <Property Id="SERVERIP" Value="10.10.140.17" Secure="yes" />
+
+    <Condition Message="E preciso ter direitos de administrador para instalar o ActivityWatch nesta maquina.">
+      <![CDATA[Privileged]]>
+    </Condition>
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFilesFolder">
+        <Directory Id="INSTALLFOLDER" Name="ActivityWatch-Produtividade">
+
+          <Component Id="CompAwSetupExe" Guid="6C8F1A2E-0B3D-4C9A-8E1F-2D4B6A9C7E10">
+            <File Id="AwSetupExe" Name="activitywatch-setup.exe"
+                  Source="..\activitywatch-v0.13.2-windows-x86_64-setup.exe" KeyPath="yes" />
+          </Component>
+
+          <Component Id="CompLauncherVbs" Guid="1A2B3C4D-5E6F-4A7B-8C9D-0E1F2A3B4C5D">
+            <File Id="AwLauncherVbs" Name="aw-launcher.vbs" Source="payload\aw-launcher.vbs" KeyPath="yes" />
+          </Component>
+
+          <Component Id="CompTemplateToml" Guid="2B3C4D5E-6F70-4B8C-9D0E-1F2A3B4C5D6E">
+            <File Id="AwServerDefaultToml" Name="aw-server.default.toml" Source="payload\aw-server.default.toml" KeyPath="yes" />
+          </Component>
+
+          <!-- HKLM Run (nao HKCU) para valer para qualquer usuario que logar, nao so quem estava
+               logado durante a instalacao. wscript em vez de cscript para nao abrir console. -->
+          <Component Id="CompRunKey" Guid="3C4D5E6F-7081-4C9D-AE1F-2A3B4C5D6E7F">
+            <RegistryValue Root="HKLM"
+                           Key="Software\Microsoft\Windows\CurrentVersion\Run"
+                           Name="ActivityWatch_Produtividade"
+                           Type="string"
+                           Value="wscript.exe &quot;[INSTALLFOLDER]aw-launcher.vbs&quot;"
+                           KeyPath="yes" />
+          </Component>
+
+          <!-- Regra de firewall: so o IP do servidor da aplicacao consegue falar com a API do
+               aw-server (que nao tem autenticacao propria). -->
+          <Component Id="CompFirewall" Guid="4D5E6F70-8192-4DAE-BF20-3A4B5C6D7E80">
+            <RegistryValue Root="HKLM"
+                           Key="Software\FAESA\ProdutividadeAW"
+                           Name="FirewallConfigured"
+                           Type="integer"
+                           Value="1"
+                           KeyPath="yes" />
+            <fw:FirewallException Id="AwFirewallRule"
+                                   Name="ActivityWatch - Produtividade FAESA"
+                                   Description="Permite que o servidor da aplicacao de Produtividade sincronize os dados do ActivityWatch desta maquina."
+                                   Port="5600"
+                                   Protocol="tcp"
+                                   Profile="all"
+                                   IgnoreFailure="yes">
+              <fw:RemoteAddress>[SERVERIP]</fw:RemoteAddress>
+            </fw:FirewallException>
+          </Component>
+
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <Feature Id="MainFeature" Title="ActivityWatch + integracao com Produtividade" Level="1">
+      <ComponentRef Id="CompAwSetupExe" />
+      <ComponentRef Id="CompLauncherVbs" />
+      <ComponentRef Id="CompTemplateToml" />
+      <ComponentRef Id="CompRunKey" />
+      <ComponentRef Id="CompFirewall" />
+    </Feature>
+
+    <!-- Instala o ActivityWatch em modo silencioso, sem reiniciar e sem caixas de mensagem.
+         /SP- suprime a pergunta "This will install... Do you wish to continue?". /ALLUSERS forca
+         o modo de instalacao "para toda a maquina" do proprio Inno Setup explicitamente, em vez de
+         depender da deteccao automatica dele.
+         /LOG grava o log PROPRIO do Inno Setup (independente do log do msiexec) - foi o que revelou
+         a causa real de uma instalacao "bem sucedida" que nao aparecia em Program Files: o Inno
+         decidiu sozinho fazer instalacao por usuario (current user), dentro do perfil "Default"
+         (que nenhum usuario real usa), porque com Impersonate="no" a acao roda como LocalSystem, e
+         a checagem interna do Inno de "e administrador?" so olha se a conta e MEMBRO do grupo
+         Administradores - LocalSystem tem privilegio maior que qualquer admin, mas nao e "membro"
+         desse grupo, entao a deteccao dava negativo. Com Impersonate="yes" (o padrao do MSI, que
+         estava sendo sobrescrito aqui), a acao passa a rodar com o token de quem chamou o msiexec -
+         no nosso caso, a propria conta de administrador autenticada via WMI - que o Inno reconhece
+         corretamente como administrador. O /ALLUSERS fica como reforco, independente da deteccao. -->
+    <CustomAction Id="InstallActivityWatch"
+                  FileKey="AwSetupExe"
+                  ExeCommand="/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /ALLUSERS /LOG=&quot;C:\Windows\Temp\aw-inno-install.log&quot;"
+                  Execute="deferred"
+                  Return="check" />
+
+    <!-- Desinstala o ActivityWatch de verdade quando este pacote e removido - sem isso, remover
+         o MSI so tiraria nossos arquivos de integracao e deixaria o AW instalado sozinho. -->
+    <CustomAction Id="UninstallActivityWatch"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[ProgramFilesFolder]ActivityWatch\unins000.exe&quot; /VERYSILENT /SUPPRESSMSGBOXES /NORESTART"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="InstallActivityWatch" After="InstallFiles">NOT Installed</Custom>
+      <Custom Action="UninstallActivityWatch" Before="RemoveFiles">REMOVE="ALL"</Custom>
+    </InstallExecuteSequence>
+
+  </Product>
+</Wix>

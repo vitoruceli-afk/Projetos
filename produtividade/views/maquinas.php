@@ -12,6 +12,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $host = trim($_POST['host'] ?? '');
         $porta = (int)($_POST['porta'] ?? AW_PORTA_PADRAO);
         $usuarioResp = trim($_POST['usuario_responsavel'] ?? '');
+        $setor = trim($_POST['setor'] ?? '');
         $intervalo = max(1, (int)($_POST['intervalo_sync_min'] ?? 5));
         $ativo = isset($_POST['ativo']) ? 1 : 0;
 
@@ -22,12 +23,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         } else {
             try {
                 if ($action === 'add') {
-                    $stmt = $db->prepare("INSERT INTO maquinas (nome, host, porta, usuario_responsavel, intervalo_sync_min, ativo) VALUES (:n, :h, :p, :u, :i, :a)");
-                    $stmt->execute([':n' => $nome, ':h' => $host, ':p' => $porta, ':u' => $usuarioResp, ':i' => $intervalo, ':a' => $ativo]);
+                    $stmt = $db->prepare("INSERT INTO maquinas (nome, host, porta, usuario_responsavel, setor, intervalo_sync_min, ativo) VALUES (:n, :h, :p, :u, :s, :i, :a)");
+                    $stmt->execute([':n' => $nome, ':h' => $host, ':p' => $porta, ':u' => $usuarioResp, ':s' => $setor, ':i' => $intervalo, ':a' => $ativo]);
                 } else {
                     $id = (int)($_POST['id'] ?? 0);
-                    $stmt = $db->prepare("UPDATE maquinas SET nome = :n, host = :h, porta = :p, usuario_responsavel = :u, intervalo_sync_min = :i, ativo = :a WHERE id = :id");
-                    $stmt->execute([':n' => $nome, ':h' => $host, ':p' => $porta, ':u' => $usuarioResp, ':i' => $intervalo, ':a' => $ativo, ':id' => $id]);
+                    $stmt = $db->prepare("UPDATE maquinas SET nome = :n, host = :h, porta = :p, usuario_responsavel = :u, setor = :s, intervalo_sync_min = :i, ativo = :a WHERE id = :id");
+                    $stmt->execute([':n' => $nome, ':h' => $host, ':p' => $porta, ':u' => $usuarioResp, ':s' => $setor, ':i' => $intervalo, ':a' => $ativo, ':id' => $id]);
                 }
                 header("Location: index.php?page=maquinas");
                 exit;
@@ -42,8 +43,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $db->prepare("DELETE FROM maquinas WHERE id = :id")->execute([':id' => $id]);
         header("Location: index.php?page=maquinas");
         exit;
+    } elseif ($action === 'salvar_instalacao_config') {
+        $adminUsuario = trim($_POST['admin_usuario'] ?? '');
+        $adminSenha = $_POST['admin_senha'] ?? '';
+        $msiPath = trim($_POST['msi_path'] ?? '');
+        $timeout = max(30, (int)($_POST['timeout_segundos'] ?? INSTALL_TIMEOUT_PADRAO));
+        $instalacaoConfig = getInstalacaoConfig($db);
+
+        if ($msiPath === '') {
+            $formError = 'Informe o caminho do arquivo MSI neste servidor.';
+        } else {
+            if ($adminSenha !== '') {
+                $stmt = $db->prepare("UPDATE instalacao_remota_config SET admin_usuario = :u, admin_senha = :s, msi_path = :p, timeout_segundos = :t WHERE id = :id");
+                $stmt->bindValue(':s', installEncrypt($adminSenha));
+            } else {
+                $stmt = $db->prepare("UPDATE instalacao_remota_config SET admin_usuario = :u, msi_path = :p, timeout_segundos = :t WHERE id = :id");
+            }
+            $stmt->bindValue(':u', $adminUsuario);
+            $stmt->bindValue(':p', $msiPath);
+            $stmt->bindValue(':t', $timeout, PDO::PARAM_INT);
+            $stmt->bindValue(':id', $instalacaoConfig['id'], PDO::PARAM_INT);
+            $stmt->execute();
+            header("Location: index.php?page=maquinas");
+            exit;
+        }
     }
 }
+
+$instalacaoConfig = getInstalacaoConfig($db);
 
 $editing = null;
 if (isset($_GET['edit'])) {
@@ -54,11 +81,20 @@ if (isset($_GET['edit'])) {
 }
 
 $maquinas = $db->query("SELECT * FROM maquinas ORDER BY nome ASC")->fetchAll();
+$setoresExistentes = array_column($db->query("SELECT DISTINCT setor FROM maquinas WHERE setor <> '' ORDER BY setor ASC")->fetchAll(), 'setor');
 
 // Contagem de eventos por máquina, só para exibir na listagem (não bloqueia nada).
 $totaisEventos = [];
 foreach ($db->query("SELECT maquina_id, COUNT(*) AS n FROM eventos GROUP BY maquina_id") as $row) {
     $totaisEventos[$row['maquina_id']] = (int)$row['n'];
+}
+
+// Última tentativa de instalação remota de cada máquina (uma por maquina_id, a mais recente).
+$ultimasInstalacoes = [];
+foreach ($db->query("SELECT i1.* FROM instalacoes_remotas i1
+                      LEFT JOIN instalacoes_remotas i2 ON i2.maquina_id = i1.maquina_id AND i2.id > i1.id
+                      WHERE i2.id IS NULL") as $row) {
+    $ultimasInstalacoes[$row['maquina_id']] = $row;
 }
 ?>
 <div class="page-head">
@@ -72,6 +108,39 @@ foreach ($db->query("SELECT maquina_id, COUNT(*) AS n FROM eventos GROUP BY maqu
     <strong>Segurança:</strong> a API do ActivityWatch não tem autenticação — qualquer host que alcançar a porta do aw-server
     consegue ler/gravar/apagar todo o histórico daquela máquina. Configure o firewall de cada máquina monitorada para liberar
     a porta (padrão 5600) <strong>apenas</strong> para o IP deste servidor, nunca para a rede inteira.
+</div>
+
+<div class="card mb-3">
+    <div class="card-header">Instalação Remota do ActivityWatch (MSI)</div>
+    <div class="card-body">
+        <p class="text-muted small">
+            Instala o pacote <code>ActivityWatch-Produtividade.msi</code> (ver <code>Instaladores\msi-build</code>) direto
+            na máquina, via WMI — precisa de uma conta com direitos de administrador nela. A senha fica cifrada no banco.
+        </p>
+        <form method="POST" class="row g-2 align-items-end">
+            <?= csrfField() ?>
+            <input type="hidden" name="action" value="salvar_instalacao_config">
+            <div class="col-md-3">
+                <label class="form-label">Usuário administrador</label>
+                <input type="text" name="admin_usuario" class="form-control" placeholder="FAESA\svc_deploy" value="<?= htmlspecialchars($instalacaoConfig['admin_usuario']) ?>">
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">Senha</label>
+                <input type="password" name="admin_senha" class="form-control" placeholder="Deixe em branco para manter a atual">
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">Caminho do MSI neste servidor</label>
+                <input type="text" name="msi_path" class="form-control" value="<?= htmlspecialchars($instalacaoConfig['msi_path']) ?>">
+            </div>
+            <div class="col-md-1">
+                <label class="form-label">Timeout (s)</label>
+                <input type="number" name="timeout_segundos" class="form-control" min="30" value="<?= (int)$instalacaoConfig['timeout_segundos'] ?>">
+            </div>
+            <div class="col-md-1">
+                <button class="btn btn-outline-success w-100">Salvar</button>
+            </div>
+        </form>
+    </div>
 </div>
 
 <div class="row g-3">
@@ -101,6 +170,13 @@ foreach ($db->query("SELECT maquina_id, COUNT(*) AS n FROM eventos GROUP BY maqu
                         <input type="text" name="usuario_responsavel" class="form-control" value="<?= htmlspecialchars($editing['usuario_responsavel'] ?? '') ?>">
                     </div>
                     <div class="mb-2">
+                        <label class="form-label">Setor</label>
+                        <input type="text" name="setor" class="form-control" list="listaSetores" placeholder="Ex: Núcleo de Tecnologia da Informação" value="<?= htmlspecialchars($editing['setor'] ?? '') ?>">
+                        <datalist id="listaSetores">
+                            <?php foreach ($setoresExistentes as $s): ?><option value="<?= htmlspecialchars($s) ?>"><?php endforeach; ?>
+                        </datalist>
+                    </div>
+                    <div class="mb-2">
                         <label class="form-label">Sincronizar a cada (minutos)</label>
                         <input type="number" name="intervalo_sync_min" class="form-control" min="1" value="<?= htmlspecialchars($editing['intervalo_sync_min'] ?? 5) ?>">
                     </div>
@@ -119,15 +195,16 @@ foreach ($db->query("SELECT maquina_id, COUNT(*) AS n FROM eventos GROUP BY maqu
     <div class="col-md-8">
         <div class="table-responsive">
         <table class="table table-bordered bg-white align-middle table-actions-sticky">
-            <thead class="table-dark"><tr><th>Nome</th><th>Host</th><th>aw-server</th><th>Eventos</th><th>Última Sync</th><th>Status</th><th>Ações</th></tr></thead>
+            <thead class="table-dark"><tr><th>Nome</th><th>Setor</th><th>Host</th><th>aw-server</th><th>Eventos</th><th>Última Sync</th><th>Status</th><th>Instalação MSI</th><th>Ações</th></tr></thead>
             <tbody>
-                <?php foreach ($maquinas as $m): ?>
+                <?php foreach ($maquinas as $m): $inst = $ultimasInstalacoes[$m['id']] ?? null; ?>
                 <tr>
                     <td>
                         <?= htmlspecialchars($m['nome']) ?>
                         <?php if (!$m['ativo']): ?><br><span class="badge bg-secondary">Inativa</span><?php endif; ?>
                         <?php if ($m['usuario_responsavel']): ?><div class="text-muted small"><?= htmlspecialchars($m['usuario_responsavel']) ?></div><?php endif; ?>
                     </td>
+                    <td><?= $m['setor'] ? htmlspecialchars($m['setor']) : '<span class="text-muted">—</span>' ?></td>
                     <td><code><?= htmlspecialchars($m['host']) ?>:<?= (int)$m['porta'] ?></code><div class="text-muted small">a cada <?= (int)$m['intervalo_sync_min'] ?> min</div></td>
                     <td><?= $m['aw_hostname'] ? htmlspecialchars($m['aw_hostname']) . '<br><span class="text-muted small">v' . htmlspecialchars($m['aw_versao']) . '</span>' : '<span class="text-muted">—</span>' ?></td>
                     <td><?= number_format($totaisEventos[$m['id']] ?? 0, 0, ',', '.') ?></td>
@@ -139,7 +216,22 @@ foreach ($db->query("SELECT maquina_id, COUNT(*) AS n FROM eventos GROUP BY maqu
                         <?php else: ?><span class="badge bg-secondary">—</span><?php endif; ?>
                     </td>
                     <td class="text-nowrap">
+                        <span class="badge-instalacao"
+                              data-maquina-id="<?= (int)$m['id'] ?>"
+                              data-instalacao-id="<?= $inst ? (int)$inst['id'] : '' ?>"
+                              data-status="<?= $inst ? htmlspecialchars($inst['status']) : '' ?>">
+                            <?php if (!$inst): ?><span class="text-muted">—</span>
+                            <?php elseif ($inst['status'] === 'ok'): ?><span class="badge bg-success">OK</span>
+                            <?php elseif ($inst['status'] === 'erro'): ?><span class="badge bg-danger" title="<?= htmlspecialchars($inst['mensagem']) ?>">Erro</span>
+                            <?php else: ?><span class="badge bg-info">Em andamento…</span><?php endif; ?>
+                        </span>
+                        <?php if ($inst): ?>
+                            <button type="button" class="btn btn-sm btn-outline-secondary btn-ver-log" data-instalacao-id="<?= (int)$inst['id'] ?>" title="Ver log"><i class="bi bi-file-text"></i></button>
+                        <?php endif; ?>
+                    </td>
+                    <td class="text-nowrap">
                         <button type="button" class="btn btn-sm btn-outline-info btn-sync-now" data-id="<?= (int)$m['id'] ?>" title="Sincronizar agora"><i class="bi bi-arrow-repeat"></i></button>
+                        <button type="button" class="btn btn-sm btn-outline-warning btn-install-now" data-id="<?= (int)$m['id'] ?>" title="Instalar ActivityWatch (MSI)"><i class="bi bi-cloud-download"></i></button>
                         <a href="index.php?page=maquinas&edit=<?= (int)$m['id'] ?>" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil"></i></a>
                         <form method="POST" class="d-inline" onsubmit="return confirm('Excluir esta máquina e todos os eventos coletados dela?');">
                             <?= csrfField() ?>
@@ -150,9 +242,24 @@ foreach ($db->query("SELECT maquina_id, COUNT(*) AS n FROM eventos GROUP BY maqu
                     </td>
                 </tr>
                 <?php endforeach; ?>
-                <?php if (empty($maquinas)): ?><tr><td colspan="7" class="text-center text-muted py-3">Nenhuma máquina cadastrada.</td></tr><?php endif; ?>
+                <?php if (empty($maquinas)): ?><tr><td colspan="9" class="text-center text-muted py-3">Nenhuma máquina cadastrada.</td></tr><?php endif; ?>
             </tbody>
         </table>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="modalLogInstalacao" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Log da Instalação</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+            </div>
+            <div class="modal-body">
+                <div id="logInstalacaoStatus" class="mb-2"></div>
+                <pre id="logInstalacaoConteudo" class="small" style="white-space: pre-wrap; max-height: 60vh; overflow-y: auto;"></pre>
+            </div>
         </div>
     </div>
 </div>
@@ -196,6 +303,88 @@ document.querySelectorAll('.btn-sync-now').forEach(function (btn) {
                 window.location.reload();
             })
             .catch(function () { alert('Falha ao sincronizar (erro de rede).'); btn.disabled = false; icon.className = 'bi bi-arrow-repeat'; });
+    });
+});
+
+function atualizarBadgeInstalacao(maquinaId, status, mensagem) {
+    var badge = document.querySelector('.badge-instalacao[data-maquina-id="' + maquinaId + '"]');
+    if (!badge) return;
+    if (status === 'ok') {
+        badge.innerHTML = '<span class="badge bg-success">OK</span>';
+    } else if (status === 'erro') {
+        badge.innerHTML = '<span class="badge bg-danger" title="' + (mensagem || '').replace(/"/g, '&quot;') + '">Erro</span>';
+    } else {
+        badge.innerHTML = '<span class="badge bg-info">Em andamento…</span>';
+    }
+}
+
+function acompanharInstalacao(maquinaId, instalacaoId, btn) {
+    var tentativas = 0;
+    var intervalo = setInterval(function () {
+        tentativas++;
+        fetch('ajax_status_instalacao.php?id=' + instalacaoId)
+            .then(r => r.json())
+            .then(function (data) {
+                if (!data.ok) { clearInterval(intervalo); return; }
+                atualizarBadgeInstalacao(maquinaId, data.status, data.mensagem);
+                if (data.status === 'ok' || data.status === 'erro') {
+                    clearInterval(intervalo);
+                    if (btn) { btn.disabled = false; btn.querySelector('i').className = 'bi bi-cloud-download'; }
+                    window.location.reload();
+                }
+            })
+            .catch(function () { clearInterval(intervalo); });
+        // Desiste de acompanhar depois de ~10 min (o timeout do lado do servidor é 300s por
+        // padrão) - a instalação continua rodando, só para de atualizar a tela sozinha.
+        if (tentativas > 150) clearInterval(intervalo);
+    }, 4000);
+}
+
+document.querySelectorAll('.btn-install-now').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+        if (!confirm('Instalar o ActivityWatch nesta máquina agora, em modo silencioso?')) return;
+        var maquinaId = btn.dataset.id;
+        var icon = btn.querySelector('i');
+        icon.className = 'bi bi-hourglass-split';
+        btn.disabled = true;
+        var fd = new FormData();
+        fd.append('csrf_token', '<?= csrfToken() ?>');
+        fd.append('id', maquinaId);
+        fetch('ajax_instalar_maquina.php', { method: 'POST', body: fd })
+            .then(r => r.json())
+            .then(function (data) {
+                if (!data.ok) {
+                    alert('Erro: ' + data.erro);
+                    btn.disabled = false;
+                    icon.className = 'bi bi-cloud-download';
+                    return;
+                }
+                atualizarBadgeInstalacao(maquinaId, 'executando', '');
+                acompanharInstalacao(maquinaId, data.instalacao_id, btn);
+            })
+            .catch(function () { alert('Falha ao iniciar a instalação (erro de rede).'); btn.disabled = false; icon.className = 'bi bi-cloud-download'; });
+    });
+});
+
+document.querySelectorAll('.btn-ver-log').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+        // Instanciado só aqui (não no carregamento do script) porque este bloco roda dentro de
+        // main-content, antes da tag <script> do bootstrap.bundle.min.js no fim do layout.php -
+        // "new bootstrap.Modal(...)" direto no topo do script lançava "bootstrap is not defined"
+        // e abortava o resto do bloco, inclusive o addEventListener dos botões "Ver log" abaixo.
+        var modalLog = bootstrap.Modal.getOrCreateInstance(document.getElementById('modalLogInstalacao'));
+        document.getElementById('logInstalacaoStatus').textContent = 'Carregando...';
+        document.getElementById('logInstalacaoConteudo').textContent = '';
+        modalLog.show();
+        fetch('ajax_status_instalacao.php?id=' + btn.dataset.instalacaoId)
+            .then(r => r.json())
+            .then(function (data) {
+                if (!data.ok) { document.getElementById('logInstalacaoStatus').textContent = 'Não encontrado.'; return; }
+                document.getElementById('logInstalacaoStatus').innerHTML =
+                    '<strong>Status:</strong> ' + data.status + (data.mensagem ? ' — ' + data.mensagem : '');
+                document.getElementById('logInstalacaoConteudo').textContent = data.log || '(sem log disponível)';
+            })
+            .catch(function () { document.getElementById('logInstalacaoStatus').textContent = 'Falha ao carregar (erro de rede).'; });
     });
 });
 </script>

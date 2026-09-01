@@ -44,9 +44,24 @@ define('LDAP_CONN_TIMEOUT', 3);
 // TROQUE este valor em produção e mantenha-o fora do controle de versão (ex: variável de ambiente).
 define('AD_ENC_KEY', 'produtividade-aw-ad-troque-esta-chave');
 
+// Chave usada para criptografar a senha da conta admin usada na instalação remota do MSI
+// (Máquinas > Instalação Remota). TROQUE este valor em produção.
+define('INSTALL_ENC_KEY', 'produtividade-aw-install-troque-esta-chave');
+
+// Caminho padrão do MSI gerado (ver Instaladores\msi-build) e tempo máximo (segundos) que a
+// instalação remota espera o msiexec terminar na máquina de destino antes de desistir.
+define('INSTALL_MSI_PATH_PADRAO', 'C:\\xampp\\htdocs\\produtividade\\Instaladores\\ActivityWatch-Produtividade.msi');
+define('INSTALL_TIMEOUT_PADRAO', 300);
+
+// IP desta máquina (onde a aplicação roda hoje) — passado como propriedade SERVERIP do MSI na
+// instalação remota, para a regra de firewall da máquina de destino liberar o host certo. Mesmo
+// valor usado como padrão dentro do próprio pacote MSI (Instaladores\msi-build\Product.wxs);
+// atualize os dois se a aplicação for movida para outro servidor.
+define('AW_SERVIDOR_IP', '10.10.140.17');
+
 // Incrementar sempre que uma migração (CREATE TABLE/ALTER TABLE) for adicionada em getDB() — é o
 // que faz o bloco de migração rodar de novo (uma única vez) na próxima requisição após o deploy.
-define('SCHEMA_VERSION', 2);
+define('SCHEMA_VERSION', 4);
 
 function getDB() {
     // Conexão + schema cacheados numa estática por requisição (mesmo motivo documentado em
@@ -194,6 +209,16 @@ function getDB() {
             $db->exec("ALTER TABLE maquinas ADD COLUMN ad_dn VARCHAR(400) DEFAULT NULL AFTER usuario_responsavel");
         }
 
+        // Setor/departamento da máquina — usado nas visões "Por Setor" e "Máquinas do Setor" do
+        // Dashboard. Texto livre (não uma tabela à parte) para não exigir uma tela de cadastro só
+        // pra isso; a importação por OU (Integração > Active Directory) já preenche automaticamente
+        // com o nome da OU, então o texto tende a ficar consistente sem precisar de CRUD dedicado.
+        $temSetorMaquina = (bool)$db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'maquinas' AND COLUMN_NAME = 'setor'")->fetchColumn();
+        if (!$temSetorMaquina) {
+            $db->exec("ALTER TABLE maquinas ADD COLUMN setor VARCHAR(150) NOT NULL DEFAULT '' AFTER usuario_responsavel, ADD INDEX idx_maquinas_setor (setor)");
+        }
+
         // Conexão com o Active Directory — linha única (id=1), editável em Integração > Active
         // Directory. bind_password fica cifrada com adEncrypt()/adDecrypt() (ver config.php).
         $db->exec("CREATE TABLE IF NOT EXISTS ad_config (
@@ -229,6 +254,35 @@ function getDB() {
             ou_dn VARCHAR(400) NOT NULL,
             porta_padrao INT NOT NULL DEFAULT 5600,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )");
+
+        // Configuração da instalação remota do MSI (linha única, id=1) — Máquinas > Instalação
+        // Remota. admin_senha fica cifrada com installEncrypt()/installDecrypt().
+        $db->exec("CREATE TABLE IF NOT EXISTS instalacao_remota_config (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            admin_usuario VARCHAR(255) NOT NULL DEFAULT '',
+            admin_senha VARCHAR(255) NOT NULL DEFAULT '',
+            msi_path VARCHAR(500) NOT NULL DEFAULT '',
+            timeout_segundos INT NOT NULL DEFAULT 300
+        )");
+        $temInstalacaoConfig = (int)$db->query("SELECT COUNT(*) FROM instalacao_remota_config")->fetchColumn();
+        if ($temInstalacaoConfig === 0) {
+            $db->exec("INSERT INTO instalacao_remota_config (admin_usuario, admin_senha, msi_path, timeout_segundos)
+                VALUES ('', '', " . $db->quote(INSTALL_MSI_PATH_PADRAO) . ", " . INSTALL_TIMEOUT_PADRAO . ")");
+        }
+
+        // Histórico/estado de cada tentativa de instalação remota do MSI numa máquina — usado para
+        // o admin acompanhar o progresso (fila/executando/ok/erro) e ver o log do msiexec depois.
+        $db->exec("CREATE TABLE IF NOT EXISTS instalacoes_remotas (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            maquina_id INT NOT NULL,
+            iniciado_em DATETIME NOT NULL,
+            finalizado_em DATETIME NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'fila',
+            mensagem VARCHAR(500) DEFAULT '',
+            log MEDIUMTEXT,
+            INDEX idx_instalacao_maquina (maquina_id, iniciado_em),
+            CONSTRAINT fk_instalacoes_maquina FOREIGN KEY (maquina_id) REFERENCES maquinas(id) ON DELETE CASCADE
         )");
 
         // Categorias e regras padrão — só na primeira instalação (tabela vazia). O admin edita
@@ -416,5 +470,26 @@ function adDecrypt($stored) {
     return $plain !== false ? $plain : (string)$stored;
 }
 
+function installEncrypt($plaintext) {
+    $key = hash('sha256', INSTALL_ENC_KEY, true);
+    $iv = random_bytes(openssl_cipher_iv_length('aes-256-cbc'));
+    $cipher = openssl_encrypt($plaintext, 'aes-256-cbc', $key, OPENSSL_RAW_DATA, $iv);
+    return base64_encode($iv . $cipher);
+}
+
+function installDecrypt($stored) {
+    $ivLen = openssl_cipher_iv_length('aes-256-cbc');
+    $raw = base64_decode((string)$stored, true);
+    if ($raw === false || strlen($raw) <= $ivLen) {
+        return (string)$stored;
+    }
+    $key = hash('sha256', INSTALL_ENC_KEY, true);
+    $iv = substr($raw, 0, $ivLen);
+    $cipher = substr($raw, $ivLen);
+    $plain = openssl_decrypt($cipher, 'aes-256-cbc', $key, OPENSSL_RAW_DATA, $iv);
+    return $plain !== false ? $plain : (string)$stored;
+}
+
 require_once __DIR__ . '/aw_client.php';
 require_once __DIR__ . '/ad_client.php';
+require_once __DIR__ . '/install_client.php';

@@ -136,7 +136,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $criados = [];
             $existentes = [];
             $checkStmt = $db->prepare("SELECT id FROM maquinas WHERE host = :h AND porta = :p");
-            $insertStmt = $db->prepare("INSERT INTO maquinas (nome, host, porta, ativo, ad_dn) VALUES (:n, :h, :p, 0, :dn)");
+            $insertStmt = $db->prepare("INSERT INTO maquinas (nome, host, porta, ativo, ad_dn, setor) VALUES (:n, :h, :p, 0, :dn, :setor)");
 
             foreach ($selecionados as $cn) {
                 if (!isset($porCn[$cn])) continue;
@@ -146,7 +146,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     $existentes[] = $maquina['host'];
                     continue;
                 }
-                $insertStmt->execute([':n' => $cn, ':h' => $maquina['host'], ':p' => $ou['porta_padrao'], ':dn' => $maquina['dn']]);
+                // O nome da OU vira o setor da máquina — dá pra editar depois em Máquinas se o
+                // agrupamento de OUs do AD não bater exatamente com os setores da instituição.
+                $insertStmt->execute([':n' => $cn, ':h' => $maquina['host'], ':p' => $ou['porta_padrao'], ':dn' => $maquina['dn'], ':setor' => $ou['nome']]);
                 $criados[] = ['cn' => $cn, 'host' => $maquina['host']];
             }
             $importResultMaquinas = ['criados' => $criados, 'existentes' => $existentes, 'ou_id' => $ouId];
