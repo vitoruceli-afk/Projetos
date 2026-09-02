@@ -47,6 +47,19 @@ function qs($extra) {
     return htmlspecialchars('index.php?' . http_build_query(array_merge($_GET, ['page' => 'dashboard'], $extra)));
 }
 
+// Recorte pedido explicitamente: as estatísticas do dashboard devem refletir só uso real dentro
+// do expediente (06:00–22:30, horário de Brasília — offset fixo '-03:00', já usado no resto deste
+// arquivo, dispensa carregar as tabelas de fuso horário do MySQL) e ignorar o tempo em que a
+// máquina fica ligada mas TRANCADA. "Trancada" aqui é literal: o AW registra a tela de bloqueio do
+// Windows como uma janela em foco normal (app LockApp.exe), então sem esse filtro ela conta como
+// tempo "monitorado" de verdade — chegou a somar dezenas de horas por máquina.
+function filtroHorarioComercialSql($aliasEventos = 'e') {
+    return "AND TIME(CONVERT_TZ({$aliasEventos}.ts, '+00:00', '-03:00')) BETWEEN '06:00:00' AND '22:30:00'";
+}
+function filtroNaoBloqueadoSql($aliasEventos = 'e') {
+    return "AND COALESCE({$aliasEventos}.app, '') <> 'LockApp.exe'";
+}
+
 // Todo o bloco de KPIs + gráficos (+ opcionalmente a tabela por máquina) — reaproveitado pela
 // Visão Geral (todas as máquinas, ou uma só se selecionada) e pela Visão de uma Máquina (uma única,
 // vinda do clique no nome em qualquer tabela). $maquinaIds vazio = sem restrição (todas as
@@ -65,6 +78,8 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
         }
         $filtroMaquinaSql = ' AND e.maquina_id IN (' . implode(',', $placeholders) . ')';
     }
+    $filtroHorario = filtroHorarioComercialSql();
+    $filtroNaoBloqueado = filtroNaoBloqueadoSql();
 
     // ---- KPIs: distribuição por categoria (janelas + navegador) ----
     $stmt = $db->prepare("SELECT
@@ -74,7 +89,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
             SUM(e.duracao) AS total
         FROM eventos e
         LEFT JOIN categorias c ON c.id = e.categoria_id
-        WHERE e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql}
+        WHERE e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
         GROUP BY COALESCE(c.pontuacao, 99), c.nome, c.cor
         ORDER BY total DESC");
     $stmt->execute($params);
@@ -96,7 +111,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
     $detalheCategoria = [];
     $stmt = $db->prepare("SELECT COALESCE(c.nome, 'Sem categoria') AS categoria_key, e.app AS item, SUM(e.duracao) AS total
         FROM eventos e LEFT JOIN categorias c ON c.id = e.categoria_id
-        WHERE e.tipo = 'window' AND e.app IS NOT NULL AND e.app <> '' AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql}
+        WHERE e.tipo = 'window' AND e.app IS NOT NULL AND e.app <> '' AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
         GROUP BY categoria_key, item");
     $stmt->execute($params);
     foreach ($stmt->fetchAll() as $row) {
@@ -104,7 +119,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
     }
     $stmt = $db->prepare("SELECT COALESCE(c.nome, 'Sem categoria') AS categoria_key, e.url AS url, SUM(e.duracao) AS total
         FROM eventos e LEFT JOIN categorias c ON c.id = e.categoria_id
-        WHERE e.tipo = 'web' AND e.url IS NOT NULL AND e.url <> '' AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql}
+        WHERE e.tipo = 'web' AND e.url IS NOT NULL AND e.url <> '' AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario}
         GROUP BY categoria_key, url");
     $stmt->execute($params);
     foreach ($stmt->fetchAll() as $row) {
@@ -136,7 +151,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
             e.app AS app,
             SUM(e.duracao) AS total
         FROM eventos e LEFT JOIN categorias c ON c.id = e.categoria_id
-        WHERE e.tipo IN ('window', 'web') AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql}
+        WHERE e.tipo IN ('window', 'web') AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
         GROUP BY categoria_key, item, app");
     $stmt->execute($params);
     foreach ($stmt->fetchAll() as $row) {
@@ -164,7 +179,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
 
     // ---- KPI: tempo ativo x ausente (bucket afk) ----
     $stmt = $db->prepare("SELECT status, SUM(duracao) AS total FROM eventos e
-        WHERE tipo = 'afk' AND ts BETWEEN :ini AND :fim {$filtroMaquinaSql}
+        WHERE tipo = 'afk' AND ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario}
         GROUP BY status");
     $stmt->execute($params);
     $tempoAtivo = 0; $tempoAusente = 0;
@@ -175,14 +190,14 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
 
     // ---- Top 10 aplicativos ----
     $stmt = $db->prepare("SELECT app, SUM(duracao) AS total FROM eventos e
-        WHERE tipo = 'window' AND app IS NOT NULL AND app <> '' AND ts BETWEEN :ini AND :fim {$filtroMaquinaSql}
+        WHERE tipo = 'window' AND app IS NOT NULL AND app <> '' AND ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
         GROUP BY app ORDER BY total DESC LIMIT 10");
     $stmt->execute($params);
     $topApps = $stmt->fetchAll();
 
     // ---- Top 10 sites (agrega por domínio; parte de um top-300 por URL para não estourar memória) ----
     $stmt = $db->prepare("SELECT url, SUM(duracao) AS total FROM eventos e
-        WHERE tipo = 'web' AND url IS NOT NULL AND url <> '' AND ts BETWEEN :ini AND :fim {$filtroMaquinaSql}
+        WHERE tipo = 'web' AND url IS NOT NULL AND url <> '' AND ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario}
         GROUP BY url ORDER BY total DESC LIMIT 300");
     $stmt->execute($params);
     $porDominio = [];
@@ -201,7 +216,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
             SUM(e.duracao) AS total
         FROM eventos e
         LEFT JOIN categorias c ON c.id = e.categoria_id
-        WHERE e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql}
+        WHERE e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
         GROUP BY dia, pontuacao ORDER BY dia ASC");
     $stmt->execute($params);
     $tendenciaRaw = $stmt->fetchAll();
@@ -236,7 +251,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
                 SUM(CASE WHEN c.pontuacao = 1 THEN e.duracao ELSE 0 END) AS produtivo
             FROM maquinas m
             LEFT JOIN ad_ous ou ON ou.id = m.ou_id
-            LEFT JOIN eventos e ON e.maquina_id = m.id AND e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim
+            LEFT JOIN eventos e ON e.maquina_id = m.id AND e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim {$filtroHorario} {$filtroNaoBloqueado}
             LEFT JOIN categorias c ON c.id = e.categoria_id
             {$filtroMaquinasTabela}
             GROUP BY m.id, m.nome, m.ativo, m.ultimo_sync_at, m.ultimo_sync_status, ou.nome, m.setor
@@ -615,7 +630,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
             SUM(CASE WHEN c.pontuacao = -1 THEN e.duracao ELSE 0 END) AS improdutivo
         FROM maquinas m
         LEFT JOIN ad_ous ou ON ou.id = m.ou_id
-        LEFT JOIN eventos e ON e.maquina_id = m.id AND e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim
+        LEFT JOIN eventos e ON e.maquina_id = m.id AND e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim " . filtroHorarioComercialSql() . " " . filtroNaoBloqueadoSql() . "
         LEFT JOIN categorias c ON c.id = e.categoria_id
         GROUP BY COALESCE(ou.nome, NULLIF(m.setor, ''), 'Sem setor')
         ORDER BY total DESC");
