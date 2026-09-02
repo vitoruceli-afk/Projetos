@@ -122,6 +122,26 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
         $detalheCategoriaTop[$catKey] = $linhas;
     }
 
+    // ---- Detalhe por categoria, agora por título de janela/aba — usado no "explodir" do gráfico
+    // de pizza ao clicar numa fatia. COALESCE encadeado: título > app > domínio da URL > "(sem
+    // título)", pra sempre ter algo pra mostrar mesmo num evento sem e.titulo preenchido.
+    $detalheCategoriaTitulos = [];
+    $stmt = $db->prepare("SELECT COALESCE(c.nome, 'Sem categoria') AS categoria_key,
+            COALESCE(NULLIF(e.titulo, ''), NULLIF(e.app, ''), NULLIF(e.url, ''), '(sem título)') AS item,
+            SUM(e.duracao) AS total
+        FROM eventos e LEFT JOIN categorias c ON c.id = e.categoria_id
+        WHERE e.tipo IN ('window', 'web') AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql}
+        GROUP BY categoria_key, item");
+    $stmt->execute($params);
+    foreach ($stmt->fetchAll() as $row) {
+        $detalheCategoriaTitulos[$row['categoria_key']][$row['item']] = ($detalheCategoriaTitulos[$row['categoria_key']][$row['item']] ?? 0) + (float)$row['total'];
+    }
+    foreach ($detalheCategoriaTitulos as $catKey => &$itens) {
+        arsort($itens);
+        $itens = array_slice($itens, 0, 20, true);
+    }
+    unset($itens);
+
     // ---- KPI: tempo ativo x ausente (bucket afk) ----
     $stmt = $db->prepare("SELECT status, SUM(duracao) AS total FROM eventos e
         WHERE tipo = 'afk' AND ts BETWEEN :ini AND :fim {$filtroMaquinaSql}
@@ -310,6 +330,20 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
     </div>
     <?php endif; ?>
 
+    <div class="modal fade" id="modalCategoria<?= $idSufixo ?>" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="modalCategoriaTitulo<?= $idSufixo ?>">Categoria</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+                </div>
+                <div class="modal-body">
+                    <ul class="list-group list-group-flush" id="modalCategoriaLista<?= $idSufixo ?>"></ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script>
     (function () {
         var corTexto = getComputedStyle(document.documentElement).getPropertyValue('--text-600').trim();
@@ -317,18 +351,41 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
         Chart.defaults.font.family = "'Segoe UI', sans-serif";
 
         var detalheCategoria<?= $idSufixo ?> = <?= json_encode($detalheCategoriaTop, JSON_UNESCAPED_UNICODE) ?>;
+        var detalheTitulos<?= $idSufixo ?> = <?= json_encode($detalheCategoriaTitulos, JSON_UNESCAPED_UNICODE) ?>;
+        var categoriasBase<?= $idSufixo ?> = {
+            labels: <?= json_encode(array_map(fn($r) => $r['categoria_nome'] ?? 'Sem categoria', $porCategoria)) ?>,
+            data: <?= json_encode(array_map(fn($r) => round($r['total']), $porCategoria)) ?>,
+            cores: <?= json_encode(array_map(fn($r) => $r['categoria_cor'] ?? '#c7c5da', $porCategoria)) ?>
+        };
+
+        function formatarDuracaoJs<?= $idSufixo ?>(segundos) {
+            if (segundos < 60) return Math.round(segundos) + 's';
+            var totalMin = Math.round(segundos / 60);
+            var h = Math.floor(totalMin / 60), m = totalMin % 60;
+            if (h > 0) return m > 0 ? (h + 'h ' + m + 'm') : (h + 'h');
+            return m + 'm';
+        }
+
         new Chart(document.getElementById('chartCategoria<?= $idSufixo ?>'), {
             type: 'doughnut',
             data: {
-                labels: <?= json_encode(array_map(fn($r) => $r['categoria_nome'] ?? 'Sem categoria', $porCategoria)) ?>,
+                labels: categoriasBase<?= $idSufixo ?>.labels.slice(),
                 datasets: [{
-                    data: <?= json_encode(array_map(fn($r) => round($r['total']), $porCategoria)) ?>,
-                    backgroundColor: <?= json_encode(array_map(fn($r) => $r['categoria_cor'] ?? '#c7c5da', $porCategoria)) ?>,
+                    data: categoriasBase<?= $idSufixo ?>.data.slice(),
+                    backgroundColor: categoriasBase<?= $idSufixo ?>.cores.slice(),
                     borderWidth: 0,
+                    spacing: 3,
+                    borderRadius: 6,
+                    hoverOffset: 6,
                 }]
             },
             options: {
                 responsive: true, maintainAspectRatio: false,
+                onHover: (evt, elements) => { evt.native.target.style.cursor = elements.length ? 'pointer' : 'default'; },
+                onClick: (evt, elements) => {
+                    if (!elements.length) return;
+                    abrirModalCategoria<?= $idSufixo ?>(elements[0].index);
+                },
                 plugins: {
                     legend: { display: false },
                     tooltip: {
@@ -336,13 +393,49 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
                             label: (ctx) => ctx.label + ': ' + Math.round(ctx.raw/60) + ' min',
                             afterLabel: (ctx) => {
                                 var apps = detalheCategoria<?= $idSufixo ?>[ctx.label] || [];
-                                return apps.length ? ['Principais apps/sites:'].concat(apps) : [];
+                                return apps.length ? ['Principais apps/sites:', '(clique para ver a lista completa)'].concat(apps) : ['(clique para ver a lista completa)'];
                             }
                         }
                     }
                 }
             }
         });
+
+        // Abre um popup (modal Bootstrap) com a lista de títulos de janela/aba que compõem a
+        // categoria clicada, em vez de mexer no gráfico - pedido explícito do usuário no lugar da
+        // primeira versão, que "explodia" o próprio doughnut trocando as fatias por títulos.
+        function abrirModalCategoria<?= $idSufixo ?>(idx) {
+            var label = categoriasBase<?= $idSufixo ?>.labels[idx];
+            var titulos = detalheTitulos<?= $idSufixo ?>[label] || {};
+            var nomes = Object.keys(titulos);
+
+            document.getElementById('modalCategoriaTitulo<?= $idSufixo ?>').textContent = label;
+            var lista = document.getElementById('modalCategoriaLista<?= $idSufixo ?>');
+            lista.innerHTML = '';
+            if (!nomes.length) {
+                lista.innerHTML = '<li class="list-group-item text-muted">Sem detalhamento disponível.</li>';
+            } else {
+                nomes.forEach(function (nome) {
+                    var li = document.createElement('li');
+                    li.className = 'list-group-item d-flex justify-content-between align-items-center gap-2';
+                    var span = document.createElement('span');
+                    span.className = 'text-truncate';
+                    span.textContent = nome;
+                    span.title = nome;
+                    var badge = document.createElement('span');
+                    badge.className = 'badge bg-light text-dark border flex-shrink-0';
+                    badge.textContent = formatarDuracaoJs<?= $idSufixo ?>(titulos[nome]);
+                    li.appendChild(span);
+                    li.appendChild(badge);
+                    lista.appendChild(li);
+                });
+            }
+
+            // Instanciado só no clique (não no carregamento do script) pelo mesmo motivo do modal
+            // de log em Máquinas: este bloco roda antes da tag <script> do bootstrap.bundle.min.js
+            // no fim do layout.php, então "new bootstrap.Modal(...)" no topo do arquivo falharia.
+            bootstrap.Modal.getOrCreateInstance(document.getElementById('modalCategoria<?= $idSufixo ?>')).show();
+        }
 
         new Chart(document.getElementById('chartTendencia<?= $idSufixo ?>'), {
             type: 'bar',
