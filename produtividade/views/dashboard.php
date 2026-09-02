@@ -90,6 +90,38 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
     }
     $pctProdutivo = $totalMonitorado > 0 ? round($produtivo / $totalMonitorado * 100) : 0;
 
+    // ---- Detalhe por categoria: quais apps/sites compõem cada fatia do gráfico de pizza acima ----
+    // Mesma chave de agrupamento (COALESCE ... 'Sem categoria') usada no label do gráfico, para casar
+    // os dois lados na hora de montar o tooltip no JS.
+    $detalheCategoria = [];
+    $stmt = $db->prepare("SELECT COALESCE(c.nome, 'Sem categoria') AS categoria_key, e.app AS item, SUM(e.duracao) AS total
+        FROM eventos e LEFT JOIN categorias c ON c.id = e.categoria_id
+        WHERE e.tipo = 'window' AND e.app IS NOT NULL AND e.app <> '' AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql}
+        GROUP BY categoria_key, item");
+    $stmt->execute($params);
+    foreach ($stmt->fetchAll() as $row) {
+        $detalheCategoria[$row['categoria_key']][$row['item']] = ($detalheCategoria[$row['categoria_key']][$row['item']] ?? 0) + (float)$row['total'];
+    }
+    $stmt = $db->prepare("SELECT COALESCE(c.nome, 'Sem categoria') AS categoria_key, e.url AS url, SUM(e.duracao) AS total
+        FROM eventos e LEFT JOIN categorias c ON c.id = e.categoria_id
+        WHERE e.tipo = 'web' AND e.url IS NOT NULL AND e.url <> '' AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql}
+        GROUP BY categoria_key, url");
+    $stmt->execute($params);
+    foreach ($stmt->fetchAll() as $row) {
+        $host = parse_url($row['url'], PHP_URL_HOST) ?: $row['url'];
+        $host = preg_replace('/^www\./', '', $host);
+        $detalheCategoria[$row['categoria_key']][$host] = ($detalheCategoria[$row['categoria_key']][$host] ?? 0) + (float)$row['total'];
+    }
+    // Top 5 itens por categoria, já formatados como "Nome: 1h30" para exibir direto no tooltip.
+    $detalheCategoriaTop = [];
+    foreach ($detalheCategoria as $catKey => $itens) {
+        arsort($itens);
+        $top = array_slice($itens, 0, 5, true);
+        $linhas = [];
+        foreach ($top as $nome => $total) $linhas[] = $nome . ': ' . formatarDuracao($total);
+        $detalheCategoriaTop[$catKey] = $linhas;
+    }
+
     // ---- KPI: tempo ativo x ausente (bucket afk) ----
     $stmt = $db->prepare("SELECT status, SUM(duracao) AS total FROM eventos e
         WHERE tipo = 'afk' AND ts BETWEEN :ini AND :fim {$filtroMaquinaSql}
@@ -201,12 +233,15 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
                 <div class="card-body chart-card-body">
                     <div class="chart-wrap"><canvas id="chartCategoria<?= $idSufixo ?>"></canvas></div>
                     <div class="legend-list mt-3">
-                        <?php foreach ($porCategoria as $row): $pct = $totalMonitorado > 0 ? round($row['total'] / $totalMonitorado * 100, 1) : 0; ?>
+                        <?php foreach ($porCategoria as $row): $pct = $totalMonitorado > 0 ? round($row['total'] / $totalMonitorado * 100, 1) : 0; $catLabel = $row['categoria_nome'] ?? 'Sem categoria'; ?>
                         <div class="legend-row">
                             <span class="cat-dot" style="background: <?= htmlspecialchars($row['categoria_cor'] ?? '#c7c5da') ?>"></span>
-                            <span class="legend-name"><?= htmlspecialchars($row['categoria_nome'] ?? 'Sem categoria') ?></span>
+                            <span class="legend-name"><?= htmlspecialchars($catLabel) ?></span>
                             <span class="legend-value"><?= formatarDuracao($row['total']) ?> (<?= $pct ?>%)</span>
                         </div>
+                        <?php if (!empty($detalheCategoriaTop[$catLabel])): ?>
+                        <div class="legend-detail text-muted small"><?= htmlspecialchars(implode(' · ', $detalheCategoriaTop[$catLabel])) ?></div>
+                        <?php endif; ?>
                         <?php endforeach; ?>
                         <?php if (empty($porCategoria)): ?><div class="text-muted small">Sem dados no período.</div><?php endif; ?>
                     </div>
@@ -281,6 +316,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
         Chart.defaults.color = corTexto || '#5f5d78';
         Chart.defaults.font.family = "'Segoe UI', sans-serif";
 
+        var detalheCategoria<?= $idSufixo ?> = <?= json_encode($detalheCategoriaTop, JSON_UNESCAPED_UNICODE) ?>;
         new Chart(document.getElementById('chartCategoria<?= $idSufixo ?>'), {
             type: 'doughnut',
             data: {
@@ -293,7 +329,18 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
             },
             options: {
                 responsive: true, maintainAspectRatio: false,
-                plugins: { legend: { display: false }, tooltip: { callbacks: { label: (ctx) => ctx.label + ': ' + Math.round(ctx.raw/60) + ' min' } } }
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: (ctx) => ctx.label + ': ' + Math.round(ctx.raw/60) + ' min',
+                            afterLabel: (ctx) => {
+                                var apps = detalheCategoria<?= $idSufixo ?>[ctx.label] || [];
+                                return apps.length ? ['Principais apps/sites:'].concat(apps) : [];
+                            }
+                        }
+                    }
+                }
             }
         });
 

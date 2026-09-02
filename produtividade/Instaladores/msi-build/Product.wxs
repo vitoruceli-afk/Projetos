@@ -17,7 +17,7 @@
   <Product Id="*"
            Name="ActivityWatch (Produtividade FAESA)"
            Language="1046"
-           Version="0.13.2.2"
+           Version="0.13.2.5"
            Manufacturer="FAESA - Nucleo de Tecnologia da Informacao"
            UpgradeCode="9F1B7C2A-4E3D-4B8A-9C6E-7A2F5D1B0E44">
 
@@ -65,6 +65,13 @@
             <File Id="AgenteUsuarioTaskXml" Name="task-aw-watcher-currentuser.xml" Source="..\..\Agentes\aw-watcher-currentuser\task-aw-watcher-currentuser.xml" KeyPath="yes" />
           </Component>
 
+          <!-- Tarefa agendada sob demanda (sem gatilho proprio) so para religar o ActivityWatch na
+               sessao do usuario logado logo apos um "Atualizar" - ver CustomActions
+               RegistrarTarefaReligar/ReligarActivityWatch abaixo. -->
+          <Component Id="CompTaskReligarXml" Guid="7081920A-1425-4DA1-A253-6D7E8F910213">
+            <File Id="TaskReligarXml" Name="task-aw-religar.xml" Source="payload\task-aw-religar.xml" KeyPath="yes" />
+          </Component>
+
           <!-- HKLM Run (nao HKCU) para valer para qualquer usuario que logar, nao so quem estava
                logado durante a instalacao. wscript em vez de cscript para nao abrir console. -->
           <Component Id="CompRunKey" Guid="3C4D5E6F-7081-4C9D-AE1F-2A3B4C5D6E7F">
@@ -106,6 +113,7 @@
       <ComponentRef Id="CompTemplateToml" />
       <ComponentRef Id="CompAgenteUsuarioScript" />
       <ComponentRef Id="CompAgenteUsuarioTaskXml" />
+      <ComponentRef Id="CompTaskReligarXml" />
       <ComponentRef Id="CompRunKey" />
       <ComponentRef Id="CompFirewall" />
     </Feature>
@@ -129,6 +137,21 @@
                   ExeCommand="/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /ALLUSERS /LOG=&quot;C:\Windows\Temp\aw-inno-install.log&quot;"
                   Execute="deferred"
                   Return="check" />
+
+    <!-- Mata os processos do ActivityWatch antes de reinstalar/atualizar. Necessario porque, numa
+         instalacao remota via WMI/DCOM, o msiexec roda numa sessao nao-interativa (sessao 0),
+         diferente da sessao onde aw-qt.exe do usuario esta rodando; o RestartManager do proprio
+         Inno Setup detecta os processos abertos mas desiste de fecha-los sozinho ("Session
+         Mismatch") e a instalacao falha com Erro 1722 (DeleteFile: Acesso negado) tentando
+         sobrescrever o .exe travado. Reproduzido e diagnosticado via log do Inno em MI01-007900
+         durante um "Atualizar". Return=ignore: numa instalacao nova (NOT Installed mas sem AW
+         previamente rodando) nao ha nada para matar, e taskkill retorna erro nesse caso - isso e
+         esperado, nao deve derrubar a instalacao. -->
+    <CustomAction Id="PararActivityWatch"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[SystemFolder]taskkill.exe&quot; /F /T /IM aw-qt.exe /IM aw-server.exe /IM aw-watcher-afk.exe /IM aw-watcher-window.exe"
+                  Execute="deferred"
+                  Return="ignore" />
 
     <!-- Desinstala o ActivityWatch de verdade quando este pacote e removido - sem isso, remover
          o MSI so tiraria nossos arquivos de integracao e deixaria o AW instalado sozinho. -->
@@ -161,9 +184,61 @@
                   Execute="deferred"
                   Return="ignore" />
 
+    <!-- Registra uma tarefa SOB DEMANDA (sem gatilho proprio - so pode ser disparada por
+         ReligarActivityWatch, abaixo, ou manualmente) cuja acao e so rodar o aw-launcher.vbs ja
+         existente. Existe so para dar a ReligarActivityWatch um jeito de entregar isso na sessao
+         interativa certa - Task Scheduler resolve essa entrega igual ja faz para
+         AW_WatcherUsuarioLogado; um CustomAction do MSI sozinho (sessao 0) nao consegue. -->
+    <CustomAction Id="RegistrarTarefaReligar"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[SystemFolder]schtasks.exe&quot; /create /tn &quot;AW_ReligarPosAtualizacao&quot; /xml &quot;[INSTALLFOLDER]task-aw-religar.xml&quot; /f"
+                  Execute="deferred"
+                  Return="ignore" />
+
+    <!-- Dispara a tarefa acima uma vez, logo apos o Inno terminar - fecha a lacuna criada por
+         PararActivityWatch: sem isso, a maquina so voltaria a sincronizar no proximo logon/reboot
+         do usuario (o HKLM Run so dispara em sessao NOVA). O aw-launcher.vbs ja e idempotente
+         ("so inicia se aw-qt.exe ainda nao estiver rodando"), entao rodar isso tambem numa
+         instalacao nova (onde nao havia nada para matar) e inofensivo. Return=ignore: se nao
+         houver ninguem logado no momento (instalacao via ferramenta de descoberta, sem sessao
+         interativa), a tarefa so nao acha sessao para rodar - o HKLM Run cobre esse caso no
+         proximo logon, como sempre cobriu. -->
+    <CustomAction Id="ReligarActivityWatch"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[SystemFolder]schtasks.exe&quot; /run /tn &quot;AW_ReligarPosAtualizacao&quot;"
+                  Execute="deferred"
+                  Return="ignore" />
+
+    <!-- Contraparte no uninstall, mesmo motivo de RemoverTarefaAgente. -->
+    <CustomAction Id="RemoverTarefaReligar"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[SystemFolder]schtasks.exe&quot; /delete /tn &quot;AW_ReligarPosAtualizacao&quot; /f"
+                  Execute="deferred"
+                  Return="ignore" />
+
+    <!-- Mesma lacuna de ReligarActivityWatch, so que para o agente de usuario: AW_WatcherUsuarioLogado
+         usa LogonTrigger, entao so comeca a rodar (e so entao cria o bucket aw-watcher-currentuser e
+         preenche "Usuario responsavel") depois de um novo logon - o que ReligarActivityWatch agora
+         torna desnecessario para o ActivityWatch em si, entao a sessao pode nunca ser reiniciada e
+         o agente nunca chega a rodar. "ping -n 6" da ~5s de folga para o aw-server (que
+         ReligarActivityWatch acabou de mandar subir, sem esperar) terminar de abrir a porta 5600
+         antes do agente tentar postar nela - sem essa folga o primeiro POST falharia (silenciosamente,
+         por design) e so seria tentado de novo no proximo logon real, ja que rodar via "/run" e uma
+         execucao avulsa, sem a repeticao de 5 em 5 min que so vale para o gatilho de logon. -->
+    <CustomAction Id="ReligarAgenteUsuario"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[SystemFolder]cmd.exe&quot; /c ping -n 6 127.0.0.1 >nul &amp; &quot;[SystemFolder]schtasks.exe&quot; /run /tn &quot;AW_WatcherUsuarioLogado&quot;"
+                  Execute="deferred"
+                  Return="ignore" />
+
     <InstallExecuteSequence>
+      <Custom Action="PararActivityWatch" Before="InstallActivityWatch">NOT Installed</Custom>
       <Custom Action="InstallActivityWatch" After="InstallFiles">NOT Installed</Custom>
       <Custom Action="RegistrarTarefaAgente" After="InstallActivityWatch">NOT Installed</Custom>
+      <Custom Action="RegistrarTarefaReligar" After="RegistrarTarefaAgente">NOT Installed</Custom>
+      <Custom Action="ReligarActivityWatch" After="RegistrarTarefaReligar">NOT Installed</Custom>
+      <Custom Action="ReligarAgenteUsuario" After="ReligarActivityWatch">NOT Installed</Custom>
+      <Custom Action="RemoverTarefaReligar" Before="RemoverTarefaAgente">REMOVE="ALL"</Custom>
       <Custom Action="RemoverTarefaAgente" Before="UninstallActivityWatch">REMOVE="ALL"</Custom>
       <Custom Action="UninstallActivityWatch" Before="RemoveFiles">REMOVE="ALL"</Custom>
     </InstallExecuteSequence>
