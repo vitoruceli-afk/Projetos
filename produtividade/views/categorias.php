@@ -122,6 +122,20 @@ function labelPontuacao($p) {
 <div class="row g-3">
     <div class="col-md-4">
         <div class="card mb-3">
+            <div class="card-header">Como criar uma categoria</div>
+            <div class="card-body small text-muted">
+                <p>Uma categoria é só um "rótulo" (nome + cor + pontuação); sozinha ela não classifica nada — quem decide quais eventos caem nela são as <strong>regras</strong> cadastradas no card abaixo. O fluxo normal é: crie a categoria primeiro, depois adicione uma ou mais regras apontando pra ela.</p>
+                <ul class="mb-2 ps-3">
+                    <li><strong>Nome</strong>: aparece nos gráficos, tabelas e no seletor de categoria ao criar uma regra.</li>
+                    <li><strong>Cor</strong>: usada no gráfico de pizza do dashboard e nas bolinhas coloridas pela aplicação.</li>
+                    <li><strong>Pontuação</strong>: Produtivo, Neutro ou Improdutivo — é o que soma nos totais "Produtivo"/"Improdutivo" dos KPIs do dashboard.</li>
+                    <li><strong>Ordem de exibição</strong>: só a ordem em que a categoria aparece nas listas (menor primeiro). Não tem relação com qual regra é avaliada primeiro — isso é a "Prioridade" de cada regra, no card ao lado.</li>
+                </ul>
+                <p class="mb-0">Excluir uma categoria também apaga suas regras; eventos já classificados nela ficam "Sem categoria" até você reprocessar.</p>
+            </div>
+        </div>
+
+        <div class="card mb-3">
             <div class="card-header"><?= $editing ? 'Editar Categoria' : 'Nova Categoria' ?></div>
             <div class="card-body">
                 <?php if ($formError): ?><div class="alert alert-danger py-2"><?= htmlspecialchars($formError) ?></div><?php endif; ?>
@@ -154,6 +168,27 @@ function labelPontuacao($p) {
                     <button class="btn btn-outline-success w-100"><?= $editing ? 'Salvar' : 'Criar Categoria' ?></button>
                     <?php if ($editing): ?><a href="index.php?page=categorias" class="btn btn-outline-secondary w-100 mt-2">Cancelar</a><?php endif; ?>
                 </form>
+            </div>
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-header">Como criar uma regra</div>
+            <div class="card-body small text-muted">
+                <p>Uma regra procura um texto (ou expressão regular) dentro de um campo do evento. Entre as regras ativas, a <strong>primeira que casar</strong> — na ordem de prioridade, menor primeiro — decide a categoria do evento. Por isso regras específicas (ex: um site) devem ter prioridade menor (mais baixa) do que regras genéricas (ex: o navegador em si).</p>
+                <p class="mb-1"><strong>Campo</strong></p>
+                <ul class="mb-2 ps-3">
+                    <li><strong>Aplicativo</strong>: nome do processo em foco, ex.: <code>chrome.exe</code>, <code>EXCEL.EXE</code>.</li>
+                    <li><strong>Título da janela</strong>: texto da barra de título, ex.: <code>Instagram - Google Chrome</code>. É o único jeito de identificar sites específicos hoje, já que nenhuma máquina tem a extensão de navegador do ActivityWatch instalada.</li>
+                    <li><strong>URL</strong>: endereço da aba — só é preenchido se essa extensão de navegador estiver instalada na máquina.</li>
+                </ul>
+                <p class="mb-1"><strong>Tipo</strong></p>
+                <ul class="mb-2 ps-3">
+                    <li><strong>Contém</strong>: procura o padrão em qualquer parte do texto, sem diferenciar maiúsculas de minúsculas.</li>
+                    <li><strong>Regex</strong>: expressão regular (sem as barras <code>/</code> ao redor). Útil pra evitar falso positivo — ex.: <code>\bWord\b</code> casa com "Word" mas não com "password".</li>
+                </ul>
+                <p class="mb-1"><strong>Padrão</strong></p>
+                <p class="mb-2">O texto (ou regex) a procurar. Ex.: <code>youtube.com</code>, <code>Excel</code>, <code>\bNetflix\b</code>.</p>
+                <p class="mb-0">Depois de criar ou editar regras, use o botão <strong>"Reprocessar Eventos Existentes"</strong> no topo da página pra aplicá-las também aos eventos já coletados — regras novas só valem por padrão para as próximas sincronizações.</p>
             </div>
         </div>
 

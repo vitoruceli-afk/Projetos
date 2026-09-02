@@ -323,16 +323,44 @@ function getDB() {
                     ['app', 'contem', 'cmd.exe'], ['app', 'contem', 'MySQL Workbench'], ['url', 'contem', 'github.com'],
                     ['url', 'contem', 'stackoverflow.com'], ['url', 'contem', 'localhost'],
                 ]],
+                // Ferramentas de TI/suporte (RDP, PuTTY, GLPI, VMware, Mikrotik etc.) — separada de
+                // Escritório (Word/Excel) e Desenvolvimento (código) pra manter a distribuição por
+                // categoria fiel ao trabalho real de quem faz suporte/infraestrutura.
+                ['Produtivo · TI/Suporte', '#7c3aed', 1, 15, [
+                    ['app', 'contem', 'mstsc'], ['app', 'contem', 'webphone'], ['app', 'contem', 'Notepad.exe'],
+                    ['app', 'contem', 'putty'], ['app', 'contem', 'Taskmgr'],
+                    ['titulo', 'contem', 'Calculadora'], ['titulo', 'contem', 'Configurações'],
+                    ['titulo', 'contem', 'GLPI'], ['titulo', 'contem', 'Chamado'],
+                    ['titulo', 'contem', 'idpaesxi'], ['titulo', 'contem', 'idpavcsa'], ['titulo', 'contem', 'VMware ESXi'],
+                    ['titulo', 'contem', 'MonitCall'], ['titulo', 'contem', 'Intranet Faesa'], ['titulo', 'contem', 'Ramais'],
+                    ['titulo', 'contem', 'Mikrotik'], ['titulo', 'contem', 'ActivityWatch'],
+                    ['titulo', 'contem', 'Publico – Explorador de Arquivos'], ['titulo', 'contem', 'NTI – Explorador de Arquivos'],
+                ]],
                 ['Produtivo · Escritório', '#178ec8', 1, 20, [
                     ['app', 'contem', 'WINWORD'], ['app', 'contem', 'EXCEL'], ['app', 'contem', 'POWERPNT'],
                     ['app', 'contem', 'Outlook'], ['app', 'contem', 'Teams'], ['app', 'contem', 'OneNote'],
                     ['url', 'contem', 'office.com'], ['url', 'contem', 'sharepoint.com'],
+                    // Regras por título: sem a extensão de navegador do ActivityWatch instalada, o
+                    // campo url nunca vem preenchido — abas de Office/Google Workspace só dão pra
+                    // identificar pelo título da janela do navegador (ex.: "Relatório - Word").
+                    // \b...\b evita falso positivo tipo "password" casando com "word".
+                    ['titulo', 'regex', '\\bWord\\b'], ['titulo', 'regex', '\\bExcel\\b'], ['titulo', 'regex', '\\bPowerPoint\\b'],
+                    ['titulo', 'contem', 'OneDrive'], ['titulo', 'contem', 'SharePoint'],
+                    ['titulo', 'contem', 'Google Docs'], ['titulo', 'contem', 'Google Sheets'], ['titulo', 'contem', 'Google Slides'],
+                    ['titulo', 'contem', 'Planilhas Google'], ['titulo', 'contem', 'Documentos Google'], ['titulo', 'contem', 'Apresentações Google'],
+                    ['titulo', 'contem', 'Microsoft Teams'], ['titulo', 'contem', 'Outlook'],
                 ]],
                 ['Improdutivo · Entretenimento', '#dc2626', -1, 30, [
                     ['url', 'contem', 'youtube.com'], ['url', 'contem', 'netflix.com'], ['url', 'contem', 'twitch.tv'],
                     ['url', 'contem', 'facebook.com'], ['url', 'contem', 'instagram.com'], ['url', 'contem', 'tiktok.com'],
                     ['url', 'contem', 'twitter.com'], ['url', 'contem', 'x.com'], ['app', 'contem', 'Steam'],
                     ['app', 'contem', 'Spotify'], ['app', 'contem', 'WhatsApp'],
+                    // Mesmo motivo acima: mesmas redes sociais/streaming, mas casando pelo título da
+                    // aba do navegador em vez da URL (que não existe sem o watcher de navegador).
+                    ['titulo', 'contem', 'YouTube'], ['titulo', 'contem', 'Instagram'], ['titulo', 'contem', 'Netflix'],
+                    ['titulo', 'contem', 'Twitch'], ['titulo', 'contem', 'Facebook'], ['titulo', 'contem', 'TikTok'],
+                    ['titulo', 'contem', 'Twitter'], ['titulo', 'contem', 'Spotify'], ['titulo', 'contem', 'WhatsApp'],
+                    ['titulo', 'contem', 'Steam'],
                 ]],
                 ['Neutro · Navegação', '#94a2b8', 0, 80, [
                     ['app', 'contem', 'Chrome'], ['app', 'contem', 'Firefox'], ['app', 'contem', 'Edge'], ['app', 'contem', 'Msedge'],

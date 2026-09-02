@@ -122,25 +122,45 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
         $detalheCategoriaTop[$catKey] = $linhas;
     }
 
-    // ---- Detalhe por categoria, agora por título de janela/aba — usado no "explodir" do gráfico
-    // de pizza ao clicar numa fatia. COALESCE encadeado: título > app > domínio da URL > "(sem
-    // título)", pra sempre ter algo pra mostrar mesmo num evento sem e.titulo preenchido.
+    // ---- Detalhe por categoria, agora por título de janela/aba — usado no "explodir" (popup) do
+    // gráfico de pizza ao clicar numa fatia. COALESCE encadeado: título > app > domínio da URL >
+    // "(sem título)", pra sempre ter algo pra mostrar mesmo num evento sem e.titulo preenchido.
+    // Também guarda o app de cada título (mostrado numa coluna própria no popup) — é o que revela,
+    // por exemplo, que "Senior | Gestão de Pessoas..." roda dentro do processo genérico "WA.exe",
+    // informação que o usuário precisa pra saber se a regra de categorização deve casar por
+    // "Aplicativo" (WA.exe) ou por "Título da janela" (Senior).
     $detalheCategoriaTitulos = [];
+    $appPorTitulo = [];
     $stmt = $db->prepare("SELECT COALESCE(c.nome, 'Sem categoria') AS categoria_key,
             COALESCE(NULLIF(e.titulo, ''), NULLIF(e.app, ''), NULLIF(e.url, ''), '(sem título)') AS item,
+            e.app AS app,
             SUM(e.duracao) AS total
         FROM eventos e LEFT JOIN categorias c ON c.id = e.categoria_id
         WHERE e.tipo IN ('window', 'web') AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql}
-        GROUP BY categoria_key, item");
+        GROUP BY categoria_key, item, app");
     $stmt->execute($params);
     foreach ($stmt->fetchAll() as $row) {
+        $chave = $row['categoria_key'] . '|' . $row['item'];
         $detalheCategoriaTitulos[$row['categoria_key']][$row['item']] = ($detalheCategoriaTitulos[$row['categoria_key']][$row['item']] ?? 0) + (float)$row['total'];
+        // Um título pode, raramente, vir de mais de um app (título genérico) — fica o app com mais
+        // tempo acumulado pra esse título.
+        if (!isset($appPorTitulo[$chave]) || (float)$row['total'] > $appPorTitulo[$chave]['total']) {
+            $appPorTitulo[$chave] = ['app' => $row['app'] ?: '', 'total' => (float)$row['total']];
+        }
     }
     foreach ($detalheCategoriaTitulos as $catKey => &$itens) {
         arsort($itens);
         $itens = array_slice($itens, 0, 20, true);
     }
     unset($itens);
+    // Achata pra [categoria][titulo] => nomeDoApp, no mesmo formato simples de $detalheCategoriaTitulos,
+    // só com os títulos que sobreviveram ao corte de top 20 acima.
+    $detalheCategoriaApps = [];
+    foreach ($detalheCategoriaTitulos as $catKey => $itens) {
+        foreach ($itens as $item => $total) {
+            $detalheCategoriaApps[$catKey][$item] = $appPorTitulo[$catKey . '|' . $item]['app'] ?? '';
+        }
+    }
 
     // ---- KPI: tempo ativo x ausente (bucket afk) ----
     $stmt = $db->prepare("SELECT status, SUM(duracao) AS total FROM eventos e
@@ -331,14 +351,22 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
     <?php endif; ?>
 
     <div class="modal fade" id="modalCategoria<?= $idSufixo ?>" tabindex="-1" aria-hidden="true">
-        <div class="modal-dialog modal-dialog-scrollable">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
             <div class="modal-content">
                 <div class="modal-header">
                     <h5 class="modal-title" id="modalCategoriaTitulo<?= $idSufixo ?>">Categoria</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
                 </div>
                 <div class="modal-body">
-                    <ul class="list-group list-group-flush" id="modalCategoriaLista<?= $idSufixo ?>"></ul>
+                    <div class="text-muted small mb-2">Use o Aplicativo ou o Título da Janela abaixo pra saber qual Campo escolher ao criar uma regra em Categorias.</div>
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover mb-0">
+                            <thead>
+                                <tr><th>Aplicativo</th><th>Título da Janela</th><th class="text-end">Tempo</th></tr>
+                            </thead>
+                            <tbody id="modalCategoriaLista<?= $idSufixo ?>"></tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
         </div>
@@ -352,6 +380,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
 
         var detalheCategoria<?= $idSufixo ?> = <?= json_encode($detalheCategoriaTop, JSON_UNESCAPED_UNICODE) ?>;
         var detalheTitulos<?= $idSufixo ?> = <?= json_encode($detalheCategoriaTitulos, JSON_UNESCAPED_UNICODE) ?>;
+        var detalheApps<?= $idSufixo ?> = <?= json_encode($detalheCategoriaApps, JSON_UNESCAPED_UNICODE) ?>;
         var categoriasBase<?= $idSufixo ?> = {
             labels: <?= json_encode(array_map(fn($r) => $r['categoria_nome'] ?? 'Sem categoria', $porCategoria)) ?>,
             data: <?= json_encode(array_map(fn($r) => round($r['total']), $porCategoria)) ?>,
@@ -407,27 +436,38 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
         function abrirModalCategoria<?= $idSufixo ?>(idx) {
             var label = categoriasBase<?= $idSufixo ?>.labels[idx];
             var titulos = detalheTitulos<?= $idSufixo ?>[label] || {};
+            var apps = detalheApps<?= $idSufixo ?>[label] || {};
             var nomes = Object.keys(titulos);
 
             document.getElementById('modalCategoriaTitulo<?= $idSufixo ?>').textContent = label;
             var lista = document.getElementById('modalCategoriaLista<?= $idSufixo ?>');
             lista.innerHTML = '';
             if (!nomes.length) {
-                lista.innerHTML = '<li class="list-group-item text-muted">Sem detalhamento disponível.</li>';
+                lista.innerHTML = '<tr><td colspan="3" class="text-muted text-center">Sem detalhamento disponível.</td></tr>';
             } else {
                 nomes.forEach(function (nome) {
-                    var li = document.createElement('li');
-                    li.className = 'list-group-item d-flex justify-content-between align-items-center gap-2';
-                    var span = document.createElement('span');
-                    span.className = 'text-truncate';
-                    span.textContent = nome;
-                    span.title = nome;
-                    var badge = document.createElement('span');
-                    badge.className = 'badge bg-light text-dark border flex-shrink-0';
-                    badge.textContent = formatarDuracaoJs<?= $idSufixo ?>(titulos[nome]);
-                    li.appendChild(span);
-                    li.appendChild(badge);
-                    lista.appendChild(li);
+                    var tr = document.createElement('tr');
+
+                    var tdApp = document.createElement('td');
+                    tdApp.className = 'text-truncate mono small';
+                    tdApp.style.maxWidth = '160px';
+                    tdApp.textContent = apps[nome] || '—';
+                    tdApp.title = apps[nome] || '';
+
+                    var tdTitulo = document.createElement('td');
+                    tdTitulo.className = 'text-truncate';
+                    tdTitulo.style.maxWidth = '320px';
+                    tdTitulo.textContent = nome;
+                    tdTitulo.title = nome;
+
+                    var tdTempo = document.createElement('td');
+                    tdTempo.className = 'text-end text-nowrap';
+                    tdTempo.textContent = formatarDuracaoJs<?= $idSufixo ?>(titulos[nome]);
+
+                    tr.appendChild(tdApp);
+                    tr.appendChild(tdTitulo);
+                    tr.appendChild(tdTempo);
+                    lista.appendChild(tr);
                 });
             }
 
