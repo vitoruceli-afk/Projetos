@@ -26,6 +26,14 @@ if ($periodo === 'custom' && !empty($_GET['data_ini']) && !empty($_GET['data_fim
 $inicioUtc = (clone $inicioLocal)->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
 $fimUtc = (clone $fimLocal)->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
 
+// A Tendência Diária tem sua própria janela de dias, independente do recorte "hoje"/período
+// escolhido pros KPIs: pedido explícito pra sempre mostrar 7 dias (mesmo com "Hoje" selecionado,
+// onde o recorte principal é só o dia atual) e 30 dias no período de 30 dias. "custom" mantém o
+// intervalo escolhido pelo usuário, sem forçar nada.
+$tendenciaDiasForcado = null;
+if ($periodo === 'hoje' || $periodo === '7d') $tendenciaDiasForcado = 7;
+elseif ($periodo === '30d') $tendenciaDiasForcado = 30;
+
 $visao = $_GET['visao'] ?? 'geral';
 if (!in_array($visao, ['geral', 'setor', 'maquinas_setor', 'maquina'], true)) $visao = 'geral';
 
@@ -66,7 +74,7 @@ function filtroNaoBloqueadoSql($aliasEventos = 'e') {
 // máquinas do sistema). $mostrarTabela = false quando o card de identificação da máquina, logo
 // acima, já cobre a mesma informação (visão de uma única máquina) — evitaria uma tabela de 1 linha
 // só repetindo o que já está no cabeçalho.
-function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inicioLocal, DateTime $fimLocal, array $maquinaIds, $tituloTabela, $mostrarTabela = true) {
+function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inicioLocal, DateTime $fimLocal, array $maquinaIds, $tituloTabela, $mostrarTabela = true, $exibirTendenciaPontos = false, $tendenciaDiasForcado = null) {
     $filtroMaquinaSql = '';
     $params = [':ini' => $inicioUtc, ':fim' => $fimUtc];
     if (!empty($maquinaIds)) {
@@ -196,21 +204,23 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
     $stmt->execute($params);
     $topApps = $stmt->fetchAll();
 
-    // ---- Top 10 sites (agrega por domínio; parte de um top-300 por URL para não estourar memória) ----
-    $stmt = $db->prepare("SELECT url, SUM(duracao) AS total FROM eventos e
-        WHERE tipo = 'web' AND url IS NOT NULL AND url <> '' AND ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario}
-        GROUP BY url ORDER BY total DESC LIMIT 300");
-    $stmt->execute($params);
-    $porDominio = [];
-    foreach ($stmt->fetchAll() as $row) {
-        $host = parse_url($row['url'], PHP_URL_HOST) ?: $row['url'];
-        $host = preg_replace('/^www\./', '', $host);
-        $porDominio[$host] = ($porDominio[$host] ?? 0) + (float)$row['total'];
+    // ---- Tendência diária (produtivo/neutro/improdutivo) — data local via offset fixo de Brasília.
+    // Janela própria (independente do recorte "hoje"/período dos KPIs acima): sempre 7 ou 30 dias
+    // quando $tendenciaDiasForcado vem preenchido (ver comentário na origem, no topo do arquivo) —
+    // "Hoje" continua filtrando só o dia atual nos KPIs, mas a tendência mostra os últimos 7 dias.
+    $tendenciaFimLocal = clone $fimLocal;
+    $tendenciaInicioLocal = $tendenciaDiasForcado !== null
+        ? (clone $tendenciaFimLocal)->modify('-' . ($tendenciaDiasForcado - 1) . ' days')->setTime(0, 0, 0)
+        : clone $inicioLocal;
+    $paramsTendencia = [
+        ':ini' => (clone $tendenciaInicioLocal)->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s'),
+        ':fim' => (clone $tendenciaFimLocal)->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s'),
+    ];
+    if (!empty($maquinaIds)) {
+        foreach ($params as $chave => $valor) {
+            if ($chave !== ':ini' && $chave !== ':fim') $paramsTendencia[$chave] = $valor;
+        }
     }
-    arsort($porDominio);
-    $topSites = array_slice($porDominio, 0, 10, true);
-
-    // ---- Tendência diária (produtivo/neutro/improdutivo) — data local via offset fixo de Brasília ----
     $stmt = $db->prepare("SELECT
             DATE(CONVERT_TZ(e.ts, '+00:00', '-03:00')) AS dia,
             COALESCE(c.pontuacao, 99) AS pontuacao,
@@ -219,16 +229,57 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
         LEFT JOIN categorias c ON c.id = e.categoria_id
         WHERE e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
         GROUP BY dia, pontuacao ORDER BY dia ASC");
-    $stmt->execute($params);
+    $stmt->execute($paramsTendencia);
     $tendenciaRaw = $stmt->fetchAll();
     $dias = [];
-    $periodoDias = new DatePeriod(clone $inicioLocal, new DateInterval('P1D'), (clone $fimLocal)->modify('+1 day'));
+    // Forma "recorrências" (nº de repetições após o 1º dia) em vez de passar uma data final pro
+    // DatePeriod: como $tendenciaFimLocal carrega hora 23:59:59, somar "+1 dia" pra tentar usá-la
+    // como limite exclusivo virava meia-noite do dia SEGUINTE ao último — ainda menor que
+    // 23:59:59 daquele dia, então o DatePeriod incluía um dia a mais (8 em vez de 7, 31 em vez de
+    // 30). Calculando o nº exato de dias primeiro, esse problema de horário não entra em jogo.
+    $numDiasTendencia = (int)$tendenciaInicioLocal->diff($tendenciaFimLocal)->days + 1;
+    $periodoDias = new DatePeriod(clone $tendenciaInicioLocal, new DateInterval('P1D'), max(0, $numDiasTendencia - 1));
     foreach ($periodoDias as $d) { $dias[$d->format('Y-m-d')] = ['produtivo' => 0, 'neutro' => 0, 'improdutivo' => 0]; }
     foreach ($tendenciaRaw as $row) {
         if (!isset($dias[$row['dia']])) continue;
         if ($row['pontuacao'] == 1) $dias[$row['dia']]['produtivo'] += (float)$row['total'];
         elseif ($row['pontuacao'] == -1) $dias[$row['dia']]['improdutivo'] += (float)$row['total'];
         else $dias[$row['dia']]['neutro'] += (float)$row['total'];
+    }
+
+    // ---- Tendência de produtividade em "gráfico de pontos" (só na visão de uma máquina) — se o
+    // recorte é um único dia, hora a hora; se abrange vários dias, reaproveita $dias (dia a dia).
+    $pontosLabels = [];
+    $pontosValores = [];
+    $pontosFimDeSemana = [];
+    $pontosPorHora = $inicioLocal->format('Y-m-d') === $fimLocal->format('Y-m-d');
+    if ($exibirTendenciaPontos) {
+        if ($pontosPorHora) {
+            $stmt = $db->prepare("SELECT
+                    HOUR(CONVERT_TZ(e.ts, '+00:00', '-03:00')) AS hora,
+                    SUM(CASE WHEN c.pontuacao = 1 THEN e.duracao ELSE 0 END) AS produtivo
+                FROM eventos e
+                LEFT JOIN categorias c ON c.id = e.categoria_id
+                WHERE e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
+                GROUP BY hora");
+            $stmt->execute($params);
+            $porHora = array_fill(6, 17, 0.0); // 06h .. 22h (janela comercial)
+            foreach ($stmt->fetchAll() as $row) {
+                $h = (int)$row['hora'];
+                if (isset($porHora[$h])) $porHora[$h] = (float)$row['produtivo'];
+            }
+            foreach ($porHora as $h => $produtivo) {
+                $pontosLabels[] = sprintf('%02dh', $h);
+                $pontosValores[] = $produtivo;
+            }
+        } else {
+            foreach ($dias as $dia => $valores) {
+                $dataObj = new DateTime($dia);
+                $pontosLabels[] = $dataObj->format('d/m');
+                $pontosValores[] = $valores['produtivo'];
+                $pontosFimDeSemana[] = in_array($dataObj->format('N'), ['6', '7'], true);
+            }
+        }
     }
 
     // ---- Tabela por máquina (só as do recorte atual — todas, ou as do setor) ----
@@ -293,13 +344,26 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
         </div>
     </div>
 
+    <?php if ($exibirTendenciaPontos): ?>
     <div class="row g-3">
-        <div class="col-lg-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">Produtividade <?= $pontosPorHora ? 'por Hora' : 'por Dia' ?></div>
+                <div class="card-body chart-card-body">
+                    <div class="chart-wrap" style="height: 130px;"><canvas id="chartPontos<?= $idSufixo ?>"></canvas></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+
+    <div class="row g-3 mt-1">
+        <div class="col-lg-5">
             <div class="card h-100">
                 <div class="card-header">Distribuição por Categoria</div>
-                <div class="card-body chart-card-body">
-                    <div class="chart-wrap"><canvas id="chartCategoria<?= $idSufixo ?>"></canvas></div>
-                    <div class="legend-list mt-3">
+                <div class="card-body chart-card-body d-flex align-items-center gap-3">
+                    <div class="chart-wrap" style="height: 270px; flex: 0 0 45%;"><canvas id="chartCategoria<?= $idSufixo ?>"></canvas></div>
+                    <div class="legend-list flex-grow-1" style="min-width: 0;">
                         <?php foreach ($porCategoria as $row): $catLabel = $row['categoria_nome'] ?? 'Sem categoria'; ?>
                         <div class="legend-row">
                             <span class="cat-dot" style="background: <?= htmlspecialchars($row['categoria_cor'] ?? '#c7c5da') ?>"></span>
@@ -311,34 +375,22 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
                 </div>
             </div>
         </div>
-        <div class="col-lg-8">
+        <div class="col-lg-7">
             <div class="card h-100">
-                <div class="card-header">Tendência Diária</div>
+                <div class="card-header">Top 10 Aplicativos</div>
                 <div class="card-body chart-card-body">
-                    <div class="chart-wrap"><canvas id="chartTendencia<?= $idSufixo ?>"></canvas></div>
+                    <div class="chart-wrap" style="height: 270px;"><canvas id="chartApps<?= $idSufixo ?>"></canvas></div>
                 </div>
             </div>
         </div>
     </div>
 
     <div class="row g-3 mt-1">
-        <div class="col-lg-6">
-            <div class="card h-100">
-                <div class="card-header">Top 10 Aplicativos</div>
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">Tendência Diária</div>
                 <div class="card-body chart-card-body">
-                    <div class="chart-wrap"><canvas id="chartApps<?= $idSufixo ?>"></canvas></div>
-                </div>
-            </div>
-        </div>
-        <div class="col-lg-6">
-            <div class="card h-100">
-                <div class="card-header">Top 10 Sites</div>
-                <div class="card-body chart-card-body">
-                    <?php if (empty($topSites)): ?>
-                        <div class="text-muted small py-4 text-center">Nenhum dado de navegador (aw-watcher-web) no período.</div>
-                    <?php else: ?>
-                        <div class="chart-wrap"><canvas id="chartSites<?= $idSufixo ?>"></canvas></div>
-                    <?php endif; ?>
+                    <div class="chart-wrap"><canvas id="chartTendencia<?= $idSufixo ?>"></canvas></div>
                 </div>
             </div>
         </div>
@@ -518,17 +570,66 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
             data: {
                 labels: <?= json_encode(array_map(fn($k) => (new DateTime($k))->format('d/m'), array_keys($dias))) ?>,
                 datasets: [
-                    { label: 'Produtivo', data: <?= json_encode(array_map(fn($d) => round($d['produtivo']/60), $dias)) ?>, backgroundColor: '#16a34a', stack: 's' },
-                    { label: 'Neutro', data: <?= json_encode(array_map(fn($d) => round($d['neutro']/60), $dias)) ?>, backgroundColor: '#94a2b8', stack: 's' },
-                    { label: 'Improdutivo', data: <?= json_encode(array_map(fn($d) => round($d['improdutivo']/60), $dias)) ?>, backgroundColor: '#dc2626', stack: 's' },
+                    { label: 'Produtivo', data: <?= json_encode(array_values(array_map(fn($d) => round($d['produtivo']/60), $dias))) ?>, backgroundColor: '#16a34a', stack: 's' },
+                    { label: 'Neutro', data: <?= json_encode(array_values(array_map(fn($d) => round($d['neutro']/60), $dias))) ?>, backgroundColor: '#94a2b8', stack: 's' },
+                    { label: 'Improdutivo', data: <?= json_encode(array_values(array_map(fn($d) => round($d['improdutivo']/60), $dias))) ?>, backgroundColor: '#dc2626', stack: 's' },
                 ]
             },
             options: {
                 responsive: true, maintainAspectRatio: false,
-                scales: { x: { stacked: true, grid: { display: false } }, y: { stacked: true, title: { display: true, text: 'minutos' } } },
+                scales: {
+                    // autoSkip: false — pedido explícito pra sempre mostrar TODOS os dias no eixo
+                    // (o padrão do Chart.js pula rótulos quando não cabem, o que sumia com dias no
+                    // recorte de 30); maxRotation permite girar o texto "dd/mm" pra caber sem cortar.
+                    x: { stacked: true, grid: { display: false }, ticks: { autoSkip: false, maxRotation: 60, minRotation: 0 } },
+                    y: { stacked: true, title: { display: true, text: 'minutos' } }
+                },
                 plugins: { legend: { position: 'bottom' } }
             }
         });
+
+        <?php if ($exibirTendenciaPontos): ?>
+        // Gráfico de linha com marcadores (estilo "Hours tracked" do RescueTime/afins pedido pelo
+        // usuário) só na visão de uma máquina: hora a hora se o recorte é um único dia, dia a dia
+        // se abrange vários dias (mesmos dados de $dias, já calculados acima pra Tendência Diária).
+        new Chart(document.getElementById('chartPontos<?= $idSufixo ?>'), {
+            type: 'line',
+            data: {
+                labels: <?= json_encode($pontosLabels) ?>,
+                datasets: [{
+                    label: 'Produtivo',
+                    data: <?= json_encode(array_map(fn($v) => round($v / 3600, 2), $pontosValores)) ?>,
+                    borderColor: '#16a34a',
+                    backgroundColor: '#16a34a',
+                    pointBackgroundColor: '#16a34a',
+                    pointBorderColor: '#fff',
+                    pointRadius: 5,
+                    pointHoverRadius: 7,
+                    borderWidth: 2,
+                    tension: 0.3,
+                    fill: false,
+                }]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: { callbacks: { label: (ctx) => 'Produtivo: ' + ctx.raw + 'h' } }
+                },
+                scales: {
+                    x: {
+                        grid: { display: false },
+                        ticks: {
+                            <?php if (!$pontosPorHora): ?>
+                            color: (ctx) => <?= json_encode($pontosFimDeSemana) ?>[ctx.index] ? '#dc2626' : undefined,
+                            <?php endif; ?>
+                        }
+                    },
+                    y: { beginAtZero: true, title: { display: true, text: 'horas produtivas' } }
+                }
+            }
+        });
+        <?php endif; ?>
 
         new Chart(document.getElementById('chartApps<?= $idSufixo ?>'), {
             type: 'bar',
@@ -543,20 +644,6 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
             }
         });
 
-        <?php if (!empty($topSites)): ?>
-        new Chart(document.getElementById('chartSites<?= $idSufixo ?>'), {
-            type: 'bar',
-            data: {
-                labels: <?= json_encode(array_keys($topSites)) ?>,
-                datasets: [{ data: <?= json_encode(array_map(fn($v) => round($v/60), $topSites)) ?>, backgroundColor: '#12b7a8' }]
-            },
-            options: {
-                indexAxis: 'y', responsive: true, maintainAspectRatio: false,
-                plugins: { legend: { display: false }, tooltip: { callbacks: { label: (ctx) => ctx.raw + ' min' } } },
-                scales: { x: { title: { display: true, text: 'minutos' } } }
-            }
-        });
-        <?php endif; ?>
     })();
     </script>
     <?php
@@ -637,7 +724,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
 
 <?php if ($visao === 'geral'): ?>
 
-    <?php renderPainelProdutividade($db, $inicioUtc, $fimUtc, $inicioLocal, $fimLocal, $maquinaId > 0 ? [$maquinaId] : [], 'Por Máquina'); ?>
+    <?php renderPainelProdutividade($db, $inicioUtc, $fimUtc, $inicioLocal, $fimLocal, $maquinaId > 0 ? [$maquinaId] : [], 'Por Máquina', true, false, $tendenciaDiasForcado); ?>
 
 <?php elseif ($visao === 'setor'): ?>
 
@@ -806,6 +893,6 @@ elseif ($visao === 'maquina'):
             </div>
         </div>
         <?php
-        renderPainelProdutividade($db, $inicioUtc, $fimUtc, $inicioLocal, $fimLocal, [$maquinaAtual['id']], '', false);
+        renderPainelProdutividade($db, $inicioUtc, $fimUtc, $inicioLocal, $fimLocal, [$maquinaAtual['id']], '', false, true, $tendenciaDiasForcado);
     }
 endif; ?>
