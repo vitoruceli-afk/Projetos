@@ -300,15 +300,11 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
                 <div class="card-body chart-card-body">
                     <div class="chart-wrap"><canvas id="chartCategoria<?= $idSufixo ?>"></canvas></div>
                     <div class="legend-list mt-3">
-                        <?php foreach ($porCategoria as $row): $pct = $totalMonitorado > 0 ? round($row['total'] / $totalMonitorado * 100, 1) : 0; $catLabel = $row['categoria_nome'] ?? 'Sem categoria'; ?>
+                        <?php foreach ($porCategoria as $row): $catLabel = $row['categoria_nome'] ?? 'Sem categoria'; ?>
                         <div class="legend-row">
                             <span class="cat-dot" style="background: <?= htmlspecialchars($row['categoria_cor'] ?? '#c7c5da') ?>"></span>
                             <span class="legend-name"><?= htmlspecialchars($catLabel) ?></span>
-                            <span class="legend-value"><?= formatarDuracao($row['total']) ?> (<?= $pct ?>%)</span>
                         </div>
-                        <?php if (!empty($detalheCategoriaTop[$catLabel])): ?>
-                        <div class="legend-detail text-muted small"><?= htmlspecialchars(implode(' · ', $detalheCategoriaTop[$catLabel])) ?></div>
-                        <?php endif; ?>
                         <?php endforeach; ?>
                         <?php if (empty($porCategoria)): ?><div class="text-muted small">Sem dados no período.</div><?php endif; ?>
                     </div>

@@ -473,8 +473,6 @@ tr.table-warning > * { --bs-table-accent-bg: transparent; background: transparen
 .legend-list { display: flex; flex-direction: column; gap: 8px; }
 .legend-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
 .legend-row .legend-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.legend-row .legend-value { font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text-600); }
-.legend-detail { margin-top: -4px; margin-left: 18px; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .chart-card-body { position: relative; }
 .chart-wrap { position: relative; height: 260px; }
