@@ -754,23 +754,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
     </form>
     <div class="topbar-spacer"></div>
 
-    <?php if ($visao === 'geral'): $maquinaId = (int)($_GET['maquina_id'] ?? 0); ?>
-        <form method="GET" class="d-flex align-items-center gap-2">
-            <input type="hidden" name="page" value="dashboard">
-            <input type="hidden" name="visao" value="geral">
-            <input type="hidden" name="periodo" value="<?= htmlspecialchars($periodo) ?>">
-            <?php if ($periodo === 'custom'): ?>
-                <input type="hidden" name="data_ini" value="<?= htmlspecialchars($inicioLocal->format('Y-m-d')) ?>">
-                <input type="hidden" name="data_fim" value="<?= htmlspecialchars($fimLocal->format('Y-m-d')) ?>">
-            <?php endif; ?>
-            <select name="maquina_id" class="form-select form-select-sm" onchange="this.form.submit()">
-                <option value="0">Todas as máquinas</option>
-                <?php foreach ($maquinas as $m): ?>
-                    <option value="<?= (int)$m['id'] ?>" <?= $maquinaId === (int)$m['id'] ? 'selected' : '' ?>><?= htmlspecialchars($m['nome']) ?></option>
-                <?php endforeach; ?>
-            </select>
-        </form>
-    <?php elseif ($visao === 'maquinas_setor'):
+    <?php if ($visao === 'maquinas_setor'):
         $setorSelecionado = $_GET['setor'] ?? ($setoresExistentes[0] ?? ($temMaquinasSemSetor ? '' : null)); ?>
         <form method="GET" class="d-flex align-items-center gap-2">
             <input type="hidden" name="page" value="dashboard">
@@ -798,7 +782,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
 
 <?php if ($visao === 'geral'): ?>
 
-    <?php renderPainelProdutividade($db, $inicioUtc, $fimUtc, $inicioLocal, $fimLocal, $maquinaId > 0 ? [$maquinaId] : [], false, $tendenciaDiasForcado); ?>
+    <?php renderPainelProdutividade($db, $inicioUtc, $fimUtc, $inicioLocal, $fimLocal, [], false, $tendenciaDiasForcado); ?>
 
 <?php elseif ($visao === 'setor'): ?>
 
