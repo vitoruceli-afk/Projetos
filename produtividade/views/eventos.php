@@ -3,7 +3,11 @@ $db = getDB();
 
 $maquinaId = (int)($_GET['maquina_id'] ?? 0);
 $tipo = in_array($_GET['tipo'] ?? '', ['window', 'afk', 'web'], true) ? $_GET['tipo'] : '';
+// -1 é um valor especial vindo do botão "Ver eventos desta categoria" do Dashboard, quando a
+// categoria clicada é "Sem categoria" (c.id vem NULL do LEFT JOIN de lá, sem id de verdade pra
+// filtrar) — não dá pra distinguir "sem filtro" de "sem categoria" só com 0/vazio.
 $categoriaId = (int)($_GET['categoria_id'] ?? 0);
+$semCategoria = $categoriaId === -1;
 $busca = trim($_GET['busca'] ?? '');
 $dataIni = $_GET['data_ini'] ?? date('Y-m-d', strtotime('-1 day'));
 $dataFim = $_GET['data_fim'] ?? date('Y-m-d');
@@ -16,7 +20,8 @@ $where = ['e.ts BETWEEN :ini AND :fim'];
 $params = [':ini' => $inicioUtc, ':fim' => $fimUtc];
 if ($maquinaId > 0) { $where[] = 'e.maquina_id = :mid'; $params[':mid'] = $maquinaId; }
 if ($tipo !== '') { $where[] = 'e.tipo = :tipo'; $params[':tipo'] = $tipo; }
-if ($categoriaId > 0) { $where[] = 'e.categoria_id = :cid'; $params[':cid'] = $categoriaId; }
+if ($semCategoria) { $where[] = 'e.categoria_id IS NULL'; }
+elseif ($categoriaId > 0) { $where[] = 'e.categoria_id = :cid'; $params[':cid'] = $categoriaId; }
 if ($busca !== '') {
     $where[] = '(e.app LIKE :busca OR e.titulo LIKE :busca OR e.url LIKE :busca)';
     $params[':busca'] = '%' . $busca . '%';
@@ -91,7 +96,8 @@ function qsEventos($extra) {
     </select>
     <select name="categoria_id" class="form-select form-select-sm" style="max-width: 200px">
         <option value="0">Todas as categorias</option>
-        <?php foreach ($categorias as $c): ?><option value="<?= (int)$c['id'] ?>" <?= $categoriaId === (int)$c['id'] ? 'selected' : '' ?>><?= htmlspecialchars($c['nome']) ?></option><?php endforeach; ?>
+        <option value="-1" <?= $semCategoria ? 'selected' : '' ?>>Sem categoria</option>
+        <?php foreach ($categorias as $c): ?><option value="<?= (int)$c['id'] ?>" <?= (!$semCategoria && $categoriaId === (int)$c['id']) ? 'selected' : '' ?>><?= htmlspecialchars($c['nome']) ?></option><?php endforeach; ?>
     </select>
     <input type="text" name="busca" class="form-control form-control-sm" placeholder="Buscar app/título/URL..." value="<?= htmlspecialchars($busca) ?>" style="max-width: 220px">
     <input type="date" name="data_ini" class="form-control form-control-sm" value="<?= htmlspecialchars($dataIni) ?>">

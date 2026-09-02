@@ -261,9 +261,7 @@ $hostsExistentes = array_flip($hostsExistentes);
     </div>
 </div>
 
-<div class="row g-3">
-    <div class="col-lg-6">
-        <div class="card mb-3">
+<div class="card mb-3">
             <div class="card-header">Grupos → Usuários</div>
             <div class="card-body">
                 <form method="POST" class="row g-2 mb-3">
@@ -305,9 +303,7 @@ $hostsExistentes = array_flip($hostsExistentes);
                 </table>
             </div>
         </div>
-    </div>
 
-    <div class="col-lg-6">
         <div class="card mb-3" id="topo-ou">
             <div class="card-header">OUs → Máquinas</div>
             <div class="card-body">
@@ -355,8 +351,6 @@ $hostsExistentes = array_flip($hostsExistentes);
                 </table>
             </div>
         </div>
-    </div>
-</div>
 
 <?php if ($importResultUsuarios): ?>
 <div class="card mb-3" id="grupo-<?= (int)$importResultUsuarios['grupo_id'] ?>">

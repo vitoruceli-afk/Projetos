@@ -83,6 +83,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
 
     // ---- KPIs: distribuição por categoria (janelas + navegador) ----
     $stmt = $db->prepare("SELECT
+            c.id AS categoria_id,
             COALESCE(c.pontuacao, 99) AS pontuacao,
             c.nome AS categoria_nome,
             c.cor AS categoria_cor,
@@ -90,7 +91,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
         FROM eventos e
         LEFT JOIN categorias c ON c.id = e.categoria_id
         WHERE e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
-        GROUP BY COALESCE(c.pontuacao, 99), c.nome, c.cor
+        GROUP BY c.id, COALESCE(c.pontuacao, 99), c.nome, c.cor
         ORDER BY total DESC");
     $stmt->execute($params);
     $porCategoria = $stmt->fetchAll();
@@ -261,6 +262,17 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
     }
 
     $idSufixo = 'p' . substr(md5(implode(',', $maquinaIds)), 0, 6);
+
+    // Base do link "Ver eventos desta categoria" no popup — mesmo recorte de máquina(s) e período
+    // desta visão; a categoria é adicionada no JS, na hora de abrir o popup (abrirModalCategoria).
+    // eventos.php só filtra por UMA máquina, mas essa função nunca recebe mais de uma (visão geral
+    // não filtra máquina nenhuma, visão de uma máquina passa exatamente uma).
+    $eventosBaseParams = [
+        'page' => 'eventos',
+        'data_ini' => $inicioLocal->format('Y-m-d'),
+        'data_fim' => $fimLocal->format('Y-m-d'),
+    ];
+    if (count($maquinaIds) === 1) $eventosBaseParams['maquina_id'] = reset($maquinaIds);
     ?>
     <div class="stat-strip">
         <div class="stat-tile">
@@ -383,6 +395,11 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
                         </table>
                     </div>
                 </div>
+                <div class="modal-footer">
+                    <a href="#" id="modalCategoriaVerEventos<?= $idSufixo ?>" class="btn btn-outline-primary btn-sm">
+                        <i class="bi bi-list-ul"></i> Ver eventos desta categoria
+                    </a>
+                </div>
             </div>
         </div>
     </div>
@@ -399,8 +416,12 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
         var categoriasBase<?= $idSufixo ?> = {
             labels: <?= json_encode(array_map(fn($r) => $r['categoria_nome'] ?? 'Sem categoria', $porCategoria)) ?>,
             data: <?= json_encode(array_map(fn($r) => round($r['total']), $porCategoria)) ?>,
-            cores: <?= json_encode(array_map(fn($r) => $r['categoria_cor'] ?? '#c7c5da', $porCategoria)) ?>
+            cores: <?= json_encode(array_map(fn($r) => $r['categoria_cor'] ?? '#c7c5da', $porCategoria)) ?>,
+            // -1 = "Sem categoria" (c.id vem NULL do LEFT JOIN) — eventos.php trata esse valor
+            // como "categoria_id IS NULL" especialmente pra esse botão funcionar também aqui.
+            ids: <?= json_encode(array_map(fn($r) => $r['categoria_id'] !== null ? (int)$r['categoria_id'] : -1, $porCategoria)) ?>
         };
+        var eventosBaseParams<?= $idSufixo ?> = <?= json_encode($eventosBaseParams, JSON_UNESCAPED_UNICODE) ?>;
 
         function formatarDuracaoJs<?= $idSufixo ?>(segundos) {
             if (segundos < 60) return Math.round(segundos) + 's';
@@ -485,6 +506,10 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
                     lista.appendChild(tr);
                 });
             }
+
+            var params = new URLSearchParams(eventosBaseParams<?= $idSufixo ?>);
+            params.set('categoria_id', categoriasBase<?= $idSufixo ?>.ids[idx]);
+            document.getElementById('modalCategoriaVerEventos<?= $idSufixo ?>').href = 'index.php?' + params.toString();
 
             // Instanciado só no clique (não no carregamento do script) pelo mesmo motivo do modal
             // de log em Máquinas: este bloco roda antes da tag <script> do bootstrap.bundle.min.js
