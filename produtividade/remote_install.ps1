@@ -114,7 +114,15 @@ echo %errorlevel% > "$remoteExitCodeLocal"
         Remove-Item -LiteralPath $localBatPath -Force -ErrorAction SilentlyContinue
     }
 
-    $securePwd = ConvertTo-SecureString $password -AsPlainText -Force
+    # Monta a SecureString na mao (em vez de ConvertTo-SecureString) porque esse cmdlet vem do
+    # modulo Microsoft.PowerShell.Security, que autocarrega na primeira chamada - e nesta maquina,
+    # com o PowerShell 7 tambem instalado, o PSModulePath do processo acaba com entradas duplicadas
+    # que fazem esse autoload falhar ("membro already present" ao registrar TypeData de
+    # ObjectSecurity), derrubando o script inteiro com $ErrorActionPreference = 'Stop'. New-Object
+    # System.Security.SecureString e PSCredential nao dependem desse modulo.
+    $securePwd = New-Object System.Security.SecureString
+    foreach ($c in $password.ToCharArray()) { $securePwd.AppendChar($c) }
+    $securePwd.MakeReadOnly()
     $cred = New-Object System.Management.Automation.PSCredential($username, $securePwd)
     $cimOption = New-CimSessionOption -Protocol Dcom
     $session = New-CimSession -ComputerName $computerName -Credential $cred -SessionOption $cimOption

@@ -17,7 +17,7 @@
   <Product Id="*"
            Name="ActivityWatch (Produtividade FAESA)"
            Language="1046"
-           Version="0.13.2.5"
+           Version="0.13.2.6"
            Manufacturer="FAESA - Nucleo de Tecnologia da Informacao"
            UpgradeCode="9F1B7C2A-4E3D-4B8A-9C6E-7A2F5D1B0E44">
 
@@ -59,6 +59,12 @@
                REST publica que aw-watcher-window/afk ja usam. Ver Agentes\aw-watcher-currentuser\. -->
           <Component Id="CompAgenteUsuarioScript" Guid="5E6F7081-9203-4EBF-B031-4B5C6D7E8F91">
             <File Id="AgenteUsuarioScript" Name="aw-watcher-currentuser.ps1" Source="..\..\Agentes\aw-watcher-currentuser\aw-watcher-currentuser.ps1" KeyPath="yes" />
+          </Component>
+
+          <!-- Wrapper pra Tarefa Agendada rodar o script acima sem nenhum flash de console - ver
+               comentario dentro do proprio .vbs. -->
+          <Component Id="CompAgenteUsuarioRunHidden" Guid="8192031A-4B25-4EC1-B364-7D8E9F102435">
+            <File Id="AgenteUsuarioRunHidden" Name="run-hidden.vbs" Source="..\..\Agentes\aw-watcher-currentuser\run-hidden.vbs" KeyPath="yes" />
           </Component>
 
           <Component Id="CompAgenteUsuarioTaskXml" Guid="6F708192-0314-4CF0-9142-5C6D7E8F9102">
@@ -112,6 +118,7 @@
       <ComponentRef Id="CompLauncherVbs" />
       <ComponentRef Id="CompTemplateToml" />
       <ComponentRef Id="CompAgenteUsuarioScript" />
+      <ComponentRef Id="CompAgenteUsuarioRunHidden" />
       <ComponentRef Id="CompAgenteUsuarioTaskXml" />
       <ComponentRef Id="CompTaskReligarXml" />
       <ComponentRef Id="CompRunKey" />

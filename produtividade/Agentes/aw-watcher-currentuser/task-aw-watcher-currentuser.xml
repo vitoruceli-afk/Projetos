@@ -39,8 +39,8 @@
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>powershell.exe</Command>
-      <Arguments>-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\Program Files (x86)\ActivityWatch-Produtividade\aw-watcher-currentuser.ps1"</Arguments>
+      <Command>wscript.exe</Command>
+      <Arguments>"C:\Program Files (x86)\ActivityWatch-Produtividade\run-hidden.vbs"</Arguments>
     </Exec>
   </Actions>
 </Task>

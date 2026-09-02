@@ -70,7 +70,12 @@ function AcharProductCode($session, $nomeProduto) {
 }
 
 try {
-    $securePwd = ConvertTo-SecureString $password -AsPlainText -Force
+    # Ver comentario equivalente em remote_install.ps1: evita ConvertTo-SecureString (modulo
+    # Microsoft.PowerShell.Security, cujo autoload falha nesta maquina por causa do PowerShell 7
+    # tambem instalado) montando a SecureString direto via .NET.
+    $securePwd = New-Object System.Security.SecureString
+    foreach ($c in $password.ToCharArray()) { $securePwd.AppendChar($c) }
+    $securePwd.MakeReadOnly()
     $cred = New-Object System.Management.Automation.PSCredential($username, $securePwd)
     $cimOption = New-CimSessionOption -Protocol Dcom
     $session = New-CimSession -ComputerName $computerName -Credential $cred -SessionOption $cimOption
