@@ -478,6 +478,42 @@ tr.table-warning > * { --bs-table-accent-bg: transparent; background: transparen
 .chart-wrap { position: relative; height: 260px; }
 .chart-wrap.sm { height: 200px; }
 
+/* ---- mosaico de hexágonos (Produtividade por Máquina, Visão Setor) ----
+   Colmeia com folga: cada .hex-row é uma linha inteira, e a LINHA (não o hexágono individual)
+   desloca meia largura pra direita nas linhas ímpares — é isso que posiciona uma linha entre os
+   hexágonos da linha anterior. Geometria de um hexágono "pointy-top" regular: altura = largura *
+   0.866 (raiz de 3 sobre 2); o encaixe perfeito, sem gap nenhum, pediria margin-top de
+   -(altura/4) entre linhas. Usamos bem menos que isso (só -4px) de propósito: com esse tanto de
+   sobreposição qualquer imprecisão de arredondamento de pixel vira hexágonos se cortando (foi
+   exatamente o defeito visto antes) — com menos sobreposição sobra uma folga visível entre linhas,
+   igual ao espaçamento generoso do próprio print de referência que pediu esse gráfico. */
+.hex-grid { width: fit-content; margin: 6px auto; }
+.hex-row { display: flex; gap: 18px; }
+.hex-row:not(:first-child) { margin-top: -4px; }
+.hex-row.hex-row-offset { margin-left: 65px; }
+.hex-tile {
+    position: relative;
+    flex: 0 0 auto;
+    width: 112px;
+    height: 97px;
+    clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    color: #fff;
+    text-decoration: none;
+    padding: 0 14px;
+    transition: transform .15s ease, filter .15s ease;
+}
+.hex-tile:hover { transform: scale(1.08); color: #fff; filter: brightness(1.08); z-index: 1; }
+.hex-nome { font-size: 10.5px; font-weight: 700; line-height: 1.2; overflow-wrap: break-word; max-width: 100%; }
+.hex-pct { font-size: 16px; font-weight: 800; margin-top: 1px; font-variant-numeric: tabular-nums; }
+/* Máquina exibida no momento (Visão Máquinas por Setor) — anel de destaque no hexágono ativo. */
+.hex-tile-ativa { transform: scale(1.12); box-shadow: 0 0 0 3px rgba(31,36,48,0.85); z-index: 2; }
+.hex-tile-ativa:hover { transform: scale(1.16); }
+
 /* ---- login ---- */
 .login-stage {
   min-height: 100vh;

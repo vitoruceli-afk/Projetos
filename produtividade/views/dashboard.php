@@ -64,17 +64,118 @@ function qs($extra) {
 function filtroHorarioComercialSql($aliasEventos = 'e') {
     return "AND TIME(CONVERT_TZ({$aliasEventos}.ts, '+00:00', '-03:00')) BETWEEN '06:00:00' AND '22:30:00'";
 }
+// Faixas pedidas pro mosaico de hexágonos (Visão Setor): verde 100-67%, amarelo 66-34%, vermelho
+// 33-0%. Máquina sem nenhum evento no recorte (total=0) não é "0% produtivo" de verdade — é falta
+// de dado — então fica cinza, pra não parecer que a máquina esteve ligada e improdutiva o período
+// inteiro.
+function corHexProdutividade($temDado, $pct) {
+    if (!$temDado) return '#94a2b8';
+    if ($pct >= 67) return '#16a34a';
+    if ($pct >= 34) return '#eab308';
+    return '#dc2626';
+}
+
 function filtroNaoBloqueadoSql($aliasEventos = 'e') {
     return "AND COALESCE({$aliasEventos}.app, '') <> 'LockApp.exe'";
 }
 
-// Todo o bloco de KPIs + gráficos (+ opcionalmente a tabela por máquina) — reaproveitado pela
-// Visão Geral (todas as máquinas, ou uma só se selecionada) e pela Visão de uma Máquina (uma única,
-// vinda do clique no nome em qualquer tabela). $maquinaIds vazio = sem restrição (todas as
-// máquinas do sistema). $mostrarTabela = false quando o card de identificação da máquina, logo
-// acima, já cobre a mesma informação (visão de uma única máquina) — evitaria uma tabela de 1 linha
-// só repetindo o que já está no cabeçalho.
-function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inicioLocal, DateTime $fimLocal, array $maquinaIds, $tituloTabela, $mostrarTabela = true, $exibirTendenciaPontos = false, $tendenciaDiasForcado = null) {
+// Tempo total/produtivo por máquina (ativas), no mesmo recorte de horário/bloqueio do resto do
+// dashboard — usado pelo mosaico de hexágonos, tanto o da Visão Setor (todas as máquinas ativas)
+// quanto o da Visão Máquinas por Setor ($maquinaIdsFiltro = só as do setor escolhido).
+function calcularHexProdutividade(PDO $db, $inicioUtc, $fimUtc, ?array $maquinaIdsFiltro = null) {
+    $params = [':ini' => $inicioUtc, ':fim' => $fimUtc];
+    $filtroIds = '';
+    if ($maquinaIdsFiltro !== null) {
+        if (empty($maquinaIdsFiltro)) return [];
+        $placeholders = [];
+        foreach (array_values($maquinaIdsFiltro) as $i => $mid) {
+            $chave = ":hid{$i}";
+            $placeholders[] = $chave;
+            $params[$chave] = $mid;
+        }
+        $filtroIds = 'AND m.id IN (' . implode(',', $placeholders) . ')';
+    }
+    $stmt = $db->prepare("SELECT m.id, m.nome,
+            SUM(e.duracao) AS total,
+            SUM(CASE WHEN c.pontuacao = 1 THEN e.duracao ELSE 0 END) AS produtivo
+        FROM maquinas m
+        LEFT JOIN eventos e ON e.maquina_id = m.id AND e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim " . filtroHorarioComercialSql() . " " . filtroNaoBloqueadoSql() . "
+        LEFT JOIN categorias c ON c.id = e.categoria_id
+        WHERE m.ativo = 1 {$filtroIds}
+        GROUP BY m.id, m.nome
+        ORDER BY m.nome ASC");
+    $stmt->execute($params);
+    return $stmt->fetchAll();
+}
+
+// Desenha o mosaico de hexágonos a partir do resultado de calcularHexProdutividade(). $linkFn
+// recebe o id da máquina e devolve a URL do hexágono; $maquinaSelecionadaId (opcional) marca um
+// hexágono como "ativo" — usado na Visão Máquinas por Setor pra indicar qual máquina está sendo
+// exibida embaixo no momento.
+function renderHexGrid(array $maquinasComTempo, callable $linkFn, $maquinaSelecionadaId = null) {
+    $porLinha = max(1, (int)ceil(count($maquinasComTempo) / 2));
+    $linhas = array_chunk($maquinasComTempo, $porLinha);
+    ?>
+    <div class="hex-grid">
+        <?php foreach ($linhas as $li => $linha): ?>
+        <div class="hex-row <?= $li % 2 === 1 ? 'hex-row-offset' : '' ?>">
+            <?php foreach ($linha as $m):
+                $temDado = $m['total'] > 0;
+                $pct = $temDado ? round($m['produtivo'] / $m['total'] * 100) : 0;
+                $cor = corHexProdutividade($temDado, $pct);
+                $ativa = $maquinaSelecionadaId !== null && (int)$m['id'] === (int)$maquinaSelecionadaId;
+            ?>
+            <a href="<?= $linkFn($m['id']) ?>"
+               class="hex-tile<?= $ativa ? ' hex-tile-ativa' : '' ?>"
+               style="background: <?= $cor ?>;"
+               title="<?= htmlspecialchars($m['nome']) ?> — <?= $temDado ? $pct . '% produtivo' : 'sem dados no período' ?>">
+                <span class="hex-nome"><?= htmlspecialchars($m['nome']) ?></span>
+                <span class="hex-pct"><?= $temDado ? $pct . '%' : '—' ?></span>
+            </a>
+            <?php endforeach; ?>
+        </div>
+        <?php endforeach; ?>
+        <?php if (empty($maquinasComTempo)): ?><div class="text-muted text-center py-3">Nenhum dado para exibir.</div><?php endif; ?>
+    </div>
+    <?php
+}
+
+// Card de identificação/resumo de uma máquina — reaproveitado pela Visão Máquina (standalone) e
+// pela Visão Máquinas por Setor (embutido acima do mosaico + painel). $mostrarVoltar desliga o
+// botão "Voltar" nesse segundo caso: lá a navegação principal é clicar noutro hexágono, não voltar.
+function renderCardInfoMaquina($maquinaAtual, $mostrarVoltar = true) {
+    ?>
+    <div class="card mb-3">
+        <div class="card-body d-flex flex-wrap align-items-center gap-3">
+            <div class="flex-grow-1">
+                <div class="d-flex align-items-center gap-2">
+                    <h2 class="h5 mb-0"><?= htmlspecialchars($maquinaAtual['nome']) ?></h2>
+                    <?php if (!$maquinaAtual['ativo']): ?><span class="badge bg-secondary">Inativa</span><?php endif; ?>
+                    <?php if ($maquinaAtual['ultimo_sync_status'] === 'ok'): ?><span class="badge bg-success">Sincronização OK</span>
+                    <?php elseif ($maquinaAtual['ultimo_sync_status'] === 'parcial'): ?><span class="badge bg-warning">Parcial</span>
+                    <?php elseif ($maquinaAtual['ultimo_sync_status'] === 'erro'): ?><span class="badge bg-danger">Erro de sincronização</span>
+                    <?php endif; ?>
+                </div>
+                <div class="entity-grid mt-2" style="grid-template-columns: repeat(3, minmax(0,1fr));">
+                    <div><div class="entity-field-label">Host</div><div class="entity-field-value"><code><?= htmlspecialchars($maquinaAtual['host']) ?>:<?= (int)$maquinaAtual['porta'] ?></code></div></div>
+                    <div><div class="entity-field-label">Setor</div><div class="entity-field-value"><?= $maquinaAtual['setor_efetivo'] ? htmlspecialchars($maquinaAtual['setor_efetivo']) : '—' ?></div></div>
+                    <div><div class="entity-field-label">Usuário Responsável</div><div class="entity-field-value"><?= $maquinaAtual['usuario_responsavel'] ? htmlspecialchars($maquinaAtual['usuario_responsavel']) : '—' ?></div></div>
+                    <div><div class="entity-field-label">aw-server</div><div class="entity-field-value"><?= $maquinaAtual['aw_hostname'] ? htmlspecialchars($maquinaAtual['aw_hostname']) . ' (' . htmlspecialchars($maquinaAtual['aw_versao']) . ')' : '—' ?></div></div>
+                    <div><div class="entity-field-label">Última Sincronização</div><div class="entity-field-value mono"><?= $maquinaAtual['ultimo_sync_at'] ? htmlspecialchars($maquinaAtual['ultimo_sync_at']) : 'nunca' ?></div></div>
+                </div>
+            </div>
+            <?php if (isAdmin()): ?><a href="index.php?page=maquinas&edit=<?= (int)$maquinaAtual['id'] ?>" class="btn btn-outline-primary btn-sm">Editar Máquina</a><?php endif; ?>
+            <?php if ($mostrarVoltar): ?><a href="javascript:history.back()" class="btn btn-outline-secondary btn-sm">← Voltar</a><?php endif; ?>
+        </div>
+    </div>
+    <?php
+}
+
+// Todo o bloco de KPIs + gráficos — reaproveitado pela Visão Geral (todas as máquinas, ou uma só
+// se selecionada), pela Visão de uma Máquina e pela Visão Máquinas por Setor (ambas uma única
+// máquina, vinda do clique num hexágono ou numa tabela). $maquinaIds vazio = sem restrição (todas
+// as máquinas do sistema).
+function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inicioLocal, DateTime $fimLocal, array $maquinaIds, $exibirTendenciaPontos = false, $tendenciaDiasForcado = null) {
     $filtroMaquinaSql = '';
     $params = [':ini' => $inicioUtc, ':fim' => $fimUtc];
     if (!empty($maquinaIds)) {
@@ -204,6 +305,34 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
     $stmt->execute($params);
     $topApps = $stmt->fetchAll();
 
+    // Cor de cada barra = cor da categoria que mais contribuiu pro tempo daquele app (um app pode,
+    // raramente, ter migrado de categoria ao longo do tempo se as regras mudaram — fica a que tem
+    // mais tempo acumulado). Sem categoria cai no cinza padrão, igual ao resto do dashboard.
+    $corPorApp = [];
+    if (!empty($topApps)) {
+        $placeholders = [];
+        $paramsApps = $params;
+        foreach (array_values(array_column($topApps, 'app')) as $i => $appNome) {
+            $chave = ":app{$i}";
+            $placeholders[] = $chave;
+            $paramsApps[$chave] = $appNome;
+        }
+        $stmt = $db->prepare("SELECT e.app, c.cor AS categoria_cor, SUM(e.duracao) AS total
+            FROM eventos e LEFT JOIN categorias c ON c.id = e.categoria_id
+            WHERE e.tipo = 'window' AND e.app IN (" . implode(',', $placeholders) . ") AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
+            GROUP BY e.app, c.id, c.cor");
+        $stmt->execute($paramsApps);
+        $melhorPorApp = [];
+        foreach ($stmt->fetchAll() as $row) {
+            if (!isset($melhorPorApp[$row['app']]) || (float)$row['total'] > $melhorPorApp[$row['app']]['total']) {
+                $melhorPorApp[$row['app']] = ['cor' => $row['categoria_cor'] ?? '#c7c5da', 'total' => (float)$row['total']];
+            }
+        }
+        foreach ($topApps as $r) {
+            $corPorApp[$r['app']] = $melhorPorApp[$r['app']]['cor'] ?? '#c7c5da';
+        }
+    }
+
     // ---- Tendência diária (produtivo/neutro/improdutivo) — data local via offset fixo de Brasília.
     // Janela própria (independente do recorte "hoje"/período dos KPIs acima): sempre 7 ou 30 dias
     // quando $tendenciaDiasForcado vem preenchido (ver comentário na origem, no topo do arquivo) —
@@ -282,35 +411,6 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
         }
     }
 
-    // ---- Tabela por máquina (só as do recorte atual — todas, ou as do setor) ----
-    $porMaquina = [];
-    if ($mostrarTabela) {
-        $filtroMaquinasTabela = '';
-        $paramsTabela = [':ini' => $inicioUtc, ':fim' => $fimUtc];
-        if (!empty($maquinaIds)) {
-            $placeholders = [];
-            foreach (array_values($maquinaIds) as $i => $mid) {
-                $chave = ":tmid{$i}";
-                $placeholders[] = $chave;
-                $paramsTabela[$chave] = $mid;
-            }
-            $filtroMaquinasTabela = 'WHERE m.id IN (' . implode(',', $placeholders) . ')';
-        }
-        $stmt = $db->prepare("SELECT
-                m.id, m.nome, m.ativo, m.ultimo_sync_at, m.ultimo_sync_status,
-                COALESCE(ou.nome, NULLIF(m.setor, '')) AS setor,
-                SUM(e.duracao) AS total,
-                SUM(CASE WHEN c.pontuacao = 1 THEN e.duracao ELSE 0 END) AS produtivo
-            FROM maquinas m
-            LEFT JOIN ad_ous ou ON ou.id = m.ou_id
-            LEFT JOIN eventos e ON e.maquina_id = m.id AND e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim {$filtroHorario} {$filtroNaoBloqueado}
-            LEFT JOIN categorias c ON c.id = e.categoria_id
-            {$filtroMaquinasTabela}
-            GROUP BY m.id, m.nome, m.ativo, m.ultimo_sync_at, m.ultimo_sync_status, ou.nome, m.setor
-            ORDER BY total DESC");
-        $stmt->execute($paramsTabela);
-        $porMaquina = $stmt->fetchAll();
-    }
 
     $idSufixo = 'p' . substr(md5(implode(',', $maquinaIds)), 0, 6);
 
@@ -395,35 +495,6 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
             </div>
         </div>
     </div>
-
-    <?php if ($mostrarTabela): ?>
-    <div class="card mt-3">
-        <div class="card-header"><?= htmlspecialchars($tituloTabela) ?></div>
-        <div class="table-responsive">
-            <table class="table table-bordered bg-white align-middle mb-0">
-                <thead class="table-dark"><tr><th>Máquina</th><th>Setor</th><th>Tempo Total</th><th>% Produtivo</th><th>Última Sincronização</th><th>Status</th></tr></thead>
-                <tbody>
-                    <?php foreach ($porMaquina as $m): $pct = $m['total'] > 0 ? round($m['produtivo'] / $m['total'] * 100) : 0; ?>
-                    <tr>
-                        <td><a href="<?= qs(['visao' => 'maquina', 'maquina_id' => $m['id']]) ?>"><?= htmlspecialchars($m['nome']) ?></a> <?php if (!$m['ativo']): ?><span class="badge bg-secondary">Inativa</span><?php endif; ?></td>
-                        <td><?= $m['setor'] ? htmlspecialchars($m['setor']) : '<span class="text-muted">—</span>' ?></td>
-                        <td><?= formatarDuracao($m['total'] ?: 0) ?></td>
-                        <td><?= $m['total'] > 0 ? $pct . '%' : '—' ?></td>
-                        <td><small class="mono text-muted"><?= $m['ultimo_sync_at'] ? htmlspecialchars($m['ultimo_sync_at']) : 'nunca' ?></small></td>
-                        <td>
-                            <?php if ($m['ultimo_sync_status'] === 'ok'): ?><span class="badge bg-success">OK</span>
-                            <?php elseif ($m['ultimo_sync_status'] === 'parcial'): ?><span class="badge bg-warning">Parcial</span>
-                            <?php elseif ($m['ultimo_sync_status'] === 'erro'): ?><span class="badge bg-danger">Erro</span>
-                            <?php else: ?><span class="badge bg-secondary">—</span><?php endif; ?>
-                        </td>
-                    </tr>
-                    <?php endforeach; ?>
-                    <?php if (empty($porMaquina)): ?><tr><td colspan="6" class="text-center text-muted py-3">Nenhuma máquina neste recorte.</td></tr><?php endif; ?>
-                </tbody>
-            </table>
-        </div>
-    </div>
-    <?php endif; ?>
 
     <div class="modal fade" id="modalCategoria<?= $idSufixo ?>" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-lg modal-dialog-scrollable">
@@ -635,7 +706,10 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
             type: 'bar',
             data: {
                 labels: <?= json_encode(array_map(fn($r) => $r['app'], $topApps)) ?>,
-                datasets: [{ data: <?= json_encode(array_map(fn($r) => round($r['total']/60), $topApps)) ?>, backgroundColor: '#6d4de6' }]
+                datasets: [{
+                    data: <?= json_encode(array_map(fn($r) => round($r['total']/60), $topApps)) ?>,
+                    backgroundColor: <?= json_encode(array_map(fn($r) => $corPorApp[$r['app']] ?? '#c7c5da', $topApps)) ?>,
+                }]
             },
             options: {
                 indexAxis: 'y', responsive: true, maintainAspectRatio: false,
@@ -724,7 +798,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
 
 <?php if ($visao === 'geral'): ?>
 
-    <?php renderPainelProdutividade($db, $inicioUtc, $fimUtc, $inicioLocal, $fimLocal, $maquinaId > 0 ? [$maquinaId] : [], 'Por Máquina', true, false, $tendenciaDiasForcado); ?>
+    <?php renderPainelProdutividade($db, $inicioUtc, $fimUtc, $inicioLocal, $fimLocal, $maquinaId > 0 ? [$maquinaId] : [], false, $tendenciaDiasForcado); ?>
 
 <?php elseif ($visao === 'setor'): ?>
 
@@ -744,64 +818,52 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
         ORDER BY total DESC");
     $stmt->execute([':ini' => $inicioUtc, ':fim' => $fimUtc]);
     $porSetor = $stmt->fetchAll();
+
+    // ---- Produtividade por setor (mosaico de hexágonos) — reaproveita $porSetor (a mesma agregação
+    // da tabela acima); renderHexGrid() só espera itens com 'id'/'nome'/'total'/'produtivo', então
+    // usamos o próprio nome do setor como "id" (não há um id numérico de setor de verdade — setor
+    // aqui é texto livre ou nome de OU, ver comentário no início do arquivo).
+    $produtividadePorSetor = array_map(fn($s) => [
+        'id' => $s['setor'],
+        'nome' => $s['setor'],
+        'total' => $s['total'],
+        'produtivo' => $s['produtivo'],
+    ], $porSetor);
     ?>
 
     <div class="card">
         <div class="card-header">Comparativo entre Setores</div>
-        <div class="row g-0">
-            <div class="col-lg-7">
-                <div class="table-responsive">
-                    <table class="table table-bordered bg-white align-middle mb-0">
-                        <thead class="table-dark"><tr><th>Setor</th><th>Máquinas</th><th>Tempo Total</th><th>Produtivo</th><th>Improdutivo</th><th>% Produtivo</th><th></th></tr></thead>
-                        <tbody>
-                            <?php foreach ($porSetor as $s): $pct = $s['total'] > 0 ? round($s['produtivo'] / $s['total'] * 100) : 0; ?>
-                            <tr>
-                                <td><?= htmlspecialchars($s['setor']) ?></td>
-                                <td><?= (int)$s['num_maquinas'] ?></td>
-                                <td><?= formatarDuracao($s['total'] ?: 0) ?></td>
-                                <td class="online-c"><?= formatarDuracao($s['produtivo'] ?: 0) ?></td>
-                                <td class="critical-c"><?= formatarDuracao($s['improdutivo'] ?: 0) ?></td>
-                                <td><?= $s['total'] > 0 ? $pct . '%' : '—' ?></td>
-                                <td><a class="btn btn-sm btn-outline-primary" href="<?= qs(['visao' => 'maquinas_setor', 'setor' => $s['setor'] === 'Sem setor' ? '' : $s['setor']]) ?>">Ver máquinas</a></td>
-                            </tr>
-                            <?php endforeach; ?>
-                            <?php if (empty($porSetor)): ?><tr><td colspan="7" class="text-center text-muted py-3">Nenhuma máquina cadastrada.</td></tr><?php endif; ?>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-            <div class="col-lg-5">
-                <div class="card-body chart-card-body">
-                    <div class="chart-wrap"><canvas id="chartPorSetor"></canvas></div>
+        <div class="table-responsive">
+            <table class="table table-bordered bg-white align-middle mb-0">
+                <thead class="table-dark"><tr><th>Setor</th><th>Máquinas</th><th>Tempo Total</th><th>Produtivo</th><th>Improdutivo</th><th>% Produtivo</th><th></th></tr></thead>
+                <tbody>
+                    <?php foreach ($porSetor as $s): $pct = $s['total'] > 0 ? round($s['produtivo'] / $s['total'] * 100) : 0; ?>
+                    <tr>
+                        <td><?= htmlspecialchars($s['setor']) ?></td>
+                        <td><?= (int)$s['num_maquinas'] ?></td>
+                        <td><?= formatarDuracao($s['total'] ?: 0) ?></td>
+                        <td class="online-c"><?= formatarDuracao($s['produtivo'] ?: 0) ?></td>
+                        <td class="critical-c"><?= formatarDuracao($s['improdutivo'] ?: 0) ?></td>
+                        <td><?= $s['total'] > 0 ? $pct . '%' : '—' ?></td>
+                        <td><a class="btn btn-sm btn-outline-primary" href="<?= qs(['visao' => 'maquinas_setor', 'setor' => $s['setor'] === 'Sem setor' ? '' : $s['setor']]) ?>">Ver máquinas</a></td>
+                    </tr>
+                    <?php endforeach; ?>
+                    <?php if (empty($porSetor)): ?><tr><td colspan="7" class="text-center text-muted py-3">Nenhuma máquina cadastrada.</td></tr><?php endif; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-lg-6">
+            <div class="card mt-3">
+                <div class="card-header">Produtividade por Setor</div>
+                <div class="card-body">
+                    <?php renderHexGrid($produtividadePorSetor, fn($setorNome) => qs(['visao' => 'maquinas_setor', 'setor' => $setorNome === 'Sem setor' ? '' : $setorNome])); ?>
                 </div>
             </div>
         </div>
     </div>
-
-    <script>
-    (function () {
-        var corTexto = getComputedStyle(document.documentElement).getPropertyValue('--text-600').trim();
-        Chart.defaults.color = corTexto || '#5f5d78';
-        Chart.defaults.font.family = "'Segoe UI', sans-serif";
-
-        new Chart(document.getElementById('chartPorSetor'), {
-            type: 'bar',
-            data: {
-                labels: <?= json_encode(array_map(fn($s) => $s['setor'], $porSetor)) ?>,
-                datasets: [{
-                    label: '% Produtivo',
-                    data: <?= json_encode(array_map(fn($s) => $s['total'] > 0 ? round($s['produtivo'] / $s['total'] * 100) : 0, $porSetor)) ?>,
-                    backgroundColor: '#16a34a',
-                }]
-            },
-            options: {
-                indexAxis: 'y', responsive: true, maintainAspectRatio: false,
-                plugins: { legend: { display: false }, tooltip: { callbacks: { label: (ctx) => ctx.raw + '% produtivo' } } },
-                scales: { x: { min: 0, max: 100, title: { display: true, text: '% produtivo' } } }
-            }
-        });
-    })();
-    </script>
 
 <?php elseif ($visao === 'maquinas_setor'):
     if ($setorSelecionado === null) {
@@ -810,51 +872,43 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
         $idsDoSetor = array_column(array_filter($maquinas, fn($m) => $m['setor'] === $setorSelecionado), 'id');
         $tituloSetor = $setorSelecionado === '' ? 'Sem setor' : $setorSelecionado;
 
-        // Aqui é só um diretório — nome clicável leva pro dashboard completo de UMA máquina
-        // (visão "maquina"). As estatísticas em si não aparecem aqui de propósito: antes esta
-        // mesma visão já mostrava o painel inteiro agregando todas as máquinas do setor de uma vez
-        // (isso virou a visão "Setor", com o comparativo entre setores); esta ficou só para navegar
-        // até uma máquina específica.
-        $placeholders = [];
-        $paramsLista = [];
-        foreach (array_values($idsDoSetor) as $i => $mid) { $chave = ":id{$i}"; $placeholders[] = $chave; $paramsLista[$chave] = $mid; }
-        $listaMaquinas = [];
-        if (!empty($placeholders)) {
-            $stmt = $db->prepare("SELECT id, nome, host, porta, ativo, usuario_responsavel, ultimo_sync_at, ultimo_sync_status, ultimo_erro
-                FROM maquinas WHERE id IN (" . implode(',', $placeholders) . ") ORDER BY nome ASC");
-            $stmt->execute($paramsLista);
-            $listaMaquinas = $stmt->fetchAll();
+        // Mudança de comportamento pedida: em vez de uma lista de máquinas pra escolher e navegar
+        // pra visão "maquina" separada, este mosaico FICA na própria tela, e o painel completo de
+        // uma máquina (mesmo usado na visão "maquina") aparece logo abaixo dele — clicar noutro
+        // hexágono só troca o "maquina_id" na URL, recarregando com os dados da máquina clicada.
+        $produtividadeSetor = calcularHexProdutividade($db, $inicioUtc, $fimUtc, $idsDoSetor);
+
+        $maquinaIdSel = (int)($_GET['maquina_id'] ?? 0);
+        if (!in_array($maquinaIdSel, array_map('intval', $idsDoSetor), true)) {
+            // Sem seleção válida (primeira visita a este setor, ou id de outro setor) — cai na
+            // primeira máquina ativa da lista, pra nunca mostrar a tela "vazia".
+            $maquinaIdSel = !empty($produtividadeSetor) ? (int)$produtividadeSetor[0]['id'] : 0;
+        }
+
+        $maquinaAtual = null;
+        if ($maquinaIdSel > 0) {
+            $stmt = $db->prepare("SELECT m.*, COALESCE(ou.nome, NULLIF(m.setor, '')) AS setor_efetivo
+                                   FROM maquinas m LEFT JOIN ad_ous ou ON ou.id = m.ou_id
+                                   WHERE m.id = :id");
+            $stmt->execute([':id' => $maquinaIdSel]);
+            $maquinaAtual = $stmt->fetch();
         }
         ?>
-        <div class="card">
+        <div class="card mb-3">
             <div class="card-header">Máquinas do setor "<?= htmlspecialchars($tituloSetor) ?>"</div>
-            <div class="table-responsive">
-                <table class="table table-bordered bg-white align-middle mb-0">
-                    <thead class="table-dark"><tr><th>Máquina</th><th>Usuário Responsável</th><th>Host</th><th>Última Sincronização</th><th>Status</th></tr></thead>
-                    <tbody>
-                        <?php foreach ($listaMaquinas as $m): ?>
-                        <tr>
-                            <td>
-                                <a href="<?= qs(['visao' => 'maquina', 'maquina_id' => $m['id']]) ?>"><?= htmlspecialchars($m['nome']) ?></a>
-                                <?php if (!$m['ativo']): ?><span class="badge bg-secondary">Inativa</span><?php endif; ?>
-                            </td>
-                            <td><?= $m['usuario_responsavel'] ? htmlspecialchars($m['usuario_responsavel']) : '<span class="text-muted">—</span>' ?></td>
-                            <td><code><?= htmlspecialchars($m['host']) ?>:<?= (int)$m['porta'] ?></code></td>
-                            <td><small class="mono text-muted"><?= $m['ultimo_sync_at'] ? htmlspecialchars($m['ultimo_sync_at']) : 'nunca' ?></small></td>
-                            <td>
-                                <?php if ($m['ultimo_sync_status'] === 'ok'): ?><span class="badge bg-success">OK</span>
-                                <?php elseif ($m['ultimo_sync_status'] === 'parcial'): ?><span class="badge bg-warning" title="<?= htmlspecialchars($m['ultimo_erro'] ?? '') ?>">Parcial</span>
-                                <?php elseif ($m['ultimo_sync_status'] === 'erro'): ?><span class="badge bg-danger" title="<?= htmlspecialchars($m['ultimo_erro'] ?? '') ?>">Erro</span>
-                                <?php else: ?><span class="badge bg-secondary">—</span><?php endif; ?>
-                            </td>
-                        </tr>
-                        <?php endforeach; ?>
-                        <?php if (empty($listaMaquinas)): ?><tr><td colspan="5" class="text-center text-muted py-3">Nenhuma máquina neste setor.</td></tr><?php endif; ?>
-                    </tbody>
-                </table>
+            <div class="card-body">
+                <?php renderHexGrid($produtividadeSetor, fn($id) => qs(['visao' => 'maquinas_setor', 'setor' => $setorSelecionado, 'maquina_id' => $id]), $maquinaIdSel); ?>
             </div>
         </div>
-        <?php
+
+        <?php if (!$maquinaAtual): ?>
+            <div class="alert alert-info">Nenhuma máquina ativa neste setor.</div>
+        <?php else: ?>
+            <?php
+            renderCardInfoMaquina($maquinaAtual, false);
+            renderPainelProdutividade($db, $inicioUtc, $fimUtc, $inicioLocal, $fimLocal, [$maquinaAtual['id']], true, $tendenciaDiasForcado);
+            ?>
+        <?php endif;
     }
 
 elseif ($visao === 'maquina'):
@@ -868,31 +922,7 @@ elseif ($visao === 'maquina'):
     if (!$maquinaAtual) {
         echo '<div class="alert alert-danger">Máquina não encontrada.</div>';
     } else {
-        ?>
-        <div class="card mb-3">
-            <div class="card-body d-flex flex-wrap align-items-center gap-3">
-                <div class="flex-grow-1">
-                    <div class="d-flex align-items-center gap-2">
-                        <h2 class="h5 mb-0"><?= htmlspecialchars($maquinaAtual['nome']) ?></h2>
-                        <?php if (!$maquinaAtual['ativo']): ?><span class="badge bg-secondary">Inativa</span><?php endif; ?>
-                        <?php if ($maquinaAtual['ultimo_sync_status'] === 'ok'): ?><span class="badge bg-success">Sincronização OK</span>
-                        <?php elseif ($maquinaAtual['ultimo_sync_status'] === 'parcial'): ?><span class="badge bg-warning">Parcial</span>
-                        <?php elseif ($maquinaAtual['ultimo_sync_status'] === 'erro'): ?><span class="badge bg-danger">Erro de sincronização</span>
-                        <?php endif; ?>
-                    </div>
-                    <div class="entity-grid mt-2" style="grid-template-columns: repeat(3, minmax(0,1fr));">
-                        <div><div class="entity-field-label">Host</div><div class="entity-field-value"><code><?= htmlspecialchars($maquinaAtual['host']) ?>:<?= (int)$maquinaAtual['porta'] ?></code></div></div>
-                        <div><div class="entity-field-label">Setor</div><div class="entity-field-value"><?= $maquinaAtual['setor_efetivo'] ? htmlspecialchars($maquinaAtual['setor_efetivo']) : '—' ?></div></div>
-                        <div><div class="entity-field-label">Usuário Responsável</div><div class="entity-field-value"><?= $maquinaAtual['usuario_responsavel'] ? htmlspecialchars($maquinaAtual['usuario_responsavel']) : '—' ?></div></div>
-                        <div><div class="entity-field-label">aw-server</div><div class="entity-field-value"><?= $maquinaAtual['aw_hostname'] ? htmlspecialchars($maquinaAtual['aw_hostname']) . ' (' . htmlspecialchars($maquinaAtual['aw_versao']) . ')' : '—' ?></div></div>
-                        <div><div class="entity-field-label">Última Sincronização</div><div class="entity-field-value mono"><?= $maquinaAtual['ultimo_sync_at'] ? htmlspecialchars($maquinaAtual['ultimo_sync_at']) : 'nunca' ?></div></div>
-                    </div>
-                </div>
-                <?php if (isAdmin()): ?><a href="index.php?page=maquinas&edit=<?= (int)$maquinaAtual['id'] ?>" class="btn btn-outline-primary btn-sm">Editar Máquina</a><?php endif; ?>
-                <a href="javascript:history.back()" class="btn btn-outline-secondary btn-sm">← Voltar</a>
-            </div>
-        </div>
-        <?php
-        renderPainelProdutividade($db, $inicioUtc, $fimUtc, $inicioLocal, $fimLocal, [$maquinaAtual['id']], '', false, true, $tendenciaDiasForcado);
+        renderCardInfoMaquina($maquinaAtual, true);
+        renderPainelProdutividade($db, $inicioUtc, $fimUtc, $inicioLocal, $fimLocal, [$maquinaAtual['id']], true, $tendenciaDiasForcado);
     }
 endif; ?>
