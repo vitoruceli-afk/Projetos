@@ -61,7 +61,7 @@ define('AW_SERVIDOR_IP', '10.10.140.17');
 
 // Incrementar sempre que uma migração (CREATE TABLE/ALTER TABLE) for adicionada em getDB() — é o
 // que faz o bloco de migração rodar de novo (uma única vez) na próxima requisição após o deploy.
-define('SCHEMA_VERSION', 5);
+define('SCHEMA_VERSION', 6);
 
 function getDB() {
     // Conexão + schema cacheados numa estática por requisição (mesmo motivo documentado em
@@ -290,6 +290,7 @@ function getDB() {
         $db->exec("CREATE TABLE IF NOT EXISTS instalacoes_remotas (
             id INT AUTO_INCREMENT PRIMARY KEY,
             maquina_id INT NOT NULL,
+            acao VARCHAR(20) NOT NULL DEFAULT 'instalar',
             iniciado_em DATETIME NOT NULL,
             finalizado_em DATETIME NULL,
             status VARCHAR(20) NOT NULL DEFAULT 'fila',
@@ -298,6 +299,14 @@ function getDB() {
             INDEX idx_instalacao_maquina (maquina_id, iniciado_em),
             CONSTRAINT fk_instalacoes_maquina FOREIGN KEY (maquina_id) REFERENCES maquinas(id) ON DELETE CASCADE
         )");
+        // acao diferencia instalar/atualizar (mesmo fluxo: rodar o MSI atual de novo — o
+        // MajorUpgrade do proprio pacote troca a versao instalada) de desinstalar (remove de
+        // verdade via msiexec /x). Migração leve para quem já tinha a tabela sem essa coluna.
+        $temAcaoInstalacao = (bool)$db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'instalacoes_remotas' AND COLUMN_NAME = 'acao'")->fetchColumn();
+        if (!$temAcaoInstalacao) {
+            $db->exec("ALTER TABLE instalacoes_remotas ADD COLUMN acao VARCHAR(20) NOT NULL DEFAULT 'instalar' AFTER maquina_id");
+        }
 
         // Categorias e regras padrão — só na primeira instalação (tabela vazia). O admin edita
         // livremente depois; isso é só um ponto de partida razoável.

@@ -17,7 +17,7 @@
   <Product Id="*"
            Name="ActivityWatch (Produtividade FAESA)"
            Language="1046"
-           Version="0.13.2.1"
+           Version="0.13.2.2"
            Manufacturer="FAESA - Nucleo de Tecnologia da Informacao"
            UpgradeCode="9F1B7C2A-4E3D-4B8A-9C6E-7A2F5D1B0E44">
 
@@ -52,6 +52,17 @@
 
           <Component Id="CompTemplateToml" Guid="2B3C4D5E-6F70-4B8C-9D0E-1F2A3B4C5D6E">
             <File Id="AwServerDefaultToml" Name="aw-server.default.toml" Source="payload\aw-server.default.toml" KeyPath="yes" />
+          </Component>
+
+          <!-- Agente proprio (nao e um watcher oficial do ActivityWatch, nao modifica a instalacao
+               dele) que reporta o usuario Windows logado para o aw-server local, via a mesma API
+               REST publica que aw-watcher-window/afk ja usam. Ver Agentes\aw-watcher-currentuser\. -->
+          <Component Id="CompAgenteUsuarioScript" Guid="5E6F7081-9203-4EBF-B031-4B5C6D7E8F91">
+            <File Id="AgenteUsuarioScript" Name="aw-watcher-currentuser.ps1" Source="..\..\Agentes\aw-watcher-currentuser\aw-watcher-currentuser.ps1" KeyPath="yes" />
+          </Component>
+
+          <Component Id="CompAgenteUsuarioTaskXml" Guid="6F708192-0314-4CF0-9142-5C6D7E8F9102">
+            <File Id="AgenteUsuarioTaskXml" Name="task-aw-watcher-currentuser.xml" Source="..\..\Agentes\aw-watcher-currentuser\task-aw-watcher-currentuser.xml" KeyPath="yes" />
           </Component>
 
           <!-- HKLM Run (nao HKCU) para valer para qualquer usuario que logar, nao so quem estava
@@ -93,6 +104,8 @@
       <ComponentRef Id="CompAwSetupExe" />
       <ComponentRef Id="CompLauncherVbs" />
       <ComponentRef Id="CompTemplateToml" />
+      <ComponentRef Id="CompAgenteUsuarioScript" />
+      <ComponentRef Id="CompAgenteUsuarioTaskXml" />
       <ComponentRef Id="CompRunKey" />
       <ComponentRef Id="CompFirewall" />
     </Feature>
@@ -126,8 +139,32 @@
                   Impersonate="no"
                   Return="ignore" />
 
+    <!-- Registra a Tarefa Agendada do agente proprio (Agentes\aw-watcher-currentuser) para RODAR
+         COMO O USUARIO QUE ESTIVER LOGADO (Principal por GroupId "Users" no XML, nao um usuario
+         fixo) - isso só e possivel aqui porque o CustomAction roda com o token de administrador de
+         quem chamou o msiexec (ver InstallActivityWatch acima); tentar registrar essa mesma tarefa
+         via "schtasks /create /xml" sem elevacao (ex: sessao interativa comum) da "Acesso negado".
+         Return=ignore: preferimos o ActivityWatch instalado sem o agente a uma instalacao inteira
+         falhando por causa dele. -->
+    <CustomAction Id="RegistrarTarefaAgente"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[SystemFolder]schtasks.exe&quot; /create /tn &quot;AW_WatcherUsuarioLogado&quot; /xml &quot;[INSTALLFOLDER]task-aw-watcher-currentuser.xml&quot; /f"
+                  Execute="deferred"
+                  Return="ignore" />
+
+    <!-- Contraparte no uninstall - sem isso, remover o MSI deixaria a tarefa agendada orfa rodando
+         para sempre (o .ps1 que ela chama teria sido apagado, mas a tarefa em si continuaria
+         cadastrada, falhando silenciosamente a cada execucao). -->
+    <CustomAction Id="RemoverTarefaAgente"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[SystemFolder]schtasks.exe&quot; /delete /tn &quot;AW_WatcherUsuarioLogado&quot; /f"
+                  Execute="deferred"
+                  Return="ignore" />
+
     <InstallExecuteSequence>
       <Custom Action="InstallActivityWatch" After="InstallFiles">NOT Installed</Custom>
+      <Custom Action="RegistrarTarefaAgente" After="InstallActivityWatch">NOT Installed</Custom>
+      <Custom Action="RemoverTarefaAgente" Before="UninstallActivityWatch">REMOVE="ALL"</Custom>
       <Custom Action="UninstallActivityWatch" Before="RemoveFiles">REMOVE="ALL"</Custom>
     </InstallExecuteSequence>
 

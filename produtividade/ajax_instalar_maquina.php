@@ -30,5 +30,8 @@ if (empty($config['admin_usuario'])) {
     exit;
 }
 
-$instalacaoId = dispararInstalacaoRemota($db, $maquina);
+$acao = $_POST['acao'] ?? 'instalar';
+if (!in_array($acao, ['instalar', 'atualizar', 'desinstalar'], true)) $acao = 'instalar';
+
+$instalacaoId = dispararInstalacaoRemota($db, $maquina, $acao);
 echo json_encode(['ok' => true, 'instalacao_id' => $instalacaoId]);

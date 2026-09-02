@@ -68,13 +68,17 @@ function awTestarConexao($maquina) {
     ];
 }
 
-// Classifica o tipo interno (window/afk/web/other) a partir do "type" que o aw-server devolve
-// para cada bucket (currentwindow, afkstatus, web.tab.current, ...).
+// Classifica o tipo interno (window/afk/web/usuario/other) a partir do "type" que o aw-server
+// devolve para cada bucket (currentwindow, afkstatus, web.tab.current, ...). "currentuser" é o
+// bucket do nosso próprio agente (aw-watcher-currentuser, ver Agentes/) — não é um watcher oficial
+// do ActivityWatch, é um "custom watcher" que fala com a mesma API pública, sem modificar nada da
+// instalação existente.
 function awTipoBucket($tipoAw) {
     $tipoAw = (string)$tipoAw;
     if ($tipoAw === 'currentwindow') return 'window';
     if ($tipoAw === 'afkstatus') return 'afk';
     if (strpos($tipoAw, 'web.tab') === 0) return 'web';
+    if ($tipoAw === 'currentuser') return 'usuario';
     return 'other';
 }
 
@@ -274,6 +278,8 @@ function sincronizarMaquina(PDO $db, array $maquina, $origem = 'manual') {
         }
     }
 
+    atualizarUsuarioResponsavelDetectado($db, $maquina['id']);
+
     if (!empty($avisos)) {
         $msg = implode('; ', $avisos);
         $marcarMaquina('parcial', $msg);
@@ -284,4 +290,22 @@ function sincronizarMaquina(PDO $db, array $maquina, $origem = 'manual') {
     $marcarMaquina('ok', null);
     $finalizar('ok', '', $totalNovos);
     return ['ok' => true, 'erro' => '', 'eventos_novos' => $totalNovos];
+}
+
+// Preenche "Usuário responsável" sozinho a partir do bucket "aw-watcher-currentuser_<host>" (o
+// agente próprio em Agentes/, não um watcher oficial do ActivityWatch) — sem exigir credencial
+// nenhuma, já que o agente roda dentro da própria sessão do usuário e só reporta a si mesmo.
+// Silenciosamente não faz nada em máquinas onde esse agente ainda não está instalado (não existe
+// evento tipo 'usuario' pra elas, a consulta simplesmente não acha nada).
+function atualizarUsuarioResponsavelDetectado(PDO $db, $maquinaId) {
+    $stmt = $db->prepare("SELECT JSON_UNQUOTE(JSON_EXTRACT(dados, '$.user')) AS usuario
+                           FROM eventos
+                           WHERE maquina_id = :m AND tipo = 'usuario' AND JSON_EXTRACT(dados, '$.user') IS NOT NULL
+                           ORDER BY ts DESC LIMIT 1");
+    $stmt->execute([':m' => $maquinaId]);
+    $usuario = $stmt->fetchColumn();
+    if ($usuario) {
+        $db->prepare("UPDATE maquinas SET usuario_responsavel = :u WHERE id = :id")
+           ->execute([':u' => mb_substr($usuario, 0, 150), ':id' => $maquinaId]);
+    }
 }

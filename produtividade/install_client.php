@@ -10,12 +10,15 @@ function getInstalacaoConfig(PDO $db) {
     return $db->query("SELECT * FROM instalacao_remota_config ORDER BY id ASC LIMIT 1")->fetch();
 }
 
-// Enfileira uma instalação remota para a máquina informada e dispara imediatamente um processo
-// PHP em segundo plano para executá-la (start /B: sobrevive ao fim desta requisição). A tela de
-// Máquinas consulta o progresso via ajax_status_instalacao.php, fazendo polling pelo id retornado.
-function dispararInstalacaoRemota(PDO $db, array $maquina) {
-    $stmt = $db->prepare("INSERT INTO instalacoes_remotas (maquina_id, iniciado_em, status) VALUES (:m, :i, 'fila')");
-    $stmt->execute([':m' => $maquina['id'], ':i' => date('Y-m-d H:i:s')]);
+// Enfileira uma ação remota (instalar/atualizar/desinstalar) para a máquina informada e dispara
+// imediatamente um processo PHP em segundo plano para executá-la (start /B: sobrevive ao fim desta
+// requisição). A tela de Máquinas consulta o progresso via ajax_status_instalacao.php, fazendo
+// polling pelo id retornado. "instalar" e "atualizar" são o MESMO fluxo (rodar o MSI atual de novo
+// — o MajorUpgrade do próprio pacote troca a versão instalada); só o rótulo exibido muda.
+function dispararInstalacaoRemota(PDO $db, array $maquina, $acao = 'instalar') {
+    if (!in_array($acao, ['instalar', 'atualizar', 'desinstalar'], true)) $acao = 'instalar';
+    $stmt = $db->prepare("INSERT INTO instalacoes_remotas (maquina_id, acao, iniciado_em, status) VALUES (:m, :a, :i, 'fila')");
+    $stmt->execute([':m' => $maquina['id'], ':a' => $acao, ':i' => date('Y-m-d H:i:s')]);
     $instalacaoId = (int)$db->lastInsertId();
 
     $phpWin = 'C:\\xampp\\php\\php-win.exe';
@@ -48,16 +51,20 @@ function executarInstalacaoRemota(PDO $db, $instalacaoId) {
         return;
     }
 
+    $desinstalando = $instalacao['acao'] === 'desinstalar';
+
     $payload = [
         'computerName' => $instalacao['host'],
         'username' => $config['admin_usuario'],
         'password' => installDecrypt($config['admin_senha']),
-        'msiPath' => $config['msi_path'],
-        'serverIp' => AW_SERVIDOR_IP,
         'timeoutSegundos' => (int)$config['timeout_segundos'],
     ];
+    if (!$desinstalando) {
+        $payload['msiPath'] = $config['msi_path'];
+        $payload['serverIp'] = AW_SERVIDOR_IP;
+    }
 
-    $script = __DIR__ . '\\remote_install.ps1';
+    $script = __DIR__ . ($desinstalando ? '\\remote_uninstall.ps1' : '\\remote_install.ps1');
     $cmd = 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' . escapeshellarg($script);
 
     $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];

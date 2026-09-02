@@ -517,7 +517,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
         foreach (array_values($idsDoSetor) as $i => $mid) { $chave = ":id{$i}"; $placeholders[] = $chave; $paramsLista[$chave] = $mid; }
         $listaMaquinas = [];
         if (!empty($placeholders)) {
-            $stmt = $db->prepare("SELECT id, nome, host, porta, ativo, ultimo_sync_at, ultimo_sync_status, ultimo_erro
+            $stmt = $db->prepare("SELECT id, nome, host, porta, ativo, usuario_responsavel, ultimo_sync_at, ultimo_sync_status, ultimo_erro
                 FROM maquinas WHERE id IN (" . implode(',', $placeholders) . ") ORDER BY nome ASC");
             $stmt->execute($paramsLista);
             $listaMaquinas = $stmt->fetchAll();
@@ -527,7 +527,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
             <div class="card-header">Máquinas do setor "<?= htmlspecialchars($tituloSetor) ?>"</div>
             <div class="table-responsive">
                 <table class="table table-bordered bg-white align-middle mb-0">
-                    <thead class="table-dark"><tr><th>Máquina</th><th>Host</th><th>Última Sincronização</th><th>Status</th></tr></thead>
+                    <thead class="table-dark"><tr><th>Máquina</th><th>Usuário Responsável</th><th>Host</th><th>Última Sincronização</th><th>Status</th></tr></thead>
                     <tbody>
                         <?php foreach ($listaMaquinas as $m): ?>
                         <tr>
@@ -535,6 +535,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
                                 <a href="<?= qs(['visao' => 'maquina', 'maquina_id' => $m['id']]) ?>"><?= htmlspecialchars($m['nome']) ?></a>
                                 <?php if (!$m['ativo']): ?><span class="badge bg-secondary">Inativa</span><?php endif; ?>
                             </td>
+                            <td><?= $m['usuario_responsavel'] ? htmlspecialchars($m['usuario_responsavel']) : '<span class="text-muted">—</span>' ?></td>
                             <td><code><?= htmlspecialchars($m['host']) ?>:<?= (int)$m['porta'] ?></code></td>
                             <td><small class="mono text-muted"><?= $m['ultimo_sync_at'] ? htmlspecialchars($m['ultimo_sync_at']) : 'nunca' ?></small></td>
                             <td>
@@ -545,7 +546,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
                             </td>
                         </tr>
                         <?php endforeach; ?>
-                        <?php if (empty($listaMaquinas)): ?><tr><td colspan="4" class="text-center text-muted py-3">Nenhuma máquina neste setor.</td></tr><?php endif; ?>
+                        <?php if (empty($listaMaquinas)): ?><tr><td colspan="5" class="text-center text-muted py-3">Nenhuma máquina neste setor.</td></tr><?php endif; ?>
                     </tbody>
                 </table>
             </div>
@@ -576,10 +577,11 @@ elseif ($visao === 'maquina'):
                         <?php elseif ($maquinaAtual['ultimo_sync_status'] === 'erro'): ?><span class="badge bg-danger">Erro de sincronização</span>
                         <?php endif; ?>
                     </div>
-                    <div class="entity-grid mt-2" style="grid-template-columns: repeat(4, minmax(0,1fr));">
+                    <div class="entity-grid mt-2" style="grid-template-columns: repeat(3, minmax(0,1fr));">
                         <div><div class="entity-field-label">Host</div><div class="entity-field-value"><code><?= htmlspecialchars($maquinaAtual['host']) ?>:<?= (int)$maquinaAtual['porta'] ?></code></div></div>
                         <div><div class="entity-field-label">Setor</div><div class="entity-field-value"><?= $maquinaAtual['setor_efetivo'] ? htmlspecialchars($maquinaAtual['setor_efetivo']) : '—' ?></div></div>
-                        <div><div class="entity-field-label">aw-server</div><div class="entity-field-value"><?= $maquinaAtual['aw_hostname'] ? htmlspecialchars($maquinaAtual['aw_hostname']) . ' (v' . htmlspecialchars($maquinaAtual['aw_versao']) . ')' : '—' ?></div></div>
+                        <div><div class="entity-field-label">Usuário Responsável</div><div class="entity-field-value"><?= $maquinaAtual['usuario_responsavel'] ? htmlspecialchars($maquinaAtual['usuario_responsavel']) : '—' ?></div></div>
+                        <div><div class="entity-field-label">aw-server</div><div class="entity-field-value"><?= $maquinaAtual['aw_hostname'] ? htmlspecialchars($maquinaAtual['aw_hostname']) . ' (' . htmlspecialchars($maquinaAtual['aw_versao']) . ')' : '—' ?></div></div>
                         <div><div class="entity-field-label">Última Sincronização</div><div class="entity-field-value mono"><?= $maquinaAtual['ultimo_sync_at'] ? htmlspecialchars($maquinaAtual['ultimo_sync_at']) : 'nunca' ?></div></div>
                     </div>
                 </div>

@@ -105,12 +105,24 @@ foreach ($db->query("SELECT maquina_id, COUNT(*) AS n FROM eventos GROUP BY maqu
     $totaisEventos[$row['maquina_id']] = (int)$row['n'];
 }
 
-// Última tentativa de instalação remota de cada máquina (uma por maquina_id, a mais recente).
+// Última tentativa de instalação remota de cada máquina (uma por maquina_id, a mais recente,
+// de qualquer status — usada pro badge/log, que mostram inclusive tentativas que falharam).
 $ultimasInstalacoes = [];
 foreach ($db->query("SELECT i1.* FROM instalacoes_remotas i1
                       LEFT JOIN instalacoes_remotas i2 ON i2.maquina_id = i1.maquina_id AND i2.id > i1.id
                       WHERE i2.id IS NULL") as $row) {
     $ultimasInstalacoes[$row['maquina_id']] = $row;
+}
+
+// Estado real de instalação: olha só a última ação que teve SUCESSO (status='ok') — uma tentativa
+// de desinstalação que falhou não deve fazer a tela esquecer que o AW continua instalado, por
+// exemplo. "instalar"/"atualizar" bem-sucedidos = instalado; "desinstalar" bem-sucedido, ou nenhuma
+// ação de sucesso ainda = não instalado (mostra "Instalar").
+$maquinasInstaladas = [];
+foreach ($db->query("SELECT i1.maquina_id, i1.acao FROM instalacoes_remotas i1
+                      LEFT JOIN instalacoes_remotas i2 ON i2.maquina_id = i1.maquina_id AND i2.id > i1.id AND i2.status = 'ok'
+                      WHERE i1.status = 'ok' AND i2.id IS NULL") as $row) {
+    $maquinasInstaladas[$row['maquina_id']] = in_array($row['acao'], ['instalar', 'atualizar'], true);
 }
 ?>
 <div class="page-head">
@@ -242,7 +254,7 @@ foreach ($db->query("SELECT i1.* FROM instalacoes_remotas i1
                         <?php else: ?><span class="text-muted">—</span><?php endif; ?>
                     </td>
                     <td><code><?= htmlspecialchars($m['host']) ?>:<?= (int)$m['porta'] ?></code><div class="text-muted small">a cada <?= (int)$m['intervalo_sync_min'] ?> min</div></td>
-                    <td><?= $m['aw_hostname'] ? htmlspecialchars($m['aw_hostname']) . '<br><span class="text-muted small">v' . htmlspecialchars($m['aw_versao']) . '</span>' : '<span class="text-muted">—</span>' ?></td>
+                    <td><?= $m['aw_hostname'] ? htmlspecialchars($m['aw_hostname']) . '<br><span class="text-muted small">' . htmlspecialchars($m['aw_versao']) . '</span>' : '<span class="text-muted">—</span>' ?></td>
                     <td><?= number_format($totaisEventos[$m['id']] ?? 0, 0, ',', '.') ?></td>
                     <td><small class="mono text-muted"><?= $m['ultimo_sync_at'] ? htmlspecialchars($m['ultimo_sync_at']) : 'nunca' ?></small></td>
                     <td>
@@ -267,14 +279,27 @@ foreach ($db->query("SELECT i1.* FROM instalacoes_remotas i1
                     </td>
                     <td class="text-nowrap">
                         <button type="button" class="btn btn-sm btn-outline-info btn-sync-now" data-id="<?= (int)$m['id'] ?>" title="Sincronizar agora"><i class="bi bi-arrow-repeat"></i></button>
-                        <button type="button" class="btn btn-sm btn-outline-warning btn-install-now" data-id="<?= (int)$m['id'] ?>" title="Instalar ActivityWatch (MSI)"><i class="bi bi-cloud-download"></i></button>
-                        <a href="index.php?page=maquinas&edit=<?= (int)$m['id'] ?>" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil"></i></a>
-                        <form method="POST" class="d-inline" onsubmit="return confirm('Excluir esta máquina e todos os eventos coletados dela?');">
-                            <?= csrfField() ?>
-                            <input type="hidden" name="action" value="delete">
-                            <input type="hidden" name="id" value="<?= (int)$m['id'] ?>">
-                            <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
-                        </form>
+                        <div class="btn-group">
+                            <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle btn-acoes-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="Mais ações"><i class="bi bi-three-dots-vertical"></i></button>
+                            <ul class="dropdown-menu dropdown-menu-end">
+                                <?php if ($maquinasInstaladas[$m['id']] ?? false): ?>
+                                    <li><button type="button" class="dropdown-item btn-install-action" data-id="<?= (int)$m['id'] ?>" data-acao="atualizar"><i class="bi bi-cloud-arrow-up me-2"></i>Atualizar ActivityWatch</button></li>
+                                    <li><button type="button" class="dropdown-item text-danger btn-install-action" data-id="<?= (int)$m['id'] ?>" data-acao="desinstalar"><i class="bi bi-cloud-minus me-2"></i>Desinstalar ActivityWatch</button></li>
+                                <?php else: ?>
+                                    <li><button type="button" class="dropdown-item btn-install-action" data-id="<?= (int)$m['id'] ?>" data-acao="instalar"><i class="bi bi-cloud-download me-2"></i>Instalar ActivityWatch</button></li>
+                                <?php endif; ?>
+                                <li><a class="dropdown-item" href="index.php?page=maquinas&edit=<?= (int)$m['id'] ?>"><i class="bi bi-pencil me-2"></i>Editar</a></li>
+                                <li><hr class="dropdown-divider"></li>
+                                <li>
+                                    <form method="POST" onsubmit="return confirm('Excluir esta máquina e todos os eventos coletados dela?');">
+                                        <?= csrfField() ?>
+                                        <input type="hidden" name="action" value="delete">
+                                        <input type="hidden" name="id" value="<?= (int)$m['id'] ?>">
+                                        <button type="submit" class="dropdown-item text-danger"><i class="bi bi-trash me-2"></i>Excluir</button>
+                                    </form>
+                                </li>
+                            </ul>
+                        </div>
                     </td>
                 </tr>
                 <?php endforeach; ?>
@@ -365,7 +390,6 @@ function acompanharInstalacao(maquinaId, instalacaoId, btn) {
                 atualizarBadgeInstalacao(maquinaId, data.status, data.mensagem);
                 if (data.status === 'ok' || data.status === 'erro') {
                     clearInterval(intervalo);
-                    if (btn) { btn.disabled = false; btn.querySelector('i').className = 'bi bi-cloud-download'; }
                     window.location.reload();
                 }
             })
@@ -376,29 +400,39 @@ function acompanharInstalacao(maquinaId, instalacaoId, btn) {
     }, 4000);
 }
 
-document.querySelectorAll('.btn-install-now').forEach(function (btn) {
+var ICONES_ACAO = { instalar: 'bi-cloud-download', atualizar: 'bi-cloud-arrow-up', desinstalar: 'bi-cloud-minus' };
+var CONFIRMACOES_ACAO = {
+    instalar: 'Instalar o ActivityWatch nesta máquina agora, em modo silencioso?',
+    atualizar: 'Atualizar o ActivityWatch nesta máquina para a versão atual do pacote (reinstala o MSI)?',
+    desinstalar: 'Desinstalar o ActivityWatch desta máquina agora? Isso remove o programa e para a coleta de dados nela.'
+};
+
+document.querySelectorAll('.btn-install-action').forEach(function (btn) {
     btn.addEventListener('click', function () {
-        if (!confirm('Instalar o ActivityWatch nesta máquina agora, em modo silencioso?')) return;
+        var acao = btn.dataset.acao;
+        if (!confirm(CONFIRMACOES_ACAO[acao] || 'Confirma a ação?')) return;
         var maquinaId = btn.dataset.id;
         var icon = btn.querySelector('i');
+        var iconeOriginal = ICONES_ACAO[acao] || 'bi-cloud-download';
         icon.className = 'bi bi-hourglass-split';
         btn.disabled = true;
         var fd = new FormData();
         fd.append('csrf_token', '<?= csrfToken() ?>');
         fd.append('id', maquinaId);
+        fd.append('acao', acao);
         fetch('ajax_instalar_maquina.php', { method: 'POST', body: fd })
             .then(r => r.json())
             .then(function (data) {
                 if (!data.ok) {
                     alert('Erro: ' + data.erro);
                     btn.disabled = false;
-                    icon.className = 'bi bi-cloud-download';
+                    icon.className = 'bi ' + iconeOriginal;
                     return;
                 }
                 atualizarBadgeInstalacao(maquinaId, 'executando', '');
                 acompanharInstalacao(maquinaId, data.instalacao_id, btn);
             })
-            .catch(function () { alert('Falha ao iniciar a instalação (erro de rede).'); btn.disabled = false; icon.className = 'bi bi-cloud-download'; });
+            .catch(function () { alert('Falha ao iniciar a ação (erro de rede).'); btn.disabled = false; icon.className = 'bi ' + iconeOriginal; });
     });
 });
 
@@ -417,10 +451,21 @@ document.querySelectorAll('.btn-ver-log').forEach(function (btn) {
             .then(function (data) {
                 if (!data.ok) { document.getElementById('logInstalacaoStatus').textContent = 'Não encontrado.'; return; }
                 document.getElementById('logInstalacaoStatus').innerHTML =
-                    '<strong>Status:</strong> ' + data.status + (data.mensagem ? ' — ' + data.mensagem : '');
+                    '<strong>Ação:</strong> ' + (data.acao || 'instalar') + ' — <strong>Status:</strong> ' + data.status + (data.mensagem ? ' — ' + data.mensagem : '');
                 document.getElementById('logInstalacaoConteudo').textContent = data.log || '(sem log disponível)';
             })
             .catch(function () { document.getElementById('logInstalacaoStatus').textContent = 'Falha ao carregar (erro de rede).'; });
     });
+});
+
+// Cada <td> sticky da coluna Ações é sua própria stacking context - sem isso, o menu "..." aberto
+// numa linha sempre ficava por baixo do <td> sticky da linha seguinte (a ordem do DOM manda ali,
+// não o z-index do próprio .dropdown-menu). Sobe só a linha com o menu aberto por cima de todas as
+// outras, usando os eventos que o próprio Bootstrap já dispara ao abrir/fechar o dropdown.
+document.querySelectorAll('.btn-acoes-toggle').forEach(function (toggle) {
+    var td = toggle.closest('td');
+    if (!td) return;
+    toggle.addEventListener('show.bs.dropdown', function () { td.classList.add('dropdown-cell-ativa'); });
+    toggle.addEventListener('hidden.bs.dropdown', function () { td.classList.remove('dropdown-cell-ativa'); });
 });
 </script>

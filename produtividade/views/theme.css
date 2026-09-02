@@ -198,6 +198,18 @@ thead.table-dark, .table > thead.table-dark, .table thead.table-dark th {
 }
 .table-actions-sticky thead th:last-child { background: var(--bg); }
 
+/* Botão "..." de ações — sem a seta padrão do Bootstrap (o ícone de 3 pontos já comunica que abre
+   um menu). Manter a coluna de ações estreita e com largura fixa é o que evita o problema já visto
+   de uma coluna sticky larga demais sobrepondo a coluna vizinha. */
+.btn-acoes-toggle::after { display: none; }
+
+/* Cada <td> sticky é sua PRÓPRIA stacking context — sem isso, o menu aberto na linha N sempre fica
+   por baixo do <td> sticky da linha N+1 (ordem do DOM manda, não o z-index do .dropdown-menu, que
+   só vale dentro da stacking context da própria linha). A classe é ligada/desligada via JS nos
+   eventos show.bs.dropdown/hidden.bs.dropdown (ver maquinas.php) para só a linha com o menu aberto
+   subir por cima de todas as outras. */
+.table-actions-sticky td.dropdown-cell-ativa { z-index: 5; }
+
 .form-control, .form-select {
   background: var(--bg);
   border: 1px solid var(--line);
