@@ -73,6 +73,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             header("Location: index.php?page=ad");
             exit;
         }
+    } elseif ($action === 'update_ou') {
+        $ouId = (int)($_POST['id'] ?? 0);
+        $nome = trim($_POST['nome'] ?? '');
+        $ouDn = trim($_POST['ou_dn'] ?? '');
+        $portaPadrao = (int)($_POST['porta_padrao'] ?? AW_PORTA_PADRAO) ?: AW_PORTA_PADRAO;
+        if ($nome === '' || $ouDn === '') {
+            $formError = 'Nome e DN da OU são obrigatórios.';
+        } else {
+            // Renomear aqui é o que faz o setor de toda máquina vinculada a esta OU (maquinas.ou_id)
+            // acompanhar o novo nome automaticamente — não precisa reimportar nada.
+            $db->prepare("UPDATE ad_ous SET nome = :n, ou_dn = :dn, porta_padrao = :p WHERE id = :id")
+               ->execute([':n' => $nome, ':dn' => $ouDn, ':p' => $portaPadrao, ':id' => $ouId]);
+            header("Location: index.php?page=ad");
+            exit;
+        }
     } elseif ($action === 'delete_ou') {
         $db->prepare("DELETE FROM ad_ous WHERE id = :id")->execute([':id' => (int)($_POST['id'] ?? 0)]);
         header("Location: index.php?page=ad");
@@ -136,7 +151,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $criados = [];
             $existentes = [];
             $checkStmt = $db->prepare("SELECT id FROM maquinas WHERE host = :h AND porta = :p");
-            $insertStmt = $db->prepare("INSERT INTO maquinas (nome, host, porta, ativo, ad_dn, setor) VALUES (:n, :h, :p, 0, :dn, :setor)");
+            $insertStmt = $db->prepare("INSERT INTO maquinas (nome, host, porta, ativo, ad_dn, setor, ou_id) VALUES (:n, :h, :p, 0, :dn, :setor, :ouid)");
 
             foreach ($selecionados as $cn) {
                 if (!isset($porCn[$cn])) continue;
@@ -146,9 +161,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     $existentes[] = $maquina['host'];
                     continue;
                 }
-                // O nome da OU vira o setor da máquina — dá pra editar depois em Máquinas se o
-                // agrupamento de OUs do AD não bater exatamente com os setores da instituição.
-                $insertStmt->execute([':n' => $cn, ':h' => $maquina['host'], ':p' => $ou['porta_padrao'], ':dn' => $maquina['dn'], ':setor' => $ou['nome']]);
+                // ou_id vincula a máquina à OU — o setor exibido passa a acompanhar o nome ATUAL
+                // dela (Máquinas/Dashboard fazem JOIN); a coluna setor aqui é só um retrato inicial,
+                // usado como texto de fallback se o cadastro da OU for excluído depois.
+                $insertStmt->execute([':n' => $cn, ':h' => $maquina['host'], ':p' => $ou['porta_padrao'], ':dn' => $maquina['dn'], ':setor' => $ou['nome'], ':ouid' => $ou['id']]);
                 $criados[] = ['cn' => $cn, 'host' => $maquina['host']];
             }
             $importResultMaquinas = ['criados' => $criados, 'existentes' => $existentes, 'ou_id' => $ouId];
@@ -158,6 +174,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
 $grupos = $db->query("SELECT * FROM ad_grupos ORDER BY nome ASC")->fetchAll();
 $ous = $db->query("SELECT * FROM ad_ous ORDER BY nome ASC")->fetchAll();
+
+$editandoOu = null;
+if (isset($_GET['editar_ou'])) {
+    $stmt = $db->prepare("SELECT * FROM ad_ous WHERE id = :id");
+    $stmt->execute([':id' => (int)$_GET['editar_ou']]);
+    $editandoOu = $stmt->fetch();
+}
+$maquinasVinculadasPorOu = [];
+foreach ($db->query("SELECT ou_id, COUNT(*) AS n FROM maquinas WHERE ou_id IS NOT NULL GROUP BY ou_id") as $row) {
+    $maquinasVinculadasPorOu[$row['ou_id']] = (int)$row['n'];
+}
 
 $membrosVisualizados = null;
 $erroMembros = null;
@@ -281,29 +308,40 @@ $hostsExistentes = array_flip($hostsExistentes);
     </div>
 
     <div class="col-lg-6">
-        <div class="card mb-3">
+        <div class="card mb-3" id="topo-ou">
             <div class="card-header">OUs → Máquinas</div>
             <div class="card-body">
                 <form method="POST" class="row g-2 mb-3">
                     <?= csrfField() ?>
-                    <input type="hidden" name="action" value="add_ou">
-                    <div class="col-md-4"><label class="form-label">Nome</label><input type="text" name="nome" class="form-control" placeholder="Ex: Laboratórios" required></div>
-                    <div class="col-md-5"><label class="form-label">DN da OU</label><input type="text" name="ou_dn" class="form-control" placeholder="OU=Laboratorios,DC=faesa,DC=br" required></div>
-                    <div class="col-md-2"><label class="form-label">Porta AW</label><input type="number" name="porta_padrao" class="form-control" value="<?= AW_PORTA_PADRAO ?>"></div>
-                    <div class="col-md-1 d-flex align-items-end"><button class="btn btn-outline-success w-100"><i class="bi bi-plus-lg"></i></button></div>
+                    <input type="hidden" name="action" value="<?= $editandoOu ? 'update_ou' : 'add_ou' ?>">
+                    <?php if ($editandoOu): ?><input type="hidden" name="id" value="<?= (int)$editandoOu['id'] ?>"><?php endif; ?>
+                    <div class="col-md-4"><label class="form-label">Nome</label><input type="text" name="nome" class="form-control" placeholder="Ex: Laboratórios" value="<?= htmlspecialchars($editandoOu['nome'] ?? '') ?>" required></div>
+                    <div class="col-md-5"><label class="form-label">DN da OU</label><input type="text" name="ou_dn" class="form-control" placeholder="OU=Laboratorios,DC=faesa,DC=br" value="<?= htmlspecialchars($editandoOu['ou_dn'] ?? '') ?>" required></div>
+                    <div class="col-md-2"><label class="form-label">Porta AW</label><input type="number" name="porta_padrao" class="form-control" value="<?= htmlspecialchars($editandoOu['porta_padrao'] ?? AW_PORTA_PADRAO) ?>"></div>
+                    <div class="col-md-1 d-flex align-items-end"><button class="btn btn-outline-success w-100"><i class="bi <?= $editandoOu ? 'bi-check-lg' : 'bi-plus-lg' ?>"></i></button></div>
+                    <?php if ($editandoOu): ?>
+                        <div class="col-12">
+                            <div class="alert alert-info py-2 mb-0 small">
+                                Renomear aqui atualiza o setor de <strong><?= $maquinasVinculadasPorOu[$editandoOu['id']] ?? 0 ?> máquina(s)</strong> já vinculada(s) a esta OU, automaticamente.
+                            </div>
+                        </div>
+                        <div class="col-12"><a href="index.php?page=ad" class="btn btn-outline-secondary btn-sm">Cancelar edição</a></div>
+                    <?php endif; ?>
                 </form>
 
                 <table class="table table-sm mb-0">
-                    <thead><tr><th>Nome</th><th>DN</th><th>Porta</th><th></th></tr></thead>
+                    <thead><tr><th>Nome</th><th>DN</th><th>Porta</th><th>Máquinas</th><th></th></tr></thead>
                     <tbody>
                         <?php foreach ($ous as $o): ?>
                         <tr>
                             <td><?= htmlspecialchars($o['nome']) ?></td>
                             <td class="text-truncate" style="max-width: 220px"><code title="<?= htmlspecialchars($o['ou_dn']) ?>"><?= htmlspecialchars($o['ou_dn']) ?></code></td>
                             <td><?= (int)$o['porta_padrao'] ?></td>
+                            <td><?= (int)($maquinasVinculadasPorOu[$o['id']] ?? 0) ?></td>
                             <td class="text-nowrap">
-                                <a href="index.php?page=ad&ver_ou=<?= (int)$o['id'] ?>#ou-<?= (int)$o['id'] ?>" class="btn btn-sm btn-outline-info"><i class="bi bi-pc-display"></i> Ver computadores</a>
-                                <form method="POST" class="d-inline" onsubmit="return confirm('Remover esta OU da lista? (não afeta o AD nem as máquinas já importadas)');">
+                                <a href="index.php?page=ad&ver_ou=<?= (int)$o['id'] ?>#ou-<?= (int)$o['id'] ?>" class="btn btn-sm btn-outline-info"><i class="bi bi-pc-display"></i></a>
+                                <a href="index.php?page=ad&editar_ou=<?= (int)$o['id'] ?>#topo-ou" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil"></i></a>
+                                <form method="POST" class="d-inline" onsubmit="return confirm('Remover esta OU da lista? As máquinas já vinculadas a ela ficam sem setor vinculado (o texto atual é mantido). Não afeta o AD nem as máquinas em si.');">
                                     <?= csrfField() ?>
                                     <input type="hidden" name="action" value="delete_ou">
                                     <input type="hidden" name="id" value="<?= (int)$o['id'] ?>">
@@ -312,7 +350,7 @@ $hostsExistentes = array_flip($hostsExistentes);
                             </td>
                         </tr>
                         <?php endforeach; ?>
-                        <?php if (empty($ous)): ?><tr><td colspan="4" class="text-center text-muted py-2">Nenhuma OU cadastrada.</td></tr><?php endif; ?>
+                        <?php if (empty($ous)): ?><tr><td colspan="5" class="text-center text-muted py-2">Nenhuma OU cadastrada.</td></tr><?php endif; ?>
                     </tbody>
                 </table>
             </div>

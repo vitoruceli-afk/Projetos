@@ -43,6 +43,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $db->prepare("DELETE FROM maquinas WHERE id = :id")->execute([':id' => $id]);
         header("Location: index.php?page=maquinas");
         exit;
+    } elseif ($action === 'desvincular_ou') {
+        // Solta o vínculo com a OU (setor volta a ser texto livre, editável aqui) sem mexer no AD
+        // nem na própria máquina — mantém o texto atual como ponto de partida.
+        $id = (int)($_POST['id'] ?? 0);
+        $db->prepare("UPDATE maquinas SET ou_id = NULL WHERE id = :id")->execute([':id' => $id]);
+        header("Location: index.php?page=maquinas&edit=" . $id);
+        exit;
     } elseif ($action === 'salvar_instalacao_config') {
         $adminUsuario = trim($_POST['admin_usuario'] ?? '');
         $adminSenha = $_POST['admin_senha'] ?? '';
@@ -72,16 +79,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
 $instalacaoConfig = getInstalacaoConfig($db);
 
+// setor_efetivo: nome ATUAL da OU vinculada (se houver), senão o texto livre gravado na máquina —
+// é o valor que deve aparecer em qualquer lugar da tela, nunca m.setor puro.
 $editing = null;
 if (isset($_GET['edit'])) {
-    $stmt = $db->prepare("SELECT * FROM maquinas WHERE id = :id");
+    $stmt = $db->prepare("SELECT m.*, ou.nome AS ou_nome, ou.ou_dn AS ou_dn,
+                                  COALESCE(ou.nome, NULLIF(m.setor, '')) AS setor_efetivo
+                           FROM maquinas m LEFT JOIN ad_ous ou ON ou.id = m.ou_id
+                           WHERE m.id = :id");
     $stmt->bindValue(':id', (int)$_GET['edit'], PDO::PARAM_INT);
     $stmt->execute();
     $editing = $stmt->fetch();
 }
 
-$maquinas = $db->query("SELECT * FROM maquinas ORDER BY nome ASC")->fetchAll();
-$setoresExistentes = array_column($db->query("SELECT DISTINCT setor FROM maquinas WHERE setor <> '' ORDER BY setor ASC")->fetchAll(), 'setor');
+$maquinas = $db->query("SELECT m.*, ou.nome AS ou_nome,
+                                COALESCE(ou.nome, NULLIF(m.setor, '')) AS setor_efetivo
+                         FROM maquinas m LEFT JOIN ad_ous ou ON ou.id = m.ou_id
+                         ORDER BY m.nome ASC")->fetchAll();
+$setoresExistentes = array_values(array_unique(array_filter(array_column($maquinas, 'setor_efetivo'))));
+sort($setoresExistentes);
 
 // Contagem de eventos por máquina, só para exibir na listagem (não bloqueia nada).
 $totaisEventos = [];
@@ -171,10 +187,18 @@ foreach ($db->query("SELECT i1.* FROM instalacoes_remotas i1
                     </div>
                     <div class="mb-2">
                         <label class="form-label">Setor</label>
-                        <input type="text" name="setor" class="form-control" list="listaSetores" placeholder="Ex: Núcleo de Tecnologia da Informação" value="<?= htmlspecialchars($editing['setor'] ?? '') ?>">
-                        <datalist id="listaSetores">
-                            <?php foreach ($setoresExistentes as $s): ?><option value="<?= htmlspecialchars($s) ?>"><?php endforeach; ?>
-                        </datalist>
+                        <?php if ($editing && $editing['ou_id']): ?>
+                            <input type="text" name="setor" class="form-control" value="<?= htmlspecialchars($editing['ou_nome']) ?>" readonly>
+                            <div class="form-text">
+                                Vinculado à OU <code><?= htmlspecialchars($editing['ou_dn']) ?></code> — acompanha o nome dela automaticamente.
+                                Para digitar um setor livre aqui, <a href="#" onclick="if(confirm('Desvincular desta OU? O setor passa a ser um texto livre, editável nesta tela.')){document.getElementById('formDesvincularOu').submit();} return false;">desvincule</a> primeiro.
+                            </div>
+                        <?php else: ?>
+                            <input type="text" name="setor" class="form-control" list="listaSetores" placeholder="Ex: Núcleo de Tecnologia da Informação" value="<?= htmlspecialchars($editing['setor'] ?? '') ?>">
+                            <datalist id="listaSetores">
+                                <?php foreach ($setoresExistentes as $s): ?><option value="<?= htmlspecialchars($s) ?>"><?php endforeach; ?>
+                            </datalist>
+                        <?php endif; ?>
                     </div>
                     <div class="mb-2">
                         <label class="form-label">Sincronizar a cada (minutos)</label>
@@ -189,6 +213,13 @@ foreach ($db->query("SELECT i1.* FROM instalacoes_remotas i1
                     <button class="btn btn-outline-success w-100"><?= $editing ? 'Salvar Alterações' : 'Criar Máquina' ?></button>
                     <?php if ($editing): ?><a href="index.php?page=maquinas" class="btn btn-outline-secondary w-100 mt-2">Cancelar Edição</a><?php endif; ?>
                 </form>
+                <?php if ($editing && $editing['ou_id']): ?>
+                    <form method="POST" id="formDesvincularOu" class="d-none">
+                        <?= csrfField() ?>
+                        <input type="hidden" name="action" value="desvincular_ou">
+                        <input type="hidden" name="id" value="<?= (int)$editing['id'] ?>">
+                    </form>
+                <?php endif; ?>
             </div>
         </div>
     </div>
@@ -204,7 +235,12 @@ foreach ($db->query("SELECT i1.* FROM instalacoes_remotas i1
                         <?php if (!$m['ativo']): ?><br><span class="badge bg-secondary">Inativa</span><?php endif; ?>
                         <?php if ($m['usuario_responsavel']): ?><div class="text-muted small"><?= htmlspecialchars($m['usuario_responsavel']) ?></div><?php endif; ?>
                     </td>
-                    <td><?= $m['setor'] ? htmlspecialchars($m['setor']) : '<span class="text-muted">—</span>' ?></td>
+                    <td>
+                        <?php if ($m['setor_efetivo']): ?>
+                            <?= htmlspecialchars($m['setor_efetivo']) ?>
+                            <?php if ($m['ou_id']): ?><i class="bi bi-link-45deg text-muted" title="Vinculado à OU — acompanha o nome dela"></i><?php endif; ?>
+                        <?php else: ?><span class="text-muted">—</span><?php endif; ?>
+                    </td>
                     <td><code><?= htmlspecialchars($m['host']) ?>:<?= (int)$m['porta'] ?></code><div class="text-muted small">a cada <?= (int)$m['intervalo_sync_min'] ?> min</div></td>
                     <td><?= $m['aw_hostname'] ? htmlspecialchars($m['aw_hostname']) . '<br><span class="text-muted small">v' . htmlspecialchars($m['aw_versao']) . '</span>' : '<span class="text-muted">—</span>' ?></td>
                     <td><?= number_format($totaisEventos[$m['id']] ?? 0, 0, ',', '.') ?></td>

@@ -27,9 +27,15 @@ $inicioUtc = (clone $inicioLocal)->setTimezone(new DateTimeZone('UTC'))->format(
 $fimUtc = (clone $fimLocal)->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
 
 $visao = $_GET['visao'] ?? 'geral';
-if (!in_array($visao, ['geral', 'setor', 'maquinas_setor'], true)) $visao = 'geral';
+if (!in_array($visao, ['geral', 'setor', 'maquinas_setor', 'maquina'], true)) $visao = 'geral';
 
-$maquinas = $db->query("SELECT id, nome, ativo, setor FROM maquinas ORDER BY nome ASC")->fetchAll();
+// setor_efetivo: nome ATUAL da OU vinculada (Integração > Active Directory), se houver, senão o
+// texto livre gravado na máquina — nunca usar m.setor puro, ele só existe como fallback congelado.
+// COALESCE final com '' (em vez de deixar NULL) mantém a mesma convenção de antes ("" = sem setor)
+// usada nas comparações abaixo e no restante do arquivo.
+$maquinas = $db->query("SELECT m.id, m.nome, m.ativo, COALESCE(ou.nome, NULLIF(m.setor, ''), '') AS setor
+                         FROM maquinas m LEFT JOIN ad_ous ou ON ou.id = m.ou_id
+                         ORDER BY m.nome ASC")->fetchAll();
 $setoresExistentes = array_values(array_unique(array_filter(array_column($maquinas, 'setor'), fn($s) => $s !== '')));
 sort($setoresExistentes);
 $temMaquinasSemSetor = (bool)array_filter($maquinas, fn($m) => $m['setor'] === '');
@@ -41,10 +47,13 @@ function qs($extra) {
     return htmlspecialchars('index.php?' . http_build_query(array_merge($_GET, ['page' => 'dashboard'], $extra)));
 }
 
-// Todo o bloco de KPIs + gráficos + tabela por máquina — reaproveitado pela Visão Geral (todas as
-// máquinas, ou uma só se selecionada) e pela Visão por Máquinas do Setor (todas as máquinas daquele
-// setor). $maquinaIds vazio = sem restrição nenhuma (todas as máquinas do sistema).
-function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inicioLocal, DateTime $fimLocal, array $maquinaIds, $tituloTabela) {
+// Todo o bloco de KPIs + gráficos (+ opcionalmente a tabela por máquina) — reaproveitado pela
+// Visão Geral (todas as máquinas, ou uma só se selecionada) e pela Visão de uma Máquina (uma única,
+// vinda do clique no nome em qualquer tabela). $maquinaIds vazio = sem restrição (todas as
+// máquinas do sistema). $mostrarTabela = false quando o card de identificação da máquina, logo
+// acima, já cobre a mesma informação (visão de uma única máquina) — evitaria uma tabela de 1 linha
+// só repetindo o que já está no cabeçalho.
+function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inicioLocal, DateTime $fimLocal, array $maquinaIds, $tituloTabela, $mostrarTabela = true) {
     $filtroMaquinaSql = '';
     $params = [':ini' => $inicioUtc, ':fim' => $fimUtc];
     if (!empty($maquinaIds)) {
@@ -135,29 +144,34 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
     }
 
     // ---- Tabela por máquina (só as do recorte atual — todas, ou as do setor) ----
-    $filtroMaquinasTabela = '';
-    $paramsTabela = [':ini' => $inicioUtc, ':fim' => $fimUtc];
-    if (!empty($maquinaIds)) {
-        $placeholders = [];
-        foreach (array_values($maquinaIds) as $i => $mid) {
-            $chave = ":tmid{$i}";
-            $placeholders[] = $chave;
-            $paramsTabela[$chave] = $mid;
+    $porMaquina = [];
+    if ($mostrarTabela) {
+        $filtroMaquinasTabela = '';
+        $paramsTabela = [':ini' => $inicioUtc, ':fim' => $fimUtc];
+        if (!empty($maquinaIds)) {
+            $placeholders = [];
+            foreach (array_values($maquinaIds) as $i => $mid) {
+                $chave = ":tmid{$i}";
+                $placeholders[] = $chave;
+                $paramsTabela[$chave] = $mid;
+            }
+            $filtroMaquinasTabela = 'WHERE m.id IN (' . implode(',', $placeholders) . ')';
         }
-        $filtroMaquinasTabela = 'WHERE m.id IN (' . implode(',', $placeholders) . ')';
+        $stmt = $db->prepare("SELECT
+                m.id, m.nome, m.ativo, m.ultimo_sync_at, m.ultimo_sync_status,
+                COALESCE(ou.nome, NULLIF(m.setor, '')) AS setor,
+                SUM(e.duracao) AS total,
+                SUM(CASE WHEN c.pontuacao = 1 THEN e.duracao ELSE 0 END) AS produtivo
+            FROM maquinas m
+            LEFT JOIN ad_ous ou ON ou.id = m.ou_id
+            LEFT JOIN eventos e ON e.maquina_id = m.id AND e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim
+            LEFT JOIN categorias c ON c.id = e.categoria_id
+            {$filtroMaquinasTabela}
+            GROUP BY m.id, m.nome, m.ativo, m.ultimo_sync_at, m.ultimo_sync_status, ou.nome, m.setor
+            ORDER BY total DESC");
+        $stmt->execute($paramsTabela);
+        $porMaquina = $stmt->fetchAll();
     }
-    $stmt = $db->prepare("SELECT
-            m.id, m.nome, m.ativo, m.setor, m.ultimo_sync_at, m.ultimo_sync_status,
-            SUM(e.duracao) AS total,
-            SUM(CASE WHEN c.pontuacao = 1 THEN e.duracao ELSE 0 END) AS produtivo
-        FROM maquinas m
-        LEFT JOIN eventos e ON e.maquina_id = m.id AND e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim
-        LEFT JOIN categorias c ON c.id = e.categoria_id
-        {$filtroMaquinasTabela}
-        GROUP BY m.id, m.nome, m.ativo, m.setor, m.ultimo_sync_at, m.ultimo_sync_status
-        ORDER BY total DESC");
-    $stmt->execute($paramsTabela);
-    $porMaquina = $stmt->fetchAll();
 
     $idSufixo = 'p' . substr(md5(implode(',', $maquinaIds)), 0, 6);
     ?>
@@ -232,6 +246,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
         </div>
     </div>
 
+    <?php if ($mostrarTabela): ?>
     <div class="card mt-3">
         <div class="card-header"><?= htmlspecialchars($tituloTabela) ?></div>
         <div class="table-responsive">
@@ -240,7 +255,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
                 <tbody>
                     <?php foreach ($porMaquina as $m): $pct = $m['total'] > 0 ? round($m['produtivo'] / $m['total'] * 100) : 0; ?>
                     <tr>
-                        <td><?= htmlspecialchars($m['nome']) ?> <?php if (!$m['ativo']): ?><span class="badge bg-secondary">Inativa</span><?php endif; ?></td>
+                        <td><a href="<?= qs(['visao' => 'maquina', 'maquina_id' => $m['id']]) ?>"><?= htmlspecialchars($m['nome']) ?></a> <?php if (!$m['ativo']): ?><span class="badge bg-secondary">Inativa</span><?php endif; ?></td>
                         <td><?= $m['setor'] ? htmlspecialchars($m['setor']) : '<span class="text-muted">—</span>' ?></td>
                         <td><?= formatarDuracao($m['total'] ?: 0) ?></td>
                         <td><?= $m['total'] > 0 ? $pct . '%' : '—' ?></td>
@@ -258,6 +273,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
             </table>
         </div>
     </div>
+    <?php endif; ?>
 
     <script>
     (function () {
@@ -339,8 +355,8 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
 
 <ul class="nav nav-tabs mb-3">
     <li class="nav-item"><a class="nav-link <?= $visao === 'geral' ? 'active' : '' ?>" href="<?= qs(['visao' => 'geral', 'maquina_id' => null, 'setor' => null]) ?>">Visão Geral</a></li>
-    <li class="nav-item"><a class="nav-link <?= $visao === 'setor' ? 'active' : '' ?>" href="<?= qs(['visao' => 'setor']) ?>">Por Setor</a></li>
-    <li class="nav-item"><a class="nav-link <?= $visao === 'maquinas_setor' ? 'active' : '' ?>" href="<?= qs(['visao' => 'maquinas_setor']) ?>">Máquinas do Setor</a></li>
+    <li class="nav-item"><a class="nav-link <?= $visao === 'setor' ? 'active' : '' ?>" href="<?= qs(['visao' => 'setor', 'maquina_id' => null]) ?>">Setor</a></li>
+    <li class="nav-item"><a class="nav-link <?= in_array($visao, ['maquinas_setor', 'maquina'], true) ? 'active' : '' ?>" href="<?= qs(['visao' => 'maquinas_setor', 'maquina_id' => null]) ?>">Máquinas por Setor</a></li>
 </ul>
 
 <div class="entity-list-toolbar">
@@ -412,15 +428,16 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
     <?php
     // ---- Comparativo entre setores: uma linha por setor, agregando todas as suas máquinas ----
     $stmt = $db->prepare("SELECT
-            COALESCE(NULLIF(m.setor, ''), 'Sem setor') AS setor,
+            COALESCE(ou.nome, NULLIF(m.setor, ''), 'Sem setor') AS setor,
             COUNT(DISTINCT m.id) AS num_maquinas,
             SUM(e.duracao) AS total,
             SUM(CASE WHEN c.pontuacao = 1 THEN e.duracao ELSE 0 END) AS produtivo,
             SUM(CASE WHEN c.pontuacao = -1 THEN e.duracao ELSE 0 END) AS improdutivo
         FROM maquinas m
+        LEFT JOIN ad_ous ou ON ou.id = m.ou_id
         LEFT JOIN eventos e ON e.maquina_id = m.id AND e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim
         LEFT JOIN categorias c ON c.id = e.categoria_id
-        GROUP BY COALESCE(NULLIF(m.setor, ''), 'Sem setor')
+        GROUP BY COALESCE(ou.nome, NULLIF(m.setor, ''), 'Sem setor')
         ORDER BY total DESC");
     $stmt->execute([':ini' => $inicioUtc, ':fim' => $fimUtc]);
     $porSetor = $stmt->fetchAll();
@@ -489,6 +506,88 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
     } else {
         $idsDoSetor = array_column(array_filter($maquinas, fn($m) => $m['setor'] === $setorSelecionado), 'id');
         $tituloSetor = $setorSelecionado === '' ? 'Sem setor' : $setorSelecionado;
-        renderPainelProdutividade($db, $inicioUtc, $fimUtc, $inicioLocal, $fimLocal, $idsDoSetor, 'Máquinas do setor "' . $tituloSetor . '"');
+
+        // Aqui é só um diretório — nome clicável leva pro dashboard completo de UMA máquina
+        // (visão "maquina"). As estatísticas em si não aparecem aqui de propósito: antes esta
+        // mesma visão já mostrava o painel inteiro agregando todas as máquinas do setor de uma vez
+        // (isso virou a visão "Setor", com o comparativo entre setores); esta ficou só para navegar
+        // até uma máquina específica.
+        $placeholders = [];
+        $paramsLista = [];
+        foreach (array_values($idsDoSetor) as $i => $mid) { $chave = ":id{$i}"; $placeholders[] = $chave; $paramsLista[$chave] = $mid; }
+        $listaMaquinas = [];
+        if (!empty($placeholders)) {
+            $stmt = $db->prepare("SELECT id, nome, host, porta, ativo, ultimo_sync_at, ultimo_sync_status, ultimo_erro
+                FROM maquinas WHERE id IN (" . implode(',', $placeholders) . ") ORDER BY nome ASC");
+            $stmt->execute($paramsLista);
+            $listaMaquinas = $stmt->fetchAll();
+        }
+        ?>
+        <div class="card">
+            <div class="card-header">Máquinas do setor "<?= htmlspecialchars($tituloSetor) ?>"</div>
+            <div class="table-responsive">
+                <table class="table table-bordered bg-white align-middle mb-0">
+                    <thead class="table-dark"><tr><th>Máquina</th><th>Host</th><th>Última Sincronização</th><th>Status</th></tr></thead>
+                    <tbody>
+                        <?php foreach ($listaMaquinas as $m): ?>
+                        <tr>
+                            <td>
+                                <a href="<?= qs(['visao' => 'maquina', 'maquina_id' => $m['id']]) ?>"><?= htmlspecialchars($m['nome']) ?></a>
+                                <?php if (!$m['ativo']): ?><span class="badge bg-secondary">Inativa</span><?php endif; ?>
+                            </td>
+                            <td><code><?= htmlspecialchars($m['host']) ?>:<?= (int)$m['porta'] ?></code></td>
+                            <td><small class="mono text-muted"><?= $m['ultimo_sync_at'] ? htmlspecialchars($m['ultimo_sync_at']) : 'nunca' ?></small></td>
+                            <td>
+                                <?php if ($m['ultimo_sync_status'] === 'ok'): ?><span class="badge bg-success">OK</span>
+                                <?php elseif ($m['ultimo_sync_status'] === 'parcial'): ?><span class="badge bg-warning" title="<?= htmlspecialchars($m['ultimo_erro'] ?? '') ?>">Parcial</span>
+                                <?php elseif ($m['ultimo_sync_status'] === 'erro'): ?><span class="badge bg-danger" title="<?= htmlspecialchars($m['ultimo_erro'] ?? '') ?>">Erro</span>
+                                <?php else: ?><span class="badge bg-secondary">—</span><?php endif; ?>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                        <?php if (empty($listaMaquinas)): ?><tr><td colspan="4" class="text-center text-muted py-3">Nenhuma máquina neste setor.</td></tr><?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <?php
+    }
+
+elseif ($visao === 'maquina'):
+    $maquinaId = (int)($_GET['maquina_id'] ?? 0);
+    $stmt = $db->prepare("SELECT m.*, COALESCE(ou.nome, NULLIF(m.setor, '')) AS setor_efetivo
+                           FROM maquinas m LEFT JOIN ad_ous ou ON ou.id = m.ou_id
+                           WHERE m.id = :id");
+    $stmt->execute([':id' => $maquinaId]);
+    $maquinaAtual = $stmt->fetch();
+
+    if (!$maquinaAtual) {
+        echo '<div class="alert alert-danger">Máquina não encontrada.</div>';
+    } else {
+        ?>
+        <div class="card mb-3">
+            <div class="card-body d-flex flex-wrap align-items-center gap-3">
+                <div class="flex-grow-1">
+                    <div class="d-flex align-items-center gap-2">
+                        <h2 class="h5 mb-0"><?= htmlspecialchars($maquinaAtual['nome']) ?></h2>
+                        <?php if (!$maquinaAtual['ativo']): ?><span class="badge bg-secondary">Inativa</span><?php endif; ?>
+                        <?php if ($maquinaAtual['ultimo_sync_status'] === 'ok'): ?><span class="badge bg-success">Sincronização OK</span>
+                        <?php elseif ($maquinaAtual['ultimo_sync_status'] === 'parcial'): ?><span class="badge bg-warning">Parcial</span>
+                        <?php elseif ($maquinaAtual['ultimo_sync_status'] === 'erro'): ?><span class="badge bg-danger">Erro de sincronização</span>
+                        <?php endif; ?>
+                    </div>
+                    <div class="entity-grid mt-2" style="grid-template-columns: repeat(4, minmax(0,1fr));">
+                        <div><div class="entity-field-label">Host</div><div class="entity-field-value"><code><?= htmlspecialchars($maquinaAtual['host']) ?>:<?= (int)$maquinaAtual['porta'] ?></code></div></div>
+                        <div><div class="entity-field-label">Setor</div><div class="entity-field-value"><?= $maquinaAtual['setor_efetivo'] ? htmlspecialchars($maquinaAtual['setor_efetivo']) : '—' ?></div></div>
+                        <div><div class="entity-field-label">aw-server</div><div class="entity-field-value"><?= $maquinaAtual['aw_hostname'] ? htmlspecialchars($maquinaAtual['aw_hostname']) . ' (v' . htmlspecialchars($maquinaAtual['aw_versao']) . ')' : '—' ?></div></div>
+                        <div><div class="entity-field-label">Última Sincronização</div><div class="entity-field-value mono"><?= $maquinaAtual['ultimo_sync_at'] ? htmlspecialchars($maquinaAtual['ultimo_sync_at']) : 'nunca' ?></div></div>
+                    </div>
+                </div>
+                <?php if (isAdmin()): ?><a href="index.php?page=maquinas&edit=<?= (int)$maquinaAtual['id'] ?>" class="btn btn-outline-primary btn-sm">Editar Máquina</a><?php endif; ?>
+                <a href="javascript:history.back()" class="btn btn-outline-secondary btn-sm">← Voltar</a>
+            </div>
+        </div>
+        <?php
+        renderPainelProdutividade($db, $inicioUtc, $fimUtc, $inicioLocal, $fimLocal, [$maquinaAtual['id']], '', false);
     }
 endif; ?>

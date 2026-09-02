@@ -61,7 +61,7 @@ define('AW_SERVIDOR_IP', '10.10.140.17');
 
 // Incrementar sempre que uma migração (CREATE TABLE/ALTER TABLE) for adicionada em getDB() — é o
 // que faz o bloco de migração rodar de novo (uma única vez) na próxima requisição após o deploy.
-define('SCHEMA_VERSION', 4);
+define('SCHEMA_VERSION', 5);
 
 function getDB() {
     // Conexão + schema cacheados numa estática por requisição (mesmo motivo documentado em
@@ -255,6 +255,20 @@ function getDB() {
             porta_padrao INT NOT NULL DEFAULT 5600,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )");
+
+        // Vínculo (não só cópia de texto) entre a máquina e a OU do AD usada para importá-la — o
+        // setor exibido em Máquinas/Dashboard passa a acompanhar o nome ATUAL da OU (Integração >
+        // Active Directory), então renomear a OU ali atualiza o setor de todas as máquinas ligadas
+        // a ela, sem precisar reimportar nada. ON DELETE SET NULL: remover o cadastro da OU não
+        // apaga máquinas, só desfaz o vínculo (o texto congelado em maquinas.setor vira o fallback).
+        $temOuIdMaquina = (bool)$db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'maquinas' AND COLUMN_NAME = 'ou_id'")->fetchColumn();
+        if (!$temOuIdMaquina) {
+            $db->exec("ALTER TABLE maquinas
+                ADD COLUMN ou_id INT DEFAULT NULL AFTER setor,
+                ADD INDEX idx_maquinas_ou (ou_id),
+                ADD CONSTRAINT fk_maquinas_ou FOREIGN KEY (ou_id) REFERENCES ad_ous(id) ON DELETE SET NULL");
+        }
 
         // Configuração da instalação remota do MSI (linha única, id=1) — Máquinas > Instalação
         // Remota. admin_senha fica cifrada com installEncrypt()/installDecrypt().
