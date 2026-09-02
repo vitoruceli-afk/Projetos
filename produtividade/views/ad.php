@@ -57,6 +57,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             header("Location: index.php?page=ad");
             exit;
         }
+    } elseif ($action === 'update_grupo') {
+        $grupoId = (int)($_POST['id'] ?? 0);
+        $nome = trim($_POST['nome'] ?? '');
+        $groupDn = trim($_POST['group_dn'] ?? '');
+        $rolePadrao = ($_POST['role_padrao'] ?? '') === 'admin' ? 'admin' : 'usuario';
+        if ($nome === '' || $groupDn === '') {
+            $formError = 'Nome e DN do grupo são obrigatórios.';
+        } else {
+            // Só atualiza o cadastro local (nome exibido, DN de busca, perfil sugerido) — não mexe
+            // em usuários já importados por este grupo, igual "Renomear OU" não mexe em máquinas.
+            $db->prepare("UPDATE ad_grupos SET nome = :n, group_dn = :dn, role_padrao = :r WHERE id = :id")
+               ->execute([':n' => $nome, ':dn' => $groupDn, ':r' => $rolePadrao, ':id' => $grupoId]);
+            header("Location: index.php?page=ad");
+            exit;
+        }
     } elseif ($action === 'delete_grupo') {
         $db->prepare("DELETE FROM ad_grupos WHERE id = :id")->execute([':id' => (int)($_POST['id'] ?? 0)]);
         header("Location: index.php?page=ad");
@@ -175,6 +190,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 $grupos = $db->query("SELECT * FROM ad_grupos ORDER BY nome ASC")->fetchAll();
 $ous = $db->query("SELECT * FROM ad_ous ORDER BY nome ASC")->fetchAll();
 
+$editandoGrupo = null;
+if (isset($_GET['editar_grupo'])) {
+    $stmt = $db->prepare("SELECT * FROM ad_grupos WHERE id = :id");
+    $stmt->execute([':id' => (int)$_GET['editar_grupo']]);
+    $editandoGrupo = $stmt->fetch();
+}
+
 $editandoOu = null;
 if (isset($_GET['editar_ou'])) {
     $stmt = $db->prepare("SELECT * FROM ad_ous WHERE id = :id");
@@ -261,22 +283,26 @@ $hostsExistentes = array_flip($hostsExistentes);
     </div>
 </div>
 
-<div class="card mb-3">
+<div class="card mb-3" id="topo-grupo">
             <div class="card-header">Grupos → Usuários</div>
             <div class="card-body">
                 <form method="POST" class="row g-2 mb-3">
                     <?= csrfField() ?>
-                    <input type="hidden" name="action" value="add_grupo">
-                    <div class="col-md-4"><label class="form-label">Nome</label><input type="text" name="nome" class="form-control" placeholder="Ex: TI" required></div>
-                    <div class="col-md-5"><label class="form-label">DN do grupo</label><input type="text" name="group_dn" class="form-control" placeholder="CN=TI,OU=Grupos,DC=faesa,DC=br" required></div>
+                    <input type="hidden" name="action" value="<?= $editandoGrupo ? 'update_grupo' : 'add_grupo' ?>">
+                    <?php if ($editandoGrupo): ?><input type="hidden" name="id" value="<?= (int)$editandoGrupo['id'] ?>"><?php endif; ?>
+                    <div class="col-md-4"><label class="form-label">Nome</label><input type="text" name="nome" class="form-control" placeholder="Ex: TI" value="<?= htmlspecialchars($editandoGrupo['nome'] ?? '') ?>" required></div>
+                    <div class="col-md-5"><label class="form-label">DN do grupo</label><input type="text" name="group_dn" class="form-control" placeholder="CN=TI,OU=Grupos,DC=faesa,DC=br" value="<?= htmlspecialchars($editandoGrupo['group_dn'] ?? '') ?>" required></div>
                     <div class="col-md-2">
                         <label class="form-label">Perfil ao importar</label>
                         <select name="role_padrao" class="form-select">
-                            <option value="usuario">Padrão</option>
-                            <option value="admin">Admin</option>
+                            <option value="usuario" <?= ($editandoGrupo['role_padrao'] ?? 'usuario') === 'usuario' ? 'selected' : '' ?>>Padrão</option>
+                            <option value="admin" <?= ($editandoGrupo['role_padrao'] ?? '') === 'admin' ? 'selected' : '' ?>>Admin</option>
                         </select>
                     </div>
-                    <div class="col-md-1 d-flex align-items-end"><button class="btn btn-outline-success w-100"><i class="bi bi-plus-lg"></i></button></div>
+                    <div class="col-md-1 d-flex align-items-end"><button class="btn btn-outline-success w-100"><i class="bi <?= $editandoGrupo ? 'bi-check-lg' : 'bi-plus-lg' ?>"></i></button></div>
+                    <?php if ($editandoGrupo): ?>
+                        <div class="col-12"><a href="index.php?page=ad" class="btn btn-outline-secondary btn-sm">Cancelar edição</a></div>
+                    <?php endif; ?>
                 </form>
 
                 <table class="table table-sm mb-0">
@@ -289,6 +315,7 @@ $hostsExistentes = array_flip($hostsExistentes);
                             <td><span class="badge bg-secondary"><?= $g['role_padrao'] === 'admin' ? 'Admin' : 'Padrão' ?></span></td>
                             <td class="text-nowrap">
                                 <a href="index.php?page=ad&ver_grupo=<?= (int)$g['id'] ?>#grupo-<?= (int)$g['id'] ?>" class="btn btn-sm btn-outline-info"><i class="bi bi-people"></i> Ver membros</a>
+                                <a href="index.php?page=ad&editar_grupo=<?= (int)$g['id'] ?>#topo-grupo" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil"></i></a>
                                 <form method="POST" class="d-inline" onsubmit="return confirm('Remover este grupo da lista? (não afeta o AD nem os usuários já importados)');">
                                     <?= csrfField() ?>
                                     <input type="hidden" name="action" value="delete_grupo">

@@ -732,7 +732,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
 
 <ul class="nav nav-tabs mb-3">
     <li class="nav-item"><a class="nav-link <?= $visao === 'geral' ? 'active' : '' ?>" href="<?= qs(['visao' => 'geral', 'maquina_id' => null, 'setor' => null]) ?>">Visão Geral</a></li>
-    <li class="nav-item"><a class="nav-link <?= $visao === 'setor' ? 'active' : '' ?>" href="<?= qs(['visao' => 'setor', 'maquina_id' => null]) ?>">Setor</a></li>
+    <li class="nav-item"><a class="nav-link <?= $visao === 'setor' ? 'active' : '' ?>" href="<?= qs(['visao' => 'setor', 'maquina_id' => null]) ?>">Setores</a></li>
     <li class="nav-item"><a class="nav-link <?= in_array($visao, ['maquinas_setor', 'maquina'], true) ? 'active' : '' ?>" href="<?= qs(['visao' => 'maquinas_setor', 'maquina_id' => null]) ?>">Máquinas por Setor</a></li>
 </ul>
 
