@@ -92,12 +92,51 @@ if (isset($_GET['edit'])) {
     $editing = $stmt->fetch();
 }
 
-$maquinas = $db->query("SELECT m.*, ou.nome AS ou_nome,
-                                COALESCE(ou.nome, NULLIF(m.setor, '')) AS setor_efetivo
-                         FROM maquinas m LEFT JOIN ad_ous ou ON ou.id = m.ou_id
-                         ORDER BY m.nome ASC")->fetchAll();
-$setoresExistentes = array_values(array_unique(array_filter(array_column($maquinas, 'setor_efetivo'))));
+// Lista de setores pro <select> do filtro vem de uma consulta À PARTE (não de array_column nos
+// $maquinas já filtrados abaixo) — senão, ao filtrar por um setor, as opções dos outros setores
+// desapareceriam do próprio filtro.
+$setoresExistentes = array_values(array_unique(array_filter($db->query(
+    "SELECT DISTINCT COALESCE(ou.nome, NULLIF(m.setor, '')) FROM maquinas m LEFT JOIN ad_ous ou ON ou.id = m.ou_id"
+)->fetchAll(PDO::FETCH_COLUMN))));
 sort($setoresExistentes);
+
+// ---- Filtros da listagem (busca por nome/host, setor, ativa/inativa, status de sincronização) ----
+$busca = trim($_GET['busca'] ?? '');
+$filtroSetor = trim($_GET['filtro_setor'] ?? '');
+$filtroAtivo = $_GET['filtro_ativo'] ?? '';
+if (!in_array($filtroAtivo, ['0', '1'], true)) $filtroAtivo = '';
+$filtroStatus = $_GET['filtro_status'] ?? '';
+if (!in_array($filtroStatus, ['ok', 'parcial', 'erro', 'nunca'], true)) $filtroStatus = '';
+
+$condicoesFiltro = [];
+$paramsFiltro = [];
+if ($busca !== '') {
+    $condicoesFiltro[] = '(m.nome LIKE :busca OR m.host LIKE :busca)';
+    $paramsFiltro[':busca'] = '%' . $busca . '%';
+}
+if ($filtroSetor !== '') {
+    $condicoesFiltro[] = "COALESCE(ou.nome, NULLIF(m.setor, '')) = :filtro_setor";
+    $paramsFiltro[':filtro_setor'] = $filtroSetor;
+}
+if ($filtroAtivo !== '') {
+    $condicoesFiltro[] = 'm.ativo = :filtro_ativo';
+    $paramsFiltro[':filtro_ativo'] = (int)$filtroAtivo;
+}
+if ($filtroStatus === 'nunca') {
+    $condicoesFiltro[] = 'm.ultimo_sync_status IS NULL';
+} elseif ($filtroStatus !== '') {
+    $condicoesFiltro[] = 'm.ultimo_sync_status = :filtro_status';
+    $paramsFiltro[':filtro_status'] = $filtroStatus;
+}
+$whereFiltro = $condicoesFiltro ? ('WHERE ' . implode(' AND ', $condicoesFiltro)) : '';
+
+$stmt = $db->prepare("SELECT m.*, ou.nome AS ou_nome,
+                              COALESCE(ou.nome, NULLIF(m.setor, '')) AS setor_efetivo
+                       FROM maquinas m LEFT JOIN ad_ous ou ON ou.id = m.ou_id
+                       {$whereFiltro}
+                       ORDER BY m.nome ASC");
+$stmt->execute($paramsFiltro);
+$maquinas = $stmt->fetchAll();
 
 // Contagem de eventos por máquina, só para exibir na listagem (não bloqueia nada).
 $totaisEventos = [];
@@ -236,9 +275,41 @@ foreach ($db->query("SELECT i1.maquina_id, i1.acao FROM instalacoes_remotas i1
         </div>
     </div>
     <div class="col-md-8">
+        <form method="GET" class="entity-list-toolbar mb-3">
+            <input type="hidden" name="page" value="maquinas">
+            <span class="elt-label">Filtros</span>
+            <input type="text" name="busca" class="form-control form-control-sm" placeholder="Buscar por nome ou host..." value="<?= htmlspecialchars($busca) ?>" style="max-width: 220px">
+            <select name="filtro_setor" class="form-select form-select-sm" style="max-width: 200px">
+                <option value="">Todos os setores</option>
+                <?php foreach ($setoresExistentes as $s): ?>
+                    <option value="<?= htmlspecialchars($s) ?>" <?= $filtroSetor === $s ? 'selected' : '' ?>><?= htmlspecialchars($s) ?></option>
+                <?php endforeach; ?>
+            </select>
+            <select name="filtro_ativo" class="form-select form-select-sm" style="max-width: 160px">
+                <option value="">Ativas e inativas</option>
+                <option value="1" <?= $filtroAtivo === '1' ? 'selected' : '' ?>>Só ativas</option>
+                <option value="0" <?= $filtroAtivo === '0' ? 'selected' : '' ?>>Só inativas</option>
+            </select>
+            <select name="filtro_status" class="form-select form-select-sm" style="max-width: 180px">
+                <option value="">Todos os status</option>
+                <option value="ok" <?= $filtroStatus === 'ok' ? 'selected' : '' ?>>Sincronização OK</option>
+                <option value="parcial" <?= $filtroStatus === 'parcial' ? 'selected' : '' ?>>Parcial</option>
+                <option value="erro" <?= $filtroStatus === 'erro' ? 'selected' : '' ?>>Erro</option>
+                <option value="nunca" <?= $filtroStatus === 'nunca' ? 'selected' : '' ?>>Nunca sincronizou</option>
+            </select>
+            <button class="btn btn-sm btn-outline-primary">Filtrar</button>
+            <?php if ($busca !== '' || $filtroSetor !== '' || $filtroAtivo !== '' || $filtroStatus !== ''): ?>
+                <a href="index.php?page=maquinas" class="btn btn-sm btn-outline-secondary">Limpar</a>
+            <?php endif; ?>
+            <button type="button" id="btnStatusTodas" class="btn btn-sm btn-outline-info">
+                <i class="bi bi-broadcast"></i> Status
+            </button>
+            <div class="topbar-spacer"></div>
+            <span class="text-muted small"><?= count($maquinas) ?> máquina(s) encontrada(s)</span>
+        </form>
         <div class="table-responsive">
         <table class="table table-bordered bg-white align-middle table-actions-sticky">
-            <thead class="table-dark"><tr><th>Nome</th><th>Setor</th><th>Host</th><th>aw-server</th><th>Eventos</th><th>Última Sync</th><th>Status</th><th>Instalação MSI</th><th>Ações</th></tr></thead>
+            <thead class="table-dark"><tr><th>Nome</th><th>Setor</th><th>Última Sync</th><th>Status</th><th>Ligada</th><th>Ações</th></tr></thead>
             <tbody>
                 <?php foreach ($maquinas as $m): $inst = $ultimasInstalacoes[$m['id']] ?? null; ?>
                 <tr>
@@ -253,9 +324,6 @@ foreach ($db->query("SELECT i1.maquina_id, i1.acao FROM instalacoes_remotas i1
                             <?php if ($m['ou_id']): ?><i class="bi bi-link-45deg text-muted" title="Vinculado à OU — acompanha o nome dela"></i><?php endif; ?>
                         <?php else: ?><span class="text-muted">—</span><?php endif; ?>
                     </td>
-                    <td><code><?= htmlspecialchars($m['host']) ?>:<?= (int)$m['porta'] ?></code><div class="text-muted small">a cada <?= (int)$m['intervalo_sync_min'] ?> min</div></td>
-                    <td><?= $m['aw_hostname'] ? htmlspecialchars($m['aw_hostname']) . '<br><span class="text-muted small">' . htmlspecialchars($m['aw_versao']) . '</span>' : '<span class="text-muted">—</span>' ?></td>
-                    <td><?= number_format($totaisEventos[$m['id']] ?? 0, 0, ',', '.') ?></td>
                     <td><small class="mono text-muted"><?= $m['ultimo_sync_at'] ? htmlspecialchars($m['ultimo_sync_at']) : 'nunca' ?></small></td>
                     <td>
                         <?php if ($m['ultimo_sync_status'] === 'ok'): ?><span class="badge bg-success">OK</span>
@@ -263,25 +331,18 @@ foreach ($db->query("SELECT i1.maquina_id, i1.acao FROM instalacoes_remotas i1
                         <?php elseif ($m['ultimo_sync_status'] === 'erro'): ?><span class="badge bg-danger" title="<?= htmlspecialchars($m['ultimo_erro'] ?? '') ?>">Erro</span>
                         <?php else: ?><span class="badge bg-secondary">—</span><?php endif; ?>
                     </td>
-                    <td class="text-nowrap">
-                        <span class="badge-instalacao"
-                              data-maquina-id="<?= (int)$m['id'] ?>"
-                              data-instalacao-id="<?= $inst ? (int)$inst['id'] : '' ?>"
-                              data-status="<?= $inst ? htmlspecialchars($inst['status']) : '' ?>">
-                            <?php if (!$inst): ?><span class="text-muted">—</span>
-                            <?php elseif ($inst['status'] === 'ok'): ?><span class="badge bg-success">OK</span>
-                            <?php elseif ($inst['status'] === 'erro'): ?><span class="badge bg-danger" title="<?= htmlspecialchars($inst['mensagem']) ?>">Erro</span>
-                            <?php else: ?><span class="badge bg-info">Em andamento…</span><?php endif; ?>
+                    <td>
+                        <span class="badge-ligada" data-maquina-id="<?= (int)$m['id'] ?>" data-host="<?= htmlspecialchars($m['host']) ?>">
+                            <span class="text-muted">—</span>
                         </span>
-                        <?php if ($inst): ?>
-                            <button type="button" class="btn btn-sm btn-outline-secondary btn-ver-log" data-instalacao-id="<?= (int)$inst['id'] ?>" title="Ver log"><i class="bi bi-file-text"></i></button>
-                        <?php endif; ?>
                     </td>
                     <td class="text-nowrap">
                         <button type="button" class="btn btn-sm btn-outline-info btn-sync-now" data-id="<?= (int)$m['id'] ?>" title="Sincronizar agora"><i class="bi bi-arrow-repeat"></i></button>
                         <div class="btn-group">
                             <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle btn-acoes-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="Mais ações"><i class="bi bi-three-dots-vertical"></i></button>
                             <ul class="dropdown-menu dropdown-menu-end">
+                                <li><button type="button" class="dropdown-item" data-bs-toggle="modal" data-bs-target="#modalDetalhes<?= (int)$m['id'] ?>"><i class="bi bi-info-circle me-2"></i>Detalhes</button></li>
+                                <li><hr class="dropdown-divider"></li>
                                 <?php if ($maquinasInstaladas[$m['id']] ?? false): ?>
                                     <li><button type="button" class="dropdown-item btn-install-action" data-id="<?= (int)$m['id'] ?>" data-acao="atualizar"><i class="bi bi-cloud-arrow-up me-2"></i>Atualizar ActivityWatch</button></li>
                                     <li><button type="button" class="dropdown-item text-danger btn-install-action" data-id="<?= (int)$m['id'] ?>" data-acao="desinstalar"><i class="bi bi-cloud-minus me-2"></i>Desinstalar ActivityWatch</button></li>
@@ -303,12 +364,68 @@ foreach ($db->query("SELECT i1.maquina_id, i1.acao FROM instalacoes_remotas i1
                     </td>
                 </tr>
                 <?php endforeach; ?>
-                <?php if (empty($maquinas)): ?><tr><td colspan="9" class="text-center text-muted py-3">Nenhuma máquina cadastrada.</td></tr><?php endif; ?>
+                <?php if (empty($maquinas)): ?><tr><td colspan="6" class="text-center text-muted py-3"><?= ($busca !== '' || $filtroSetor !== '' || $filtroAtivo !== '' || $filtroStatus !== '') ? 'Nenhuma máquina encontrada com esses filtros.' : 'Nenhuma máquina cadastrada.' ?></td></tr><?php endif; ?>
             </tbody>
         </table>
         </div>
     </div>
 </div>
+
+<?php foreach ($maquinas as $m): $inst = $ultimasInstalacoes[$m['id']] ?? null; ?>
+<div class="modal fade" id="modalDetalhes<?= (int)$m['id'] ?>" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><?= htmlspecialchars($m['nome']) ?></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+            </div>
+            <div class="modal-body">
+                <div class="entity-grid" style="grid-template-columns: repeat(2, minmax(0,1fr));">
+                    <div>
+                        <div class="entity-field-label">Host</div>
+                        <div class="entity-field-value"><code><?= htmlspecialchars($m['host']) ?>:<?= (int)$m['porta'] ?></code></div>
+                    </div>
+                    <div>
+                        <div class="entity-field-label">IP (via agente)</div>
+                        <div class="entity-field-value">
+                            <?= $m['ip_local'] ? '<code>' . htmlspecialchars($m['ip_local']) . '</code>' : '<span class="text-muted">—</span>' ?>
+                            <?php if ($m['ip_local']): ?><i class="bi bi-info-circle text-muted" title="Detectado pelo próprio agente na máquina (rota padrão de rede), não pelo DNS do host cadastrado"></i><?php endif; ?>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="entity-field-label">Sincronização</div>
+                        <div class="entity-field-value">a cada <?= (int)$m['intervalo_sync_min'] ?> min</div>
+                    </div>
+                    <div>
+                        <div class="entity-field-label">aw-server</div>
+                        <div class="entity-field-value"><?= $m['aw_hostname'] ? htmlspecialchars($m['aw_hostname']) . ' (' . htmlspecialchars($m['aw_versao']) . ')' : '—' ?></div>
+                    </div>
+                    <div>
+                        <div class="entity-field-label">Eventos coletados</div>
+                        <div class="entity-field-value"><?= number_format($totaisEventos[$m['id']] ?? 0, 0, ',', '.') ?></div>
+                    </div>
+                </div>
+                <hr>
+                <div class="entity-field-label">Instalação MSI</div>
+                <div class="d-flex align-items-center gap-2 mt-1">
+                    <span class="badge-instalacao"
+                          data-maquina-id="<?= (int)$m['id'] ?>"
+                          data-instalacao-id="<?= $inst ? (int)$inst['id'] : '' ?>"
+                          data-status="<?= $inst ? htmlspecialchars($inst['status']) : '' ?>">
+                        <?php if (!$inst): ?><span class="text-muted">—</span>
+                        <?php elseif ($inst['status'] === 'ok'): ?><span class="badge bg-success">OK</span>
+                        <?php elseif ($inst['status'] === 'erro'): ?><span class="badge bg-danger" title="<?= htmlspecialchars($inst['mensagem']) ?>">Erro</span>
+                        <?php else: ?><span class="badge bg-info">Em andamento…</span><?php endif; ?>
+                    </span>
+                    <?php if ($inst): ?>
+                        <button type="button" class="btn btn-sm btn-outline-secondary btn-ver-log" data-instalacao-id="<?= (int)$inst['id'] ?>" title="Ver log"><i class="bi bi-file-text"></i> Ver log</button>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<?php endforeach; ?>
 
 <div class="modal fade" id="modalLogInstalacao" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-lg modal-dialog-scrollable">
@@ -364,6 +481,47 @@ document.querySelectorAll('.btn-sync-now').forEach(function (btn) {
                 window.location.reload();
             })
             .catch(function () { alert('Falha ao sincronizar (erro de rede).'); btn.disabled = false; icon.className = 'bi bi-arrow-repeat'; });
+    });
+});
+
+// Botão "Status" do filtro: testa via ping (ICMP) se cada máquina LISTADA NO MOMENTO (respeita os
+// filtros aplicados) está ligada/alcançável na rede — diferente do "Testar Conexão" do formulário
+// e do badge de "Última Sync", que só falam se o aw-server especificamente respondeu.
+document.getElementById('btnStatusTodas').addEventListener('click', function () {
+    var btn = this;
+    var badges = document.querySelectorAll('.badge-ligada');
+    if (!badges.length) return;
+
+    btn.disabled = true;
+    btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Testando...';
+
+    var pendentes = badges.length;
+    function finalizarUm() {
+        pendentes--;
+        if (pendentes <= 0) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-broadcast"></i> Status';
+        }
+    }
+
+    badges.forEach(function (badge) {
+        badge.innerHTML = '<span class="text-muted"><i class="bi bi-hourglass-split"></i></span>';
+        var fd = new FormData();
+        fd.append('csrf_token', '<?= csrfToken() ?>');
+        fd.append('id', badge.dataset.maquinaId);
+        fetch('ajax_status_ligada.php', { method: 'POST', body: fd })
+            .then(r => r.json())
+            .then(function (data) {
+                if (!data.ok) {
+                    badge.innerHTML = '<span class="text-muted" title="' + (data.erro || 'Falha ao testar') + '">?</span>';
+                } else if (data.ligada) {
+                    badge.innerHTML = '<span class="badge bg-success">Ligada</span>';
+                } else {
+                    badge.innerHTML = '<span class="badge bg-secondary">Desligada</span>';
+                }
+            })
+            .catch(function () { badge.innerHTML = '<span class="text-muted" title="Falha ao testar (erro de rede)">?</span>'; })
+            .finally(finalizarUm);
     });
 });
 

@@ -61,7 +61,7 @@ define('AW_SERVIDOR_IP', '10.10.140.17');
 
 // Incrementar sempre que uma migração (CREATE TABLE/ALTER TABLE) for adicionada em getDB() — é o
 // que faz o bloco de migração rodar de novo (uma única vez) na próxima requisição após o deploy.
-define('SCHEMA_VERSION', 6);
+define('SCHEMA_VERSION', 7);
 
 function getDB() {
     // Conexão + schema cacheados numa estática por requisição (mesmo motivo documentado em
@@ -102,6 +102,7 @@ function getDB() {
             host VARCHAR(255) NOT NULL,
             porta INT NOT NULL DEFAULT 5600,
             usuario_responsavel VARCHAR(150) DEFAULT '',
+            ip_local VARCHAR(45) DEFAULT NULL,
             ativo TINYINT(1) NOT NULL DEFAULT 1,
             intervalo_sync_min INT NOT NULL DEFAULT 5,
             aw_hostname VARCHAR(150) DEFAULT NULL,
@@ -306,6 +307,15 @@ function getDB() {
             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'instalacoes_remotas' AND COLUMN_NAME = 'acao'")->fetchColumn();
         if (!$temAcaoInstalacao) {
             $db->exec("ALTER TABLE instalacoes_remotas ADD COLUMN acao VARCHAR(20) NOT NULL DEFAULT 'instalar' AFTER maquina_id");
+        }
+
+        // IP reportado pelo próprio agente (aw-watcher-currentuser), não pelo DNS do "host"
+        // cadastrado — ver atualizarUsuarioResponsavelDetectado() em aw_client.php, que preenche
+        // esta coluna junto com usuario_responsavel a partir do mesmo evento tipo 'usuario'.
+        $temIpLocal = (bool)$db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'maquinas' AND COLUMN_NAME = 'ip_local'")->fetchColumn();
+        if (!$temIpLocal) {
+            $db->exec("ALTER TABLE maquinas ADD COLUMN ip_local VARCHAR(45) DEFAULT NULL AFTER usuario_responsavel");
         }
 
         // Categorias e regras padrão — só na primeira instalação (tabela vazia). O admin edita

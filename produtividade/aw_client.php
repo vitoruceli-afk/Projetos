@@ -292,20 +292,28 @@ function sincronizarMaquina(PDO $db, array $maquina, $origem = 'manual') {
     return ['ok' => true, 'erro' => '', 'eventos_novos' => $totalNovos];
 }
 
-// Preenche "Usuário responsável" sozinho a partir do bucket "aw-watcher-currentuser_<host>" (o
-// agente próprio em Agentes/, não um watcher oficial do ActivityWatch) — sem exigir credencial
-// nenhuma, já que o agente roda dentro da própria sessão do usuário e só reporta a si mesmo.
-// Silenciosamente não faz nada em máquinas onde esse agente ainda não está instalado (não existe
-// evento tipo 'usuario' pra elas, a consulta simplesmente não acha nada).
+// Preenche "Usuário responsável" e "IP local" sozinho a partir do bucket "aw-watcher-currentuser_<host>"
+// (o agente próprio em Agentes/, não um watcher oficial do ActivityWatch) — sem exigir credencial
+// nenhuma, já que o agente roda dentro da própria sessão do usuário e só reporta a si mesmo. O IP
+// vem da PRÓPRIA MÁQUINA (rota padrão, ver aw-watcher-currentuser.ps1) — nunca do DNS do "host"
+// cadastrado, que pode ter registro desatualizado. Silenciosamente não faz nada em máquinas onde
+// esse agente ainda não está instalado (não existe evento tipo 'usuario' pra elas, a consulta
+// simplesmente não acha nada).
 function atualizarUsuarioResponsavelDetectado(PDO $db, $maquinaId) {
-    $stmt = $db->prepare("SELECT JSON_UNQUOTE(JSON_EXTRACT(dados, '$.user')) AS usuario
+    $stmt = $db->prepare("SELECT
+                               JSON_UNQUOTE(JSON_EXTRACT(dados, '$.user')) AS usuario,
+                               JSON_UNQUOTE(JSON_EXTRACT(dados, '$.ip')) AS ip
                            FROM eventos
                            WHERE maquina_id = :m AND tipo = 'usuario' AND JSON_EXTRACT(dados, '$.user') IS NOT NULL
                            ORDER BY ts DESC LIMIT 1");
     $stmt->execute([':m' => $maquinaId]);
-    $usuario = $stmt->fetchColumn();
-    if ($usuario) {
-        $db->prepare("UPDATE maquinas SET usuario_responsavel = :u WHERE id = :id")
-           ->execute([':u' => mb_substr($usuario, 0, 150), ':id' => $maquinaId]);
+    $linha = $stmt->fetch();
+    if ($linha && $linha['usuario']) {
+        $db->prepare("UPDATE maquinas SET usuario_responsavel = :u, ip_local = :ip WHERE id = :id")
+           ->execute([
+               ':u' => mb_substr($linha['usuario'], 0, 150),
+               ':ip' => $linha['ip'] !== null ? mb_substr($linha['ip'], 0, 45) : null,
+               ':id' => $maquinaId,
+           ]);
     }
 }
