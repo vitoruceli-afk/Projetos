@@ -18,13 +18,14 @@ if ($grupo === '') {
 $db = getDB();
 $grupoSql = movimentacaoGrupoChaveSql('mv');
 // LEFT JOIN nas duas origens possíveis (medicamento ou insumo — mv.medicamento_id/insumo_id são
-// mutuamente exclusivos) e COALESCE pra exibir o nome/lote/validade de qual delas bateu.
+// mutuamente exclusivos) e COALESCE pra exibir o nome de qual delas bateu. Lote/validade vêm
+// sempre de insumo_lotes (l), que agora guarda o lote tanto de medicamento quanto de insumo.
 $stmt = $db->prepare("SELECT mv.quantidade, mv.valor_unitario, mv.observacao,
         COALESCE(md.produto, ins.nome_comercial) AS produto,
         COALESCE(md.laboratorio, ins.marca) AS laboratorio,
         COALESCE(md.apresentacao, ins.categoria) AS apresentacao,
-        COALESCE(l.lote, ins.lote) AS lote,
-        COALESCE(l.validade, ins.validade) AS validade
+        l.lote AS lote,
+        l.validade AS validade
     FROM movimentacoes mv
     LEFT JOIN medicamentos_anvisa md ON md.id = mv.medicamento_id
     LEFT JOIN insumos ins ON ins.id = mv.insumo_id

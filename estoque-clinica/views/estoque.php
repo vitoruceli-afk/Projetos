@@ -25,22 +25,25 @@ $itens = array_map(function ($m) {
     ];
 }, $stmt->fetchAll());
 
-$sqlIns = "SELECT id, nome_comercial AS nome, categoria, quantidade AS estoque_total, estoque_minimo, lote FROM insumos";
+// Só entram insumos que JÁ tiveram alguma entrada registrada (têm lote em insumo_lotes) — mesmo
+// critério usado acima para medicamentos: "Estoque" mostra o que está sendo de fato controlado.
+$sqlIns = "SELECT i.id, i.nome_comercial AS nome, i.categoria, i.estoque_minimo,
+        COALESCE(SUM(l.quantidade), 0) AS estoque_total, COUNT(l.id) AS qtd_lotes
+    FROM insumos i
+    INNER JOIN insumo_lotes l ON l.insumo_id = i.id";
 $paramsIns = [];
 if ($busca !== '') {
-    $sqlIns .= " WHERE nome_comercial LIKE :b";
+    $sqlIns .= " WHERE i.nome_comercial LIKE :b";
     $paramsIns[':b'] = "%{$busca}%";
 }
-$sqlIns .= " ORDER BY nome_comercial ASC";
+$sqlIns .= " GROUP BY i.id, i.nome_comercial, i.categoria, i.estoque_minimo ORDER BY i.nome_comercial ASC";
 $stmt = $db->prepare($sqlIns);
 $stmt->execute($paramsIns);
 foreach ($stmt->fetchAll() as $i) {
-    // Insumo não tem sub-tabela de lotes — só um lote (o da entrada mais recente), se algum já
-    // foi cadastrado.
     $itens[] = [
         'tipo' => 'insumo', 'id' => (int)$i['id'], 'nome' => $i['nome'], 'apresentacao' => $i['categoria'],
-        'estoque_total' => (int)$i['estoque_total'], 'qtd_lotes' => $i['lote'] !== '' ? 1 : 0,
-        'estoque_minimo' => (int)$i['estoque_minimo'],
+        'estoque_total' => (int)$i['estoque_total'], 'qtd_lotes' => (int)$i['qtd_lotes'],
+        'estoque_minimo' => $i['estoque_minimo'] !== null ? (int)$i['estoque_minimo'] : null,
     ];
 }
 

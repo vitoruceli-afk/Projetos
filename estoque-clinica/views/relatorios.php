@@ -48,7 +48,7 @@ function buscarMovimentacoesDetalhado(PDO $db, string $tipo, string $dataInicio,
     $sql = "SELECT mv.created_at, mv.quantidade, mv.valor_unitario, mv.usuario,
             COALESCE(md.produto, ins.nome_comercial) AS medicamento_nome,
             COALESCE(md.laboratorio, ins.marca) AS laboratorio_nome,
-            COALESCE(l.lote, ins.lote) AS lote
+            l.lote AS lote
         FROM movimentacoes mv
         LEFT JOIN medicamentos_anvisa md ON md.id = mv.medicamento_id
         LEFT JOIN insumos ins ON ins.id = mv.insumo_id
@@ -102,7 +102,7 @@ if ($tab === 'estoque') {
     foreach (insumosAbaixoDoMinimo($db) as $i) {
         $itensMinimo[] = [
             'tipo' => 'insumo', 'nome' => $i['nome_comercial'], 'origem' => $i['marca'],
-            'estoque_atual' => (int)$i['quantidade'], 'estoque_minimo' => (int)$i['estoque_minimo'], 'unidade' => $i['unidade_medida'],
+            'estoque_atual' => (int)$i['estoque_atual'], 'estoque_minimo' => (int)$i['estoque_minimo'], 'unidade' => $i['unidade_medida'],
         ];
     }
     if ($busca !== '') {
@@ -127,7 +127,7 @@ if ($tab === 'estoque') {
             COALESCE(md.produto, ins.nome_comercial) AS medicamento_nome,
             COALESCE(md.laboratorio, ins.marca) AS laboratorio_nome,
             md.codigo_ggrem,
-            COALESCE(l.lote, ins.lote) AS lote
+            l.lote AS lote
         FROM movimentacoes mv
         LEFT JOIN medicamentos_anvisa md ON md.id = mv.medicamento_id
         LEFT JOIN insumos ins ON ins.id = mv.insumo_id

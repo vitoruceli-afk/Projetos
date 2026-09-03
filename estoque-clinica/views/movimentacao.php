@@ -145,10 +145,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     $db->prepare("INSERT INTO movimentacoes (medicamento_id, lote_id, confirmacao_id, tipo, quantidade, valor_unitario, usuario, observacao) VALUES (:m, :lo, :c, :t, :q, :vu, :u, :o)")
                        ->execute([':m' => $medicamento['id'], ':lo' => $loteId, ':c' => $confirmacaoId, ':t' => $tipoMov, ':q' => $quantidade, ':vu' => $valorUnitario, ':u' => $_SESSION['user_logged_in'], ':o' => $observacao]);
                 } else {
-                    // Insumo: não tem uma sub-tabela de lotes como medicamento (uma única
-                    // quantidade por registro) — mas a entrada também registra lote/validade,
-                    // atualizando os campos do próprio insumo (a entrada mais recente é a que
-                    // fica valendo, já que não há histórico de lotes separado).
+                    // Insumo funciona exatamente como medicamento: lotes em insumo_lotes
+                    // (insumo_id em vez de medicamento_id), quantidade/lote/validade/valor
+                    // unitário sempre lançados aqui na Entrada/Saída, nunca no cadastro.
                     // Busca por id primeiro — necessário pra insumo sem EAN cadastrado, que só é
                     // localizável pela busca por nome.
                     $insumo = null;
@@ -165,47 +164,74 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         $erroItem = "Item {$numero}: insumo com código \"" . htmlspecialchars($codigo) . '" não foi encontrado.';
                         break;
                     }
-                    if ($quantidade <= 0) {
-                        $erroItem = "Item {$numero} (" . htmlspecialchars($insumo['nome_comercial']) . '): informe uma quantidade válida.';
-                        break;
-                    }
 
                     if ($ehEntrada) {
                         $lote = trim($item['lote'] ?? '');
                         $validade = trim($item['validade'] ?? '');
                         $valorUnitario = is_numeric($item['valor_unitario'] ?? null) ? (float)$item['valor_unitario'] : -1;
-                        if ($lote === '' || $validade === '') {
-                            $erroItem = "Item {$numero} (" . htmlspecialchars($insumo['nome_comercial']) . '): lote e validade são obrigatórios.';
+                        if ($quantidade <= 0 || $lote === '' || $validade === '') {
+                            $erroItem = "Item {$numero} (" . htmlspecialchars($insumo['nome_comercial']) . '): quantidade, lote e validade são obrigatórios.';
                             break;
                         }
                         if ($valorUnitario < 0) {
                             $erroItem = "Item {$numero} (" . htmlspecialchars($insumo['nome_comercial']) . '): informe o valor unitário.';
                             break;
                         }
-                        $db->prepare("UPDATE insumos SET quantidade = quantidade + :q, lote = :l, validade = :v, valor_unitario = :vu WHERE id = :id")
-                           ->execute([':q' => $quantidade, ':l' => $lote, ':v' => $validade, ':vu' => $valorUnitario, ':id' => $insumo['id']]);
-                    } else {
-                        // FOR UPDATE: relê quantidade/valor sob lock, pra duas saídas concorrentes do
-                        // mesmo insumo não aprovarem a mesma checagem de saldo antes de qualquer uma
-                        // delas descontar (o que deixaria a quantidade negativa).
-                        $stmtLock = $db->prepare("SELECT quantidade, valor_unitario FROM insumos WHERE id = :id FOR UPDATE");
-                        $stmtLock->bindValue(':id', $insumo['id'], PDO::PARAM_INT);
-                        $stmtLock->execute();
-                        $insumoLocked = $stmtLock->fetch();
 
-                        if ($quantidade > (int)$insumoLocked['quantidade']) {
-                            $erroItem = "Item {$numero} (" . htmlspecialchars($insumo['nome_comercial']) . '): estoque insuficiente (há apenas ' . (int)$insumoLocked['quantidade'] . ' ' . htmlspecialchars($insumo['unidade_medida']) . '(s)).';
+                        $stmt = $db->prepare("SELECT * FROM insumo_lotes WHERE insumo_id = :i AND lote = :l");
+                        $stmt->execute([':i' => $insumo['id'], ':l' => $lote]);
+                        $loteRow = $stmt->fetch();
+
+                        if ($loteRow) {
+                            $db->prepare("UPDATE insumo_lotes SET quantidade = quantidade + :q, valor_unitario = :vu WHERE id = :id")
+                               ->execute([':q' => $quantidade, ':vu' => $valorUnitario, ':id' => $loteRow['id']]);
+                            $loteId = $loteRow['id'];
+                        } else {
+                            $db->prepare("INSERT INTO insumo_lotes (insumo_id, lote, validade, quantidade, valor_unitario) VALUES (:i, :l, :v, :q, :vu)")
+                               ->execute([':i' => $insumo['id'], ':l' => $lote, ':v' => $validade, ':q' => $quantidade, ':vu' => $valorUnitario]);
+                            $loteId = (int)$db->lastInsertId();
+                        }
+
+                        // Estoque mínimo do insumo: opcional, informada na Entrada, igual medicamento.
+                        if (array_key_exists('estoque_minimo', $item) && trim((string)$item['estoque_minimo']) !== '') {
+                            $db->prepare("UPDATE insumos SET estoque_minimo = :em WHERE id = :id")
+                               ->execute([':em' => (int)$item['estoque_minimo'], ':id' => $insumo['id']]);
+                        }
+                    } else {
+                        // Um insumo pode ter vários lotes com validades diferentes em estoque ao
+                        // mesmo tempo — a baixa é sempre no lote específico escolhido pelo operador.
+                        $loteId = (int)($item['lote_id'] ?? 0);
+                        if ($quantidade <= 0 || $loteId <= 0) {
+                            $erroItem = "Item {$numero} (" . htmlspecialchars($insumo['nome_comercial']) . '): selecione o lote e informe uma quantidade válida.';
                             break;
                         }
-                        $db->prepare("UPDATE insumos SET quantidade = quantidade - :q WHERE id = :id")
-                           ->execute([':q' => $quantidade, ':id' => $insumo['id']]);
-                        // Valor não vem do formulário na Saída — sempre o valor cadastrado no insumo
-                        // (a última entrada), pra não deixar o operador alterar na retirada.
-                        $valorUnitario = (float)$insumoLocked['valor_unitario'];
+
+                        // FOR UPDATE: trava a linha do lote até o fim da transação, pra duas saídas
+                        // concorrentes do mesmo lote não aprovarem a mesma checagem de saldo antes de
+                        // qualquer uma delas descontar (o que deixaria a quantidade negativa).
+                        $stmt = $db->prepare("SELECT * FROM insumo_lotes WHERE id = :id AND insumo_id = :i FOR UPDATE");
+                        $stmt->execute([':id' => $loteId, ':i' => $insumo['id']]);
+                        $loteRow = $stmt->fetch();
+
+                        if (!$loteRow) {
+                            $erroItem = "Item {$numero} (" . htmlspecialchars($insumo['nome_comercial']) . '): lote inválido ou não pertence a este insumo.';
+                            break;
+                        }
+                        if ($quantidade > (int)$loteRow['quantidade']) {
+                            $erroItem = "Item {$numero} (" . htmlspecialchars($insumo['nome_comercial']) . '): estoque insuficiente no lote "' . htmlspecialchars($loteRow['lote']) . '" (há apenas ' . (int)$loteRow['quantidade'] . ' ' . htmlspecialchars($insumo['unidade_medida']) . '(s)).';
+                            break;
+                        }
+
+                        $db->prepare("UPDATE insumo_lotes SET quantidade = quantidade - :q WHERE id = :id")
+                           ->execute([':q' => $quantidade, ':id' => $loteRow['id']]);
+                        $loteId = $loteRow['id'];
+                        // Valor não vem do formulário na Saída — sempre o valor gravado no lote (o
+                        // que foi pago naquela entrada), pra não deixar o operador alterar na retirada.
+                        $valorUnitario = (float)$loteRow['valor_unitario'];
                     }
 
-                    $db->prepare("INSERT INTO movimentacoes (insumo_id, confirmacao_id, tipo, quantidade, valor_unitario, usuario, observacao) VALUES (:i, :c, :t, :q, :vu, :u, :o)")
-                       ->execute([':i' => $insumo['id'], ':c' => $confirmacaoId, ':t' => $tipoMov, ':q' => $quantidade, ':vu' => $valorUnitario, ':u' => $_SESSION['user_logged_in'], ':o' => $observacao]);
+                    $db->prepare("INSERT INTO movimentacoes (insumo_id, lote_id, confirmacao_id, tipo, quantidade, valor_unitario, usuario, observacao) VALUES (:i, :lo, :c, :t, :q, :vu, :u, :o)")
+                       ->execute([':i' => $insumo['id'], ':lo' => $loteId, ':c' => $confirmacaoId, ':t' => $tipoMov, ':q' => $quantidade, ':vu' => $valorUnitario, ':u' => $_SESSION['user_logged_in'], ':o' => $observacao]);
                 }
             }
 
@@ -342,7 +368,7 @@ if (isset($_GET['ok'])) {
                         <div class="col-sm-4" id="quantidadeMinimaWrap">
                             <label class="form-label">Quantidade mínima</label>
                             <input type="number" id="quantidadeMinimaInput" class="form-control" min="0" placeholder="Não cadastrada">
-                            <div class="form-text">Nível de estoque abaixo do qual este medicamento deve ser reposto. Fica salvo pra próxima entrada já vir preenchido.</div>
+                            <div class="form-text">Nível de estoque abaixo do qual este item deve ser reposto. Fica salvo pra próxima entrada já vir preenchido.</div>
                         </div>
                     </div>
                     <?php endif; ?>
@@ -476,16 +502,10 @@ if (isset($_GET['ok'])) {
         loteSelectHint.textContent = qtd + ' unidade(s) disponível(is) neste lote · Valor unitário: ' + formatarMoeda(valor);
     }
 
-    // Ajusta os campos visíveis conforme o tipo do item encontrado na busca. Na Entrada, Lote e
-    // Validade aparecem tanto para medicamento quanto para insumo (loteTextWrap/validadeWrap só
-    // existem no DOM quando a aba é Entrada). Na Saída, a seleção de lote é só de medicamento —
-    // insumo não é rastreado por lote, então dá saída direto na quantidade.
+    // Medicamento e insumo funcionam exatamente do mesmo jeito na Entrada/Saída (ambos rastreados
+    // por lote em insumo_lotes) — loteSelectWrap (Saída) e quantidadeMinimaWrap (Entrada) já ficam
+    // visíveis pra qualquer um dos dois tipos; só reseta o hint/max daqui.
     function ajustarCamposPorTipo(tipo) {
-        var ehMedicamento = tipo === 'medicamento';
-        if (loteSelectWrap) loteSelectWrap.style.display = ehMedicamento ? '' : 'none';
-        // Quantidade mínima só se aplica a medicamento na Entrada — insumo já tem seu próprio
-        // estoque mínimo cadastrado na tela Insumos.
-        if (quantidadeMinimaWrap) quantidadeMinimaWrap.style.display = ehMedicamento ? '' : 'none';
         quantidadeHint.textContent = '';
         quantidadeInput.removeAttribute('max');
     }
@@ -546,12 +566,15 @@ if (isset($_GET['ok'])) {
                     var i = data.insumo;
                     itemAtual = { tipo: 'insumo', dados: i };
 
-                    var statusHtmlIns = i.estoque_baixo
-                        ? '<span class="badge bg-warning text-dark">Estoque baixo</span>'
-                        : '<span class="badge bg-success">Estoque ok</span>';
-                    if (i.status) {
-                        statusHtmlIns += ' <span class="badge ' + statusBadgeClass(i.status) + '">' + esc(i.status_label) + '</span>';
+                    // Traz a quantidade mínima já cadastrada pra esse insumo (se houver); em branco
+                    // quando ainda não foi informada, pro operador cadastrar agora.
+                    if (quantidadeMinimaInput) {
+                        quantidadeMinimaInput.value = (i.estoque_minimo === null || i.estoque_minimo === undefined) ? '' : i.estoque_minimo;
                     }
+
+                    var statusHtmlIns = i.status
+                        ? '<span class="badge ' + statusBadgeClass(i.status) + '">' + esc(i.status_label) + '</span>'
+                        : '<span class="badge bg-secondary">Sem estoque</span>';
 
                     scanResult.innerHTML =
                         '<div class="scan-summary">' +
@@ -560,18 +583,25 @@ if (isset($_GET['ok'])) {
                             '<div class="scan-summary-title">' + esc(i.nome_comercial) + '</div>' +
                             '<div class="scan-summary-sub">' + esc(i.marca || '—') + (i.categoria ? ' · ' + esc(i.categoria) : '') + '</div>' +
                             '<div class="scan-summary-grid">' +
-                                '<div><div class="entity-field-label">Estoque atual</div><div class="entity-field-value">' + esc(i.quantidade) + ' ' + esc(i.unidade_medida) + '</div></div>' +
-                                '<div><div class="entity-field-label">Estoque mínimo</div><div class="entity-field-value">' + esc(i.estoque_minimo) + ' ' + esc(i.unidade_medida) + '</div></div>' +
-                                (i.lote ? '<div><div class="entity-field-label">Lote</div><div class="entity-field-value">' + esc(i.lote) + '</div></div>' : '') +
-                                (i.validade_br ? '<div><div class="entity-field-label">Vencimento</div><div class="entity-field-value">' + esc(i.validade_br) + '</div></div>' : '') +
-                                (tab === 'saida' ? '<div><div class="entity-field-label">Valor unitário</div><div class="entity-field-value">' + formatarMoeda(i.valor_unitario) + '</div></div>' : '') +
+                                '<div><div class="entity-field-label">Estoque total</div><div class="entity-field-value">' + esc(i.estoque_total) + ' ' + esc(i.unidade_medida) + '</div></div>' +
+                                (i.categoria ? '<div><div class="entity-field-label">Categoria</div><div class="entity-field-value">' + esc(i.categoria) + '</div></div>' : '') +
                             '</div>' +
                             '<div class="mt-2">' + statusHtmlIns + '</div>' +
+                            montarListaLotes(i.lotes) +
                         '</div></div>';
 
                     if (tab === 'saida') {
-                        quantidadeInput.max = i.quantidade;
-                        quantidadeHint.textContent = i.quantidade + ' ' + i.unidade_medida + '(s) disponível(is).';
+                        if (!i.lotes.length) {
+                            campos.style.display = 'none';
+                            return;
+                        }
+                        loteSelect.innerHTML = i.lotes.map(function (l) {
+                            return '<option value="' + l.id + '" data-quantidade="' + l.quantidade + '" data-lote="' + esc(l.lote) + '" data-validade-br="' + esc(l.validade_br) + '" data-valor="' + l.valor_unitario + '">' +
+                                l.lote + ' · vence em ' + l.validade_br + ' · ' + l.quantidade + ' ' + i.unidade_medida +
+                                '</option>';
+                        }).join('');
+                        loteSelect.selectedIndex = 0;
+                        atualizarHintLote();
                     }
                 }
 
@@ -799,72 +829,43 @@ if (isset($_GET['ok'])) {
             return;
         }
 
-        var novoItem;
-        if (itemAtual.tipo === 'medicamento') {
-            var m = itemAtual.dados;
-            novoItem = {
-                tipo_item: 'medicamento',
-                item_id: m.id,
-                codigo_barras: m.codigo_barras,
-                produto: m.produto,
-                apresentacao: m.apresentacao,
-                laboratorio: m.laboratorio,
-                quantidade: quantidade,
-                observacao: observacao
-            };
-            if (tab === 'entrada') {
-                var lote = loteInput.value.trim();
-                var validade = validadeInput.value;
-                if (!lote) { alert('Informe o lote.'); return; }
-                if (!validade) { alert('Informe a validade.'); return; }
-                novoItem.lote = lote;
-                novoItem.validade = validade;
-                novoItem.validadeBr = formatarDataBr(validade);
-                if (quantidadeMinimaInput && quantidadeMinimaInput.value.trim() !== '') {
-                    novoItem.estoque_minimo = parseInt(quantidadeMinimaInput.value, 10);
-                }
-            } else {
-                var opt = loteSelect.options[loteSelect.selectedIndex];
-                if (!opt || !opt.value) { alert('Selecione o lote.'); return; }
-                var disponivel = parseInt(opt.getAttribute('data-quantidade'), 10);
-                if (quantidade > disponivel) { alert('Quantidade maior que o saldo disponível neste lote (' + disponivel + ' un.).'); return; }
-                novoItem.lote_id = parseInt(opt.value, 10);
-                novoItem.lote = opt.getAttribute('data-lote');
-                novoItem.validadeBr = opt.getAttribute('data-validade-br');
-            }
-        } else {
-            var i = itemAtual.dados;
-            if (tab === 'saida' && quantidade > i.quantidade) {
-                alert('Quantidade maior que o estoque disponível (' + i.quantidade + ' ' + i.unidade_medida + ').');
-                return;
-            }
-            novoItem = {
-                tipo_item: 'insumo',
-                item_id: i.id,
-                codigo_barras: i.codigo_barras,
-                produto: i.nome_comercial,
-                laboratorio: i.marca,
-                apresentacao: i.categoria,
-                quantidade: quantidade,
-                observacao: observacao
-            };
-            if (tab === 'entrada') {
-                var loteIns = loteInput.value.trim();
-                var validadeIns = validadeInput.value;
-                if (!loteIns) { alert('Informe o lote.'); return; }
-                if (!validadeIns) { alert('Informe a validade.'); return; }
-                novoItem.lote = loteIns;
-                novoItem.validade = validadeIns;
-                novoItem.validadeBr = formatarDataBr(validadeIns);
-            }
-        }
+        // Medicamento e insumo são estruturalmente iguais aqui (ambos rastreados por lote em
+        // insumo_lotes) — só os nomes dos campos do catálogo diferem.
+        var d = itemAtual.dados;
+        var ehMedicamento = itemAtual.tipo === 'medicamento';
+        var unidade = ehMedicamento ? 'un.' : d.unidade_medida;
+        var novoItem = {
+            tipo_item: itemAtual.tipo,
+            item_id: d.id,
+            codigo_barras: d.codigo_barras,
+            produto: ehMedicamento ? d.produto : d.nome_comercial,
+            laboratorio: ehMedicamento ? d.laboratorio : d.marca,
+            apresentacao: ehMedicamento ? d.apresentacao : d.categoria,
+            quantidade: quantidade,
+            observacao: observacao
+        };
 
         if (tab === 'entrada') {
+            var lote = loteInput.value.trim();
+            var validade = validadeInput.value;
+            if (!lote) { alert('Informe o lote.'); return; }
+            if (!validade) { alert('Informe a validade.'); return; }
+            novoItem.lote = lote;
+            novoItem.validade = validade;
+            novoItem.validadeBr = formatarDataBr(validade);
+            if (quantidadeMinimaInput && quantidadeMinimaInput.value.trim() !== '') {
+                novoItem.estoque_minimo = parseInt(quantidadeMinimaInput.value, 10);
+            }
             novoItem.valor_unitario = parseFloat(valorUnitarioInput.value);
-        } else if (itemAtual.tipo === 'medicamento') {
-            novoItem.valor_unitario = parseFloat(loteSelect.options[loteSelect.selectedIndex].getAttribute('data-valor')) || 0;
         } else {
-            novoItem.valor_unitario = itemAtual.dados.valor_unitario || 0;
+            var opt = loteSelect.options[loteSelect.selectedIndex];
+            if (!opt || !opt.value) { alert('Selecione o lote.'); return; }
+            var disponivel = parseInt(opt.getAttribute('data-quantidade'), 10);
+            if (quantidade > disponivel) { alert('Quantidade maior que o saldo disponível neste lote (' + disponivel + ' ' + unidade + ').'); return; }
+            novoItem.lote_id = parseInt(opt.value, 10);
+            novoItem.lote = opt.getAttribute('data-lote');
+            novoItem.validadeBr = opt.getAttribute('data-validade-br');
+            novoItem.valor_unitario = parseFloat(opt.getAttribute('data-valor')) || 0;
         }
 
         itens.push(novoItem);
@@ -895,6 +896,9 @@ if (isset($_GET['ok'])) {
             return;
         }
         itensJsonField.value = JSON.stringify(itens);
+        // Evita duplo clique/duplo submit gravar a mesma confirmação duas vezes enquanto a
+        // página ainda está navegando para o resultado.
+        confirmarBtn.disabled = true;
     });
 })();
 </script>

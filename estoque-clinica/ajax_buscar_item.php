@@ -87,8 +87,13 @@ if ($item['tipo'] === 'medicamento') {
     ]);
 } else {
     $insumo = $item['dados'];
+    // Quando veio por id (sem código escaneado), usa o próprio EAN do registro para o formulário
+    // conseguir reenviar um código válido na hora de confirmar a movimentação.
     $codigoResolvido = $codigo !== '' ? $codigo : $insumo['codigo_barras'];
-    $status = $insumo['validade'] ? statusVencimento($insumo['validade']) : null;
+    $estoqueTotal = insumoEstoqueTotal($db, $insumo['id']);
+    $lotes = insumoLotesComSaldo($db, $insumo['id']);
+    // Status "geral" do insumo = do lote mais próximo de vencer (primeiro da lista, já ordenada).
+    $status = $lotes ? statusVencimento($lotes[0]['validade']) : null;
 
     echo json_encode([
         'found' => true,
@@ -99,13 +104,22 @@ if ($item['tipo'] === 'medicamento') {
             'marca' => $insumo['marca'],
             'categoria' => $insumo['categoria'],
             'codigo_barras' => $codigoResolvido,
-            'quantidade' => (int)$insumo['quantidade'],
-            'estoque_minimo' => (int)$insumo['estoque_minimo'],
             'unidade_medida' => $insumo['unidade_medida'],
-            'lote' => $insumo['lote'],
-            'validade_br' => $insumo['validade'] ? date('d/m/Y', strtotime($insumo['validade'])) : null,
-            'valor_unitario' => (float)$insumo['valor_unitario'],
-            'estoque_baixo' => (int)$insumo['quantidade'] <= (int)$insumo['estoque_minimo'],
+            'estoque_total' => $estoqueTotal,
+            'estoque_minimo' => $insumo['estoque_minimo'] !== null ? (int)$insumo['estoque_minimo'] : null,
+            'lotes' => array_map(function ($l) {
+                $st = statusVencimento($l['validade']);
+                return [
+                    'id' => (int)$l['id'],
+                    'lote' => $l['lote'],
+                    'validade' => $l['validade'],
+                    'validade_br' => date('d/m/Y', strtotime($l['validade'])),
+                    'quantidade' => (int)$l['quantidade'],
+                    'valor_unitario' => (float)$l['valor_unitario'],
+                    'status' => $st,
+                    'status_label' => statusVencimentoLabel($st),
+                ];
+            }, $lotes),
             'status' => $status,
             'status_label' => $status ? statusVencimentoLabel($status) : null,
         ],

@@ -33,7 +33,7 @@ define('UPLOAD_URL_PACIENTES', 'uploads/pacientes');
 
 // Incrementar sempre que uma migração (CREATE TABLE/ALTER TABLE) for adicionada em getDB() — é o
 // que faz o bloco de migração rodar de novo (uma única vez) na próxima requisição após o deploy.
-define('SCHEMA_VERSION', 1);
+define('SCHEMA_VERSION', 2);
 
 function getDB() {
     // Conexão + schema são cacheados numa estática por requisição (mesmo motivo documentado
@@ -161,9 +161,11 @@ function getDB() {
             }
         }
 
-        // Um medicamento pode ter vários lotes em estoque ao mesmo tempo, cada um com seu próprio
-        // vencimento — é o que permite calcular "a vencer em 30/7 dias" e "vencido" por lote,
-        // e dar saída seguindo o vencimento mais próximo primeiro (FIFO por validade).
+        // Um medicamento ou insumo pode ter vários lotes em estoque ao mesmo tempo, cada um com seu
+        // próprio vencimento — é o que permite calcular "a vencer em 30/7 dias" e "vencido" por
+        // lote, e dar saída seguindo o lote escolhido pelo operador. medicamento_id/insumo_id (esta
+        // última adicionada numa migração posterior) são mutuamente exclusivos por linha, no mesmo
+        // padrão usado em movimentacoes.
         $db->exec("CREATE TABLE IF NOT EXISTS insumo_lotes (
             id INT AUTO_INCREMENT PRIMARY KEY,
             medicamento_id INT NOT NULL,
@@ -207,10 +209,9 @@ function getDB() {
             $db->exec("ALTER TABLE movimentacao_confirmacoes ADD COLUMN paciente_id INT NULL AFTER usuario, ADD INDEX idx_confirmacoes_paciente (paciente_id)");
         }
 
-        // Histórico de entradas/saídas — cada linha é um movimento de um medicamento (com lote
-        // específico via lote_id) OU de um insumo (sem lote — o insumo tem uma única quantidade),
-        // nunca os dois ao mesmo tempo: exatamente uma das colunas medicamento_id/insumo_id é
-        // preenchida por linha.
+        // Histórico de entradas/saídas — cada linha é um movimento de um medicamento OU de um
+        // insumo, sempre com o lote específico via lote_id, nunca os dois ao mesmo tempo:
+        // exatamente uma das colunas medicamento_id/insumo_id é preenchida por linha.
         $db->exec("CREATE TABLE IF NOT EXISTS movimentacoes (
             id INT AUTO_INCREMENT PRIMARY KEY,
             medicamento_id INT NULL,
@@ -257,6 +258,51 @@ function getDB() {
                 MODIFY COLUMN medicamento_id INT NULL,
                 ADD COLUMN insumo_id INT NULL AFTER medicamento_id,
                 ADD INDEX idx_mov_insumo (insumo_id)");
+        }
+
+        // Migração: Insumos passa a funcionar como Medicamentos — quantidade, lote, validade e
+        // valor unitário deixam de ser um único conjunto de campos gravado na própria linha de
+        // insumos e passam a viver em insumo_lotes (mesma tabela usada por medicamentos), sempre
+        // lançados pela tela Entrada/Saída. medicamento_id vira NULLable e ganha a coluna irmã
+        // insumo_id — exatamente o mesmo padrão já usado em movimentacoes.
+        $temInsumoIdLote = (bool)$db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'insumo_lotes' AND COLUMN_NAME = 'insumo_id'")->fetchColumn();
+        if (!$temInsumoIdLote) {
+            $db->exec("ALTER TABLE insumo_lotes
+                MODIFY COLUMN medicamento_id INT NULL,
+                ADD COLUMN insumo_id INT NULL AFTER medicamento_id,
+                ADD INDEX idx_lotes_insumo (insumo_id),
+                ADD UNIQUE KEY uq_insumo_lote (insumo_id, lote)");
+        }
+
+        // Insumos instalados antes desta migração guardavam um único lote direto na própria linha
+        // (quantidade/lote/validade/valor_unitario). Antes de derrubar essas colunas, cada insumo
+        // com saldo vira uma linha em insumo_lotes — preservando o estoque existente — e o
+        // histórico de movimentações desse insumo (que não tinha lote_id, pois só existia um lote
+        // possível) é religado ao lote recém-criado.
+        $temColunaQuantidadeInsumo = (bool)$db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'insumos' AND COLUMN_NAME = 'quantidade'")->fetchColumn();
+        if ($temColunaQuantidadeInsumo) {
+            $insumosComEstoque = $db->query("SELECT id, quantidade, lote, validade, valor_unitario FROM insumos WHERE quantidade > 0")->fetchAll();
+            foreach ($insumosComEstoque as $ins) {
+                $lote = trim((string)$ins['lote']) !== '' ? $ins['lote'] : 'LOTE-INICIAL';
+                $validade = $ins['validade'] ?: date('Y-m-d', strtotime('+1 year'));
+                $db->prepare("INSERT INTO insumo_lotes (insumo_id, lote, validade, quantidade, valor_unitario) VALUES (:i, :l, :v, :q, :vu)")
+                   ->execute([':i' => $ins['id'], ':l' => $lote, ':v' => $validade, ':q' => $ins['quantidade'], ':vu' => $ins['valor_unitario']]);
+                $loteId = (int)$db->lastInsertId();
+                $db->prepare("UPDATE movimentacoes SET lote_id = :lo WHERE insumo_id = :i AND lote_id IS NULL")
+                   ->execute([':lo' => $loteId, ':i' => $ins['id']]);
+            }
+            $db->exec("ALTER TABLE insumos DROP COLUMN quantidade, DROP COLUMN lote, DROP COLUMN validade, DROP COLUMN valor_unitario");
+        }
+
+        // estoque_minimo de insumo passa a ser opcional (NULL = nunca configurado), igual a
+        // medicamentos_anvisa.estoque_minimo — deixa de ter default 0, que antes era indistinguível
+        // de "mínimo configurado como zero".
+        $estoqueMinimoInsumoNullable = (string)$db->query("SELECT IS_NULLABLE FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'insumos' AND COLUMN_NAME = 'estoque_minimo'")->fetchColumn();
+        if ($estoqueMinimoInsumoNullable === 'NO') {
+            $db->exec("ALTER TABLE insumos MODIFY COLUMN estoque_minimo INT NULL");
         }
 
         // Log de auditoria: uma linha por ação relevante executada na aplicação (login/logout,
@@ -587,12 +633,35 @@ function medicamentosAbaixoDoMinimo(PDO $db) {
     return $db->query($sql)->fetchAll();
 }
 
-// Insumos cuja quantidade atual já está no estoque mínimo cadastrado ou abaixo dele.
+// Soma de todos os lotes com saldo do insumo.
+function insumoEstoqueTotal(PDO $db, $insumoId) {
+    $stmt = $db->prepare("SELECT COALESCE(SUM(quantidade), 0) FROM insumo_lotes WHERE insumo_id = :id AND quantidade > 0");
+    $stmt->bindValue(':id', $insumoId, PDO::PARAM_INT);
+    $stmt->execute();
+    return (int)$stmt->fetchColumn();
+}
+
+// Todos os lotes com saldo do insumo, do vencimento mais próximo para o mais distante — usada
+// para o operador escolher de qual lote específico dar saída, igual a medicamentoLotesComSaldo().
+function insumoLotesComSaldo(PDO $db, $insumoId) {
+    $stmt = $db->prepare("SELECT * FROM insumo_lotes WHERE insumo_id = :id AND quantidade > 0 ORDER BY validade ASC");
+    $stmt->bindValue(':id', $insumoId, PDO::PARAM_INT);
+    $stmt->execute();
+    return $stmt->fetchAll();
+}
+
+// Insumos cujo estoque atual (soma de todos os lotes com saldo) já está no mínimo cadastrado ou
+// abaixo dele. Mesma regra de medicamentosAbaixoDoMinimo(): só considera quem TEM um mínimo
+// definido — estoque_minimo NULL significa "nunca configurado", não "mínimo zero".
 function insumosAbaixoDoMinimo(PDO $db) {
-    $sql = "SELECT id, nome_comercial, marca, categoria, quantidade, estoque_minimo, unidade_medida
-        FROM insumos
-        WHERE quantidade <= estoque_minimo
-        ORDER BY nome_comercial ASC";
+    $sql = "SELECT i.id, i.nome_comercial, i.marca, i.categoria, i.estoque_minimo, i.unidade_medida,
+            COALESCE(SUM(il.quantidade), 0) AS estoque_atual
+        FROM insumos i
+        LEFT JOIN insumo_lotes il ON il.insumo_id = i.id AND il.quantidade > 0
+        WHERE i.estoque_minimo IS NOT NULL
+        GROUP BY i.id, i.nome_comercial, i.marca, i.categoria, i.estoque_minimo, i.unidade_medida
+        HAVING estoque_atual <= i.estoque_minimo
+        ORDER BY i.nome_comercial ASC";
     return $db->query($sql)->fetchAll();
 }
 
@@ -1128,7 +1197,7 @@ function montarConteudoNotificacaoDiaria(PDO $db) {
         $abaixoMinimo[] = ['tipo' => 'Medicamento', 'nome' => $m['produto'], 'atual' => (int)$m['estoque_atual'], 'minimo' => (int)$m['estoque_minimo']];
     }
     foreach (insumosAbaixoDoMinimo($db) as $i) {
-        $abaixoMinimo[] = ['tipo' => 'Insumo', 'nome' => $i['nome_comercial'], 'atual' => (int)$i['quantidade'], 'minimo' => (int)$i['estoque_minimo']];
+        $abaixoMinimo[] = ['tipo' => 'Insumo', 'nome' => $i['nome_comercial'], 'atual' => (int)$i['estoque_atual'], 'minimo' => (int)$i['estoque_minimo']];
     }
 
     if (!$vencendo7 && !$vencendo30 && !$abaixoMinimo) {

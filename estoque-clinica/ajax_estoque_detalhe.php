@@ -64,22 +64,12 @@ if ($tipo === 'medicamento') {
         exit;
     }
 
-    // Insumo não tem uma sub-tabela de lotes como medicamento — só uma quantidade/lote/validade
-    // por registro (a entrada mais recente é a que vale). Monta uma lista com esse único "lote"
-    // pra reaproveitar a mesma tabela de exibição do medicamento.
-    $lotes = [];
-    if ($insumo['lote'] !== '' && $insumo['validade']) {
-        $st = statusVencimento($insumo['validade']);
-        $lotes[] = [
-            'lote' => $insumo['lote'],
-            'validade_br' => date('d/m/Y', strtotime($insumo['validade'])),
-            'quantidade' => (int)$insumo['quantidade'],
-            'valor_unitario' => (float)$insumo['valor_unitario'],
-            'valor_total' => (float)$insumo['valor_unitario'] * (int)$insumo['quantidade'],
-            'status' => $st,
-            'status_label' => statusVencimentoLabel($st),
-        ];
-    }
+    // Todos os lotes JÁ cadastrados pra esse insumo (inclusive com saldo zerado), do vencimento
+    // mais próximo pro mais distante — igual ao ramo de medicamento acima.
+    $stmtLotes = $db->prepare("SELECT * FROM insumo_lotes WHERE insumo_id = :id ORDER BY validade ASC");
+    $stmtLotes->bindValue(':id', $id, PDO::PARAM_INT);
+    $stmtLotes->execute();
+    $lotes = $stmtLotes->fetchAll();
 
     echo json_encode([
         'found' => true,
@@ -87,7 +77,18 @@ if ($tipo === 'medicamento') {
         'nome' => $insumo['nome_comercial'],
         'origem' => $insumo['marca'],
         'apresentacao' => $insumo['categoria'],
-        'estoque_minimo' => (int)$insumo['estoque_minimo'],
-        'lotes' => $lotes,
+        'estoque_minimo' => $insumo['estoque_minimo'] !== null ? (int)$insumo['estoque_minimo'] : null,
+        'lotes' => array_map(function ($l) {
+            $st = statusVencimento($l['validade']);
+            return [
+                'lote' => $l['lote'],
+                'validade_br' => date('d/m/Y', strtotime($l['validade'])),
+                'quantidade' => (int)$l['quantidade'],
+                'valor_unitario' => (float)$l['valor_unitario'],
+                'valor_total' => (float)$l['valor_unitario'] * (int)$l['quantidade'],
+                'status' => $st,
+                'status_label' => statusVencimentoLabel($st),
+            ];
+        }, $lotes),
     ]);
 }

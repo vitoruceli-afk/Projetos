@@ -2,22 +2,28 @@
 $db = getDB();
 
 $totalMedicamentosEstoque = (int)$db->query("SELECT COUNT(DISTINCT medicamento_id) FROM insumo_lotes WHERE quantidade > 0")->fetchColumn();
+$totalInsumosEstoque = (int)$db->query("SELECT COUNT(DISTINCT insumo_id) FROM insumo_lotes WHERE quantidade > 0")->fetchColumn();
 
 $hoje = date('Y-m-d');
 $em30 = date('Y-m-d', strtotime('+' . VENCIMENTO_ALERTA_DIAS . ' days'));
 $em7 = date('Y-m-d', strtotime('+' . VENCIMENTO_URGENTE_DIAS . ' days'));
 
-// Conta MEDICAMENTOS distintos (não lotes) que têm ao menos um lote nessas faixas de vencimento.
-$countMedicamentosComLote = function (string $where, array $params) use ($db) {
-    $sql = "SELECT COUNT(DISTINCT medicamento_id) FROM insumo_lotes WHERE quantidade > 0 AND {$where}";
+// Conta medicamentos/insumos distintos (não lotes) que têm ao menos um lote nessas faixas de
+// vencimento. $coluna diz qual das duas colunas mutuamente exclusivas de insumo_lotes contar.
+$contarItensComLote = function (string $coluna, string $where, array $params) use ($db) {
+    $sql = "SELECT COUNT(DISTINCT {$coluna}) FROM insumo_lotes WHERE quantidade > 0 AND {$where}";
     $stmt = $db->prepare($sql);
     $stmt->execute($params);
     return (int)$stmt->fetchColumn();
 };
 
-$totalVencidos = $countMedicamentosComLote('validade < :hoje', [':hoje' => $hoje]);
-$totalAVencer7 = $countMedicamentosComLote('validade >= :hoje AND validade <= :em7', [':hoje' => $hoje, ':em7' => $em7]);
-$totalAVencer30 = $countMedicamentosComLote('validade >= :hoje AND validade <= :em30', [':hoje' => $hoje, ':em30' => $em30]);
+$totalVencidos = $contarItensComLote('medicamento_id', 'validade < :hoje', [':hoje' => $hoje]);
+$totalAVencer7 = $contarItensComLote('medicamento_id', 'validade >= :hoje AND validade <= :em7', [':hoje' => $hoje, ':em7' => $em7]);
+$totalAVencer30 = $contarItensComLote('medicamento_id', 'validade >= :hoje AND validade <= :em30', [':hoje' => $hoje, ':em30' => $em30]);
+
+$totalInsumosVencidos = $contarItensComLote('insumo_id', 'validade < :hoje', [':hoje' => $hoje]);
+$totalInsumosAVencer7 = $contarItensComLote('insumo_id', 'validade >= :hoje AND validade <= :em7', [':hoje' => $hoje, ':em7' => $em7]);
+$totalInsumosAVencer30 = $contarItensComLote('insumo_id', 'validade >= :hoje AND validade <= :em30', [':hoje' => $hoje, ':em30' => $em30]);
 
 // Medicamentos + insumos cujo estoque atual já chegou no mínimo cadastrado (ou passou dele).
 $totalEstoqueMinimo = count(medicamentosAbaixoDoMinimo($db)) + count(insumosAbaixoDoMinimo($db));
@@ -48,6 +54,7 @@ function timeAgoEC($datetime) {
     </div>
 </div>
 
+<h6 class="text-muted fw-bold text-uppercase small mb-2" style="letter-spacing:.03em;">Medicamentos</h6>
 <div class="stat-strip">
     <a class="stat-tile" href="index.php?page=relatorios&tab=estoque&status=todos">
         <div>
@@ -81,6 +88,45 @@ function timeAgoEC($datetime) {
         </div>
         <div class="stat-icon red"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/></svg></div>
     </a>
+</div>
+
+<h6 class="text-muted fw-bold text-uppercase small mb-2 mt-3" style="letter-spacing:.03em;">Insumos</h6>
+<div class="stat-strip">
+    <a class="stat-tile" href="index.php?page=estoque">
+        <div>
+            <div class="stat-label">Insumos em Estoque</div>
+            <div class="stat-value"><?= $totalInsumosEstoque ?></div>
+            <div class="stat-note">com saldo disponível</div>
+        </div>
+        <div class="stat-icon green"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M20.5 7.5l-8.5-5-8.5 5 8.5 5 8.5-5z"/><path d="M3.5 7.5v9l8.5 5 8.5-5v-9"/><path d="M12 12.5v9"/></svg></div>
+    </a>
+    <a class="stat-tile" href="index.php?page=estoque">
+        <div>
+            <div class="stat-label">A Vencer em 30 dias</div>
+            <div class="stat-value warning-c"><?= $totalInsumosAVencer30 ?></div>
+            <div class="stat-note">insumos com lote nesta faixa</div>
+        </div>
+        <div class="stat-icon orange"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 10h17M8 3.5v3M16 3.5v3"/></svg></div>
+    </a>
+    <a class="stat-tile" href="index.php?page=estoque">
+        <div>
+            <div class="stat-label">A Vencer em 7 dias</div>
+            <div class="stat-value critical-c"><?= $totalInsumosAVencer7 ?></div>
+            <div class="stat-note">atenção imediata</div>
+        </div>
+        <div class="stat-icon red"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 9v4M12 17h.01M10.3 3.9L2.6 18a1.5 1.5 0 001.3 2.2h16.2a1.5 1.5 0 001.3-2.2L13.7 3.9a1.5 1.5 0 00-2.6 0z"/></svg></div>
+    </a>
+    <a class="stat-tile" href="index.php?page=estoque">
+        <div>
+            <div class="stat-label">Vencidos</div>
+            <div class="stat-value critical-c"><?= $totalInsumosVencidos ?></div>
+            <div class="stat-note">precisam ser retirados</div>
+        </div>
+        <div class="stat-icon red"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/></svg></div>
+    </a>
+</div>
+
+<div class="stat-strip mt-3">
     <a class="stat-tile" href="index.php?page=relatorios&tab=estoque_minimo">
         <div>
             <div class="stat-label">Estoque Mínimo Atingido</div>

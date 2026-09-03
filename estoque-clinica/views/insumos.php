@@ -8,39 +8,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     csrfVerify();
 
     if ($_POST['action'] === 'add' || $_POST['action'] === 'update') {
+        // Cadastro é só o catálogo (nome, marca, categoria, EAN, unidade de medida) — igual à base
+        // de Medicamentos. Quantidade, estoque mínimo, lote, validade e valor unitário não entram
+        // aqui: são sempre lançados pela tela Entrada/Saída, que trata a concorrência entre
+        // operadores com transação + FOR UPDATE (ver insumo_lotes em config.php). Um cadastro
+        // (ou edição) feito aqui nunca mexe em saldo de estoque.
         $nomeComercial = trim($_POST['nome_comercial'] ?? '');
         $descricao = trim($_POST['descricao'] ?? '');
         $marca = trim($_POST['marca'] ?? '');
         $categoria = trim($_POST['categoria'] ?? '');
         $codigoBarras = trim($_POST['codigo_barras'] ?? '');
-        $quantidade = (int)($_POST['quantidade'] ?? 0);
-        $estoqueMinimo = (int)($_POST['estoque_minimo'] ?? 0);
         $unidadeMedida = in_array($_POST['unidade_medida'] ?? '', INSUMO_UNIDADES, true) ? $_POST['unidade_medida'] : 'unidade';
-        $lote = trim($_POST['lote'] ?? '');
-        $validade = trim($_POST['validade'] ?? '');
 
         if ($nomeComercial === '') {
             $formError = 'Informe o nome comercial do insumo.';
-        } elseif ($quantidade < 0 || $estoqueMinimo < 0) {
-            $formError = 'Quantidade e estoque mínimo não podem ser negativos.';
         } else {
             $params = [
-                ':n' => $nomeComercial, ':d' => $descricao, ':m' => $marca, ':c' => $categoria, ':eb' => $codigoBarras,
-                ':q' => $quantidade, ':em' => $estoqueMinimo, ':u' => $unidadeMedida,
-                ':l' => $lote, ':v' => $validade !== '' ? $validade : null,
+                ':n' => $nomeComercial, ':d' => $descricao, ':m' => $marca, ':c' => $categoria, ':eb' => $codigoBarras, ':u' => $unidadeMedida,
             ];
             if ($_POST['action'] === 'add') {
-                $stmt = $db->prepare("INSERT INTO insumos (nome_comercial, descricao, marca, categoria, codigo_barras, quantidade, estoque_minimo, unidade_medida, lote, validade)
-                    VALUES (:n, :d, :m, :c, :eb, :q, :em, :u, :l, :v)");
+                $stmt = $db->prepare("INSERT INTO insumos (nome_comercial, descricao, marca, categoria, codigo_barras, unidade_medida)
+                    VALUES (:n, :d, :m, :c, :eb, :u)");
                 $stmt->execute($params);
-                registrarLog('Insumos', 'Insumo criado', "nome: {$nomeComercial}, quantidade: {$quantidade} {$unidadeMedida}");
+                registrarLog('Insumos', 'Insumo criado', "nome: {$nomeComercial}");
             } else {
                 $id = (int)($_POST['id'] ?? 0);
                 $params[':id'] = $id;
-                $stmt = $db->prepare("UPDATE insumos SET nome_comercial=:n, descricao=:d, marca=:m, categoria=:c, codigo_barras=:eb,
-                    quantidade=:q, estoque_minimo=:em, unidade_medida=:u, lote=:l, validade=:v WHERE id=:id");
+                $stmt = $db->prepare("UPDATE insumos SET nome_comercial=:n, descricao=:d, marca=:m, categoria=:c, codigo_barras=:eb, unidade_medida=:u WHERE id=:id");
                 $stmt->execute($params);
-                registrarLog('Insumos', 'Insumo editado', "nome: {$nomeComercial}, quantidade: {$quantidade} {$unidadeMedida}");
+                registrarLog('Insumos', 'Insumo editado', "nome: {$nomeComercial}");
             }
             header("Location: index.php?page=insumos");
             exit;
@@ -90,7 +86,7 @@ $insumos = $stmt->fetchAll();
 <div class="page-head">
     <div>
         <h1 class="page-title">Insumos</h1>
-        <div class="page-sub">Cadastro de insumos de uso/consumo da clínica (materiais, itens de escritório etc.)</div>
+        <div class="page-sub">Catálogo de insumos de uso/consumo da clínica (materiais, itens de escritório etc.) — estoque, lote, validade e valor são lançados na tela Entrada/Saída</div>
     </div>
 </div>
 
@@ -135,34 +131,18 @@ $insumos = $stmt->fetchAll();
                             </datalist>
                         </div>
                     </div>
-                    <div class="row g-2 mb-2">
-                        <div class="col-4">
-                            <label class="form-label">Quantidade</label>
-                            <input type="number" name="quantidade" class="form-control" min="0" value="<?= htmlspecialchars($editing['quantidade'] ?? '0') ?>" required>
-                        </div>
-                        <div class="col-4">
-                            <label class="form-label">Estoque mínimo</label>
-                            <input type="number" name="estoque_minimo" class="form-control" min="0" value="<?= htmlspecialchars($editing['estoque_minimo'] ?? '0') ?>">
-                        </div>
-                        <div class="col-4">
-                            <label class="form-label">Unidade</label>
-                            <select name="unidade_medida" class="form-select">
-                                <?php foreach (INSUMO_UNIDADES as $u): ?>
-                                    <option value="<?= $u ?>" <?= (($editing['unidade_medida'] ?? 'unidade') === $u) ? 'selected' : '' ?>><?= ucfirst($u) ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
+                    <div class="mb-2">
+                        <label class="form-label">Unidade</label>
+                        <select name="unidade_medida" class="form-select">
+                            <?php foreach (INSUMO_UNIDADES as $u): ?>
+                                <option value="<?= $u ?>" <?= (($editing['unidade_medida'] ?? 'unidade') === $u) ? 'selected' : '' ?>><?= ucfirst($u) ?></option>
+                            <?php endforeach; ?>
+                        </select>
                     </div>
-                    <div class="row g-2 mb-2">
-                        <div class="col-6">
-                            <label class="form-label">Lote</label>
-                            <input type="text" name="lote" class="form-control" value="<?= htmlspecialchars($editing['lote'] ?? '') ?>">
-                        </div>
-                        <div class="col-6">
-                            <label class="form-label">Data de vencimento</label>
-                            <input type="date" name="validade" class="form-control" value="<?= htmlspecialchars($editing['validade'] ?? '') ?>">
-                        </div>
-                    </div>
+
+                    <?php if (!$editing): ?>
+                        <div class="form-text mb-2">Após salvar, lance o estoque inicial (quantidade, lote, validade, valor unitário e estoque mínimo) na tela Entrada.</div>
+                    <?php endif; ?>
 
                     <button class="btn btn-outline-success w-100 mt-2"><?= $editing ? 'Salvar Alterações' : 'Salvar Insumo' ?></button>
                     <?php if ($editing): ?>
@@ -192,10 +172,7 @@ $insumos = $stmt->fetchAll();
             <?php if (empty($insumos)): ?>
                 <div class="card"><div class="card-body text-center text-muted py-4">Nenhum insumo encontrado.</div></div>
             <?php endif; ?>
-            <?php foreach ($insumos as $i):
-                $estoqueBaixo = (int)$i['quantidade'] <= (int)$i['estoque_minimo'];
-                $statusVenc = $i['validade'] ? statusVencimento($i['validade']) : null;
-            ?>
+            <?php foreach ($insumos as $i): ?>
                 <div class="entity-card">
                     <div class="entity-card-head">
                         <div class="entity-title-wrap">
@@ -208,22 +185,16 @@ $insumos = $stmt->fetchAll();
                                 </div>
                             </div>
                         </div>
-                        <div class="entity-badges">
-                            <?php if ($estoqueBaixo): ?><span class="badge bg-warning text-dark">Estoque baixo</span><?php endif; ?>
-                            <?php if ($statusVenc): ?><span class="badge <?= statusVencimentoBadgeClass($statusVenc) ?>"><?= statusVencimentoLabel($statusVenc) ?></span><?php endif; ?>
-                        </div>
                     </div>
                     <div class="entity-grid">
-                        <div><div class="entity-field-label">Quantidade</div><div class="entity-field-value"><?= (int)$i['quantidade'] ?> <?= htmlspecialchars($i['unidade_medida']) ?></div></div>
-                        <div><div class="entity-field-label">Estoque mínimo</div><div class="entity-field-value"><?= (int)$i['estoque_minimo'] ?> <?= htmlspecialchars($i['unidade_medida']) ?></div></div>
-                        <div><div class="entity-field-label">Lote</div><div class="entity-field-value"><?= htmlspecialchars($i['lote'] ?: '—') ?></div></div>
-                        <div><div class="entity-field-label">Vencimento</div><div class="entity-field-value"><?= $i['validade'] ? date('d/m/Y', strtotime($i['validade'])) : '—' ?></div></div>
+                        <div><div class="entity-field-label">Unidade</div><div class="entity-field-value"><?= htmlspecialchars($i['unidade_medida']) ?></div></div>
                         <?php if (!empty($i['descricao'])): ?>
                             <div class="full"><div class="entity-field-label">Descrição</div><div class="entity-field-value"><?= htmlspecialchars($i['descricao']) ?></div></div>
                         <?php endif; ?>
                     </div>
                     <div class="entity-actions">
                         <div class="entity-actions-buttons">
+                            <a href="index.php?page=estoque&busca=<?= urlencode($i['nome_comercial']) ?>" class="btn btn-sm btn-outline-secondary"><i class="bi bi-box-seam"></i> Ver Estoque</a>
                             <a href="index.php?page=insumos&edit=<?= (int)$i['id'] ?>" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil"></i> Editar</a>
                             <form method="POST" class="d-inline" onsubmit="return confirm('Excluir este insumo?');">
                                 <?= csrfField() ?>
