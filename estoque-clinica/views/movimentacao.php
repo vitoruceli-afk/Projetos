@@ -31,8 +31,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             }
         }
 
+        // Entrada: fornecedor de quem os itens vieram, escolhido por busca no cadastro de
+        // Fornecedores (ou já vinculado automaticamente pela importação de NFe) — obrigatório,
+        // mesmo padrão do paciente na Saída.
+        $fornecedorId = null;
+        if ($ehEntrada) {
+            $fornecedorIdPost = (int)($_POST['fornecedor_id'] ?? 0);
+            if ($fornecedorIdPost > 0) {
+                $stmt = $db->prepare("SELECT id FROM fornecedores WHERE id = :id");
+                $stmt->bindValue(':id', $fornecedorIdPost, PDO::PARAM_INT);
+                $stmt->execute();
+                if ($stmt->fetchColumn()) {
+                    $fornecedorId = $fornecedorIdPost;
+                }
+            }
+        }
+
         if (!$ehEntrada && !$pacienteId) {
             $formError = 'Selecione o paciente a quem os itens desta saída se destinam.';
+        } elseif ($ehEntrada && !$fornecedorId) {
+            $formError = 'Selecione o fornecedor de quem os itens desta entrada vieram.';
         } elseif (!is_array($itens) || count($itens) === 0) {
             $formError = $ehEntrada ? 'Nenhum item foi adicionado para confirmar a entrada.' : 'Nenhum item foi adicionado para confirmar a saída.';
         } else {
@@ -44,8 +62,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             // Entrada/Saída" (medicamentos e insumos juntos), para o relatório mostrar a ação como
             // um todo em vez de item a item.
             $totalQuantidade = array_sum(array_map(function ($i) { return (int)($i['quantidade'] ?? 0); }, $itens));
-            $db->prepare("INSERT INTO movimentacao_confirmacoes (tipo, usuario, paciente_id, total_itens, total_quantidade) VALUES (:t, :u, :p, :ti, :tq)")
-               ->execute([':t' => $tipoMov, ':u' => $_SESSION['user_logged_in'], ':p' => $pacienteId, ':ti' => count($itens), ':tq' => $totalQuantidade]);
+            $db->prepare("INSERT INTO movimentacao_confirmacoes (tipo, usuario, paciente_id, fornecedor_id, total_itens, total_quantidade) VALUES (:t, :u, :p, :f, :ti, :tq)")
+               ->execute([':t' => $tipoMov, ':u' => $_SESSION['user_logged_in'], ':p' => $pacienteId, ':f' => $fornecedorId, ':ti' => count($itens), ':tq' => $totalQuantidade]);
             $confirmacaoId = (int)$db->lastInsertId();
 
             foreach ($itens as $idx => $item) {
@@ -77,14 +95,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
                     if ($ehEntrada) {
                         $lote = trim($item['lote'] ?? '');
-                        $validade = trim($item['validade'] ?? '');
+                        // Validade é só mês/ano (input type="month", manda "AAAA-MM") — grava
+                        // sempre no último dia daquele mês, único jeito de guardar "mês/ano" numa
+                        // coluna DATE sem perder o cálculo por dia de vencido/urgente/alerta.
+                        $validade = mesAnoParaUltimoDia($item['validade'] ?? '');
                         $valorUnitario = is_numeric($item['valor_unitario'] ?? null) ? (float)$item['valor_unitario'] : -1;
-                        if ($quantidade <= 0 || $lote === '' || $validade === '') {
-                            $erroItem = "Item {$numero} (" . htmlspecialchars($medicamento['produto']) . '): quantidade, lote e validade são obrigatórios.';
+                        // Valor de venda: opcional (fica 0 se o operador não informar) — é o valor
+                        // de compra que é obrigatório na Entrada.
+                        $valorVenda = is_numeric($item['valor_venda'] ?? null) ? max(0, (float)$item['valor_venda']) : 0;
+                        if ($quantidade <= 0 || $lote === '' || !$validade) {
+                            $erroItem = "Item {$numero} (" . htmlspecialchars($medicamento['produto']) . '): quantidade, lote e validade (mês/ano) são obrigatórios.';
                             break;
                         }
                         if ($valorUnitario < 0) {
-                            $erroItem = "Item {$numero} (" . htmlspecialchars($medicamento['produto']) . '): informe o valor unitário.';
+                            $erroItem = "Item {$numero} (" . htmlspecialchars($medicamento['produto']) . '): informe o valor de compra.';
                             break;
                         }
 
@@ -93,12 +117,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         $loteRow = $stmt->fetch();
 
                         if ($loteRow) {
-                            $db->prepare("UPDATE insumo_lotes SET quantidade = quantidade + :q, valor_unitario = :vu WHERE id = :id")
-                               ->execute([':q' => $quantidade, ':vu' => $valorUnitario, ':id' => $loteRow['id']]);
+                            $db->prepare("UPDATE insumo_lotes SET quantidade = quantidade + :q, valor_unitario = :vu, valor_venda = :vv WHERE id = :id")
+                               ->execute([':q' => $quantidade, ':vu' => $valorUnitario, ':vv' => $valorVenda, ':id' => $loteRow['id']]);
                             $loteId = $loteRow['id'];
                         } else {
-                            $db->prepare("INSERT INTO insumo_lotes (medicamento_id, lote, validade, quantidade, valor_unitario) VALUES (:m, :l, :v, :q, :vu)")
-                               ->execute([':m' => $medicamento['id'], ':l' => $lote, ':v' => $validade, ':q' => $quantidade, ':vu' => $valorUnitario]);
+                            $db->prepare("INSERT INTO insumo_lotes (medicamento_id, lote, validade, quantidade, valor_unitario, valor_venda) VALUES (:m, :l, :v, :q, :vu, :vv)")
+                               ->execute([':m' => $medicamento['id'], ':l' => $lote, ':v' => $validade, ':q' => $quantidade, ':vu' => $valorUnitario, ':vv' => $valorVenda]);
                             $loteId = (int)$db->lastInsertId();
                         }
 
@@ -138,12 +162,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                            ->execute([':q' => $quantidade, ':id' => $loteRow['id']]);
                         $loteId = $loteRow['id'];
                         // Valor não vem do formulário na Saída — sempre o valor gravado no lote (o
-                        // que foi pago naquela entrada), pra não deixar o operador alterar na retirada.
+                        // que foi pago/o preço de venda daquela entrada), pra não deixar o operador
+                        // alterar na retirada.
                         $valorUnitario = (float)$loteRow['valor_unitario'];
+                        $valorVenda = (float)$loteRow['valor_venda'];
                     }
 
-                    $db->prepare("INSERT INTO movimentacoes (medicamento_id, lote_id, confirmacao_id, tipo, quantidade, valor_unitario, usuario, observacao) VALUES (:m, :lo, :c, :t, :q, :vu, :u, :o)")
-                       ->execute([':m' => $medicamento['id'], ':lo' => $loteId, ':c' => $confirmacaoId, ':t' => $tipoMov, ':q' => $quantidade, ':vu' => $valorUnitario, ':u' => $_SESSION['user_logged_in'], ':o' => $observacao]);
+                    $db->prepare("INSERT INTO movimentacoes (medicamento_id, lote_id, confirmacao_id, tipo, quantidade, valor_unitario, valor_venda, usuario, observacao) VALUES (:m, :lo, :c, :t, :q, :vu, :vv, :u, :o)")
+                       ->execute([':m' => $medicamento['id'], ':lo' => $loteId, ':c' => $confirmacaoId, ':t' => $tipoMov, ':q' => $quantidade, ':vu' => $valorUnitario, ':vv' => $valorVenda, ':u' => $_SESSION['user_logged_in'], ':o' => $observacao]);
                 } else {
                     // Insumo funciona exatamente como medicamento: lotes em insumo_lotes
                     // (insumo_id em vez de medicamento_id), quantidade/lote/validade/valor
@@ -160,6 +186,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     if (!$insumo && $codigo !== '') {
                         $insumo = findInsumoByBarcode($db, $codigo);
                     }
+                    if (!$insumo && $ehEntrada && trim($item['produto'] ?? '') !== '') {
+                        // Item da nota sem correspondência no catálogo — em vez de travar a
+                        // confirmação, cadastra como insumo novo agora, com o nome vindo da própria
+                        // NFe (ver aviso "Novo — será cadastrado..." na tela de Entrada). Só entra
+                        // aqui vindo da importação de NFe: o scan manual sempre resolve item_id
+                        // antes de deixar clicar em "Inserir", então nunca chega com produto setado
+                        // e insumo não encontrado.
+                        $insumo = buscarOuCriarInsumo($db, $item['produto'], $codigo);
+                    }
                     if (!$insumo) {
                         $erroItem = "Item {$numero}: insumo com código \"" . htmlspecialchars($codigo) . '" não foi encontrado.';
                         break;
@@ -167,14 +202,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
                     if ($ehEntrada) {
                         $lote = trim($item['lote'] ?? '');
-                        $validade = trim($item['validade'] ?? '');
+                        $validade = mesAnoParaUltimoDia($item['validade'] ?? '');
                         $valorUnitario = is_numeric($item['valor_unitario'] ?? null) ? (float)$item['valor_unitario'] : -1;
-                        if ($quantidade <= 0 || $lote === '' || $validade === '') {
-                            $erroItem = "Item {$numero} (" . htmlspecialchars($insumo['nome_comercial']) . '): quantidade, lote e validade são obrigatórios.';
+                        $valorVenda = is_numeric($item['valor_venda'] ?? null) ? max(0, (float)$item['valor_venda']) : 0;
+                        if ($quantidade <= 0 || $lote === '' || !$validade) {
+                            $erroItem = "Item {$numero} (" . htmlspecialchars($insumo['nome_comercial']) . '): quantidade, lote e validade (mês/ano) são obrigatórios.';
                             break;
                         }
                         if ($valorUnitario < 0) {
-                            $erroItem = "Item {$numero} (" . htmlspecialchars($insumo['nome_comercial']) . '): informe o valor unitário.';
+                            $erroItem = "Item {$numero} (" . htmlspecialchars($insumo['nome_comercial']) . '): informe o valor de compra.';
                             break;
                         }
 
@@ -183,12 +219,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         $loteRow = $stmt->fetch();
 
                         if ($loteRow) {
-                            $db->prepare("UPDATE insumo_lotes SET quantidade = quantidade + :q, valor_unitario = :vu WHERE id = :id")
-                               ->execute([':q' => $quantidade, ':vu' => $valorUnitario, ':id' => $loteRow['id']]);
+                            $db->prepare("UPDATE insumo_lotes SET quantidade = quantidade + :q, valor_unitario = :vu, valor_venda = :vv WHERE id = :id")
+                               ->execute([':q' => $quantidade, ':vu' => $valorUnitario, ':vv' => $valorVenda, ':id' => $loteRow['id']]);
                             $loteId = $loteRow['id'];
                         } else {
-                            $db->prepare("INSERT INTO insumo_lotes (insumo_id, lote, validade, quantidade, valor_unitario) VALUES (:i, :l, :v, :q, :vu)")
-                               ->execute([':i' => $insumo['id'], ':l' => $lote, ':v' => $validade, ':q' => $quantidade, ':vu' => $valorUnitario]);
+                            $db->prepare("INSERT INTO insumo_lotes (insumo_id, lote, validade, quantidade, valor_unitario, valor_venda) VALUES (:i, :l, :v, :q, :vu, :vv)")
+                               ->execute([':i' => $insumo['id'], ':l' => $lote, ':v' => $validade, ':q' => $quantidade, ':vu' => $valorUnitario, ':vv' => $valorVenda]);
                             $loteId = (int)$db->lastInsertId();
                         }
 
@@ -226,12 +262,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                            ->execute([':q' => $quantidade, ':id' => $loteRow['id']]);
                         $loteId = $loteRow['id'];
                         // Valor não vem do formulário na Saída — sempre o valor gravado no lote (o
-                        // que foi pago naquela entrada), pra não deixar o operador alterar na retirada.
+                        // que foi pago/o preço de venda daquela entrada), pra não deixar o operador
+                        // alterar na retirada.
                         $valorUnitario = (float)$loteRow['valor_unitario'];
+                        $valorVenda = (float)$loteRow['valor_venda'];
                     }
 
-                    $db->prepare("INSERT INTO movimentacoes (insumo_id, lote_id, confirmacao_id, tipo, quantidade, valor_unitario, usuario, observacao) VALUES (:i, :lo, :c, :t, :q, :vu, :u, :o)")
-                       ->execute([':i' => $insumo['id'], ':lo' => $loteId, ':c' => $confirmacaoId, ':t' => $tipoMov, ':q' => $quantidade, ':vu' => $valorUnitario, ':u' => $_SESSION['user_logged_in'], ':o' => $observacao]);
+                    $db->prepare("INSERT INTO movimentacoes (insumo_id, lote_id, confirmacao_id, tipo, quantidade, valor_unitario, valor_venda, usuario, observacao) VALUES (:i, :lo, :c, :t, :q, :vu, :vv, :u, :o)")
+                       ->execute([':i' => $insumo['id'], ':lo' => $loteId, ':c' => $confirmacaoId, ':t' => $tipoMov, ':q' => $quantidade, ':vu' => $valorUnitario, ':vv' => $valorVenda, ':u' => $_SESSION['user_logged_in'], ':o' => $observacao]);
                 }
             }
 
@@ -246,6 +284,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     $nomePaciente = $db->prepare("SELECT nome_completo FROM pacientes WHERE id = :id");
                     $nomePaciente->execute([':id' => $pacienteId]);
                     $detalhesLog .= ', paciente: ' . $nomePaciente->fetchColumn();
+                }
+                if ($fornecedorId) {
+                    $nomeFornecedor = $db->prepare("SELECT razao_social FROM fornecedores WHERE id = :id");
+                    $nomeFornecedor->execute([':id' => $fornecedorId]);
+                    $detalhesLog .= ', fornecedor: ' . $nomeFornecedor->fetchColumn();
                 }
                 registrarLog('Movimentação', $acaoLog, $detalhesLog);
                 header('Location: index.php?page=movimentacao&tab=' . $tipoMov . '&ok=1&qtd=' . count($itens));
@@ -319,6 +362,68 @@ if (isset($_GET['ok'])) {
     </div>
     <?php endif; ?>
 
+    <?php if ($tab === 'entrada'): ?>
+    <div class="row g-3 mb-3">
+        <div class="col-lg-6">
+            <div class="scan-card h-100">
+                <label class="form-label">Fornecedor</label>
+                <div class="form-text mb-2">Busque por razão social, nome fantasia ou CNPJ o fornecedor de quem os itens desta entrada vieram. Ao importar uma NFe, o fornecedor da nota é vinculado automaticamente (e cadastrado na hora, se ainda não existir).</div>
+                <input type="hidden" name="fornecedor_id" id="fornecedorIdField" value="">
+
+                <div id="fornecedorSelecionadoWrap" style="display:none;" class="d-flex align-items-center justify-content-between border rounded p-2 mb-2">
+                    <div>
+                        <div class="fw-bold" id="fornecedorSelecionadoNome"></div>
+                        <div class="small text-muted mono" id="fornecedorSelecionadoCnpj"></div>
+                    </div>
+                    <button type="button" id="fornecedorTrocarBtn" class="btn btn-sm btn-outline-secondary">Trocar</button>
+                </div>
+
+                <div id="fornecedorBuscaWrap">
+                    <div class="scan-input-row">
+                        <input type="text" id="fornecedorBuscaInput" class="form-control" autocomplete="off" placeholder="Razão social, nome fantasia ou CNPJ do fornecedor...">
+                    </div>
+                    <div id="fornecedorResultados"></div>
+                    <a href="index.php?page=fornecedores" target="_blank" class="small">Fornecedor novo? Cadastre aqui</a>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-6">
+            <div class="scan-card h-100 d-flex flex-column">
+                <label class="form-label">Nota Fiscal (XML)</label>
+                <div class="form-text mb-2">Leia o código de barras da DANFE e envie o arquivo XML da nota — os itens são lidos automaticamente e ficam prontos pra conferir e adicionar à lista de Entrada.</div>
+                <button type="button" id="nfeAbrirModalBtn" class="btn btn-outline-primary mt-auto"><i class="bi bi-upload"></i> Importar Nota Fiscal</button>
+                <div id="nfeResumoBadge" class="form-text"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Área de importação em largura total (não é modal — fica dentro do conteúdo normal da
+    página, como as outras telas, só expandida pra caber a tabela de conferência dos itens). -->
+    <div class="card mb-3" id="nfeAreaWrap" style="display:none;">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <span>Importar Nota Fiscal (XML)</span>
+            <button type="button" class="btn-close" id="nfeFecharBtn" aria-label="Fechar"></button>
+        </div>
+        <div class="card-body">
+            <div class="scan-input-row mb-2" style="max-width:420px;">
+                <input type="text" id="nfeChaveInput" class="form-control mono" autocomplete="off" placeholder="Chave de acesso da NFe (44 dígitos, opcional)" maxlength="44" inputmode="numeric">
+            </div>
+            <div class="row g-2 align-items-end" style="max-width:560px;">
+                <div class="col-sm-8">
+                    <input type="file" id="nfeXmlInput" class="form-control" accept=".xml,text/xml">
+                </div>
+                <div class="col-sm-4">
+                    <button type="button" id="nfeImportarBtn" class="btn btn-outline-primary w-100"><i class="bi bi-upload"></i> Importar Nota</button>
+                </div>
+            </div>
+            <div id="nfeChaveAviso" class="form-text"></div>
+
+            <div id="nfeResumo" class="mt-3"></div>
+        </div>
+    </div>
+    <?php endif; ?>
+
     <div class="row g-3">
         <div class="col-lg-6">
             <div class="scan-card">
@@ -354,16 +459,21 @@ if (isset($_GET['ok'])) {
                             <input type="text" id="loteInput" class="form-control">
                         </div>
                         <div class="col-sm-4" id="validadeWrap">
-                            <label class="form-label">Validade</label>
-                            <input type="date" id="validadeInput" class="form-control">
+                            <label class="form-label">Validade (mês/ano)</label>
+                            <input type="month" id="validadeInput" class="form-control">
                         </div>
                         <?php endif; ?>
                     </div>
                     <?php if ($tab === 'entrada'): ?>
                     <div class="row g-2 mt-0">
                         <div class="col-sm-4" id="valorUnitarioWrap">
-                            <label class="form-label">Valor unitário (R$)</label>
+                            <label class="form-label">Valor Compra (R$)</label>
                             <input type="number" id="valorUnitarioInput" class="form-control" min="0" step="0.01" placeholder="0,00">
+                        </div>
+                        <div class="col-sm-4" id="valorVendaWrap">
+                            <label class="form-label">Valor Venda (R$)</label>
+                            <input type="number" id="valorVendaInput" class="form-control" min="0" step="0.01" placeholder="0,00">
+                            <div class="form-text">Opcional. Usado no resumo financeiro da Saída.</div>
                         </div>
                         <div class="col-sm-4" id="quantidadeMinimaWrap">
                             <label class="form-label">Quantidade mínima</label>
@@ -425,6 +535,22 @@ if (isset($_GET['ok'])) {
     </div>
 </div>
 
+<div class="modal fade" id="vincularNfeModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Vincular Item da Nota a um Medicamento ou Insumo</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+            </div>
+            <div class="modal-body">
+                <p class="small text-muted" id="vincularNfeNomeOriginal"></p>
+                <input type="text" id="vincularNfeInput" class="form-control mb-3" autocomplete="off" placeholder="Digite o nome do medicamento ou insumo...">
+                <div id="vincularNfeResultados"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script>
 (function () {
     var tab = '<?= $tab ?>';
@@ -442,6 +568,7 @@ if (isset($_GET['ok'])) {
     var quantidadeMinimaWrap = document.getElementById('quantidadeMinimaWrap');
     var quantidadeMinimaInput = document.getElementById('quantidadeMinimaInput');
     var valorUnitarioInput = document.getElementById('valorUnitarioInput');
+    var valorVendaInput = document.getElementById('valorVendaInput');
     var observacaoInput = document.getElementById('observacaoInput');
     var inserirBtn = document.getElementById('inserirBtn');
     var itensLista = document.getElementById('itensLista');
@@ -462,9 +589,12 @@ if (isset($_GET['ok'])) {
         return d.innerHTML;
     }
 
+    // Validade só trabalha com mês/ano — "AAAA-MM" (input type="month") ou "AAAA-MM-DD" (valor
+    // que às vezes chega já truncado do backend) dão o mesmo resultado, já que só os dois
+    // primeiros pedaços importam.
     function formatarDataBr(iso) {
-        var partes = iso.split('-');
-        return partes.length === 3 ? (partes[2] + '/' + partes[1] + '/' + partes[0]) : iso;
+        var partes = String(iso).split('-');
+        return partes.length >= 2 ? (partes[1] + '/' + partes[0]) : iso;
     }
 
     function formatarMoeda(valor) {
@@ -479,10 +609,11 @@ if (isset($_GET['ok'])) {
             return '<tr><td class="mono">' + esc(l.lote) + '</td><td class="mono">' + esc(l.validade_br) + '</td>' +
                 '<td class="text-center">' + esc(l.quantidade) + '</td>' +
                 '<td class="text-end mono">' + formatarMoeda(l.valor_unitario) + '</td>' +
+                '<td class="text-end mono">' + formatarMoeda(l.valor_venda) + '</td>' +
                 '<td class="text-center"><span class="badge ' + statusBadgeClass(l.status) + '">' + esc(l.status_label) + '</span></td></tr>';
         }).join('');
         return '<div class="table-responsive mt-2"><table class="table table-sm mb-0">' +
-            '<thead><tr><th>Lote</th><th>Validade</th><th class="text-center">Qtd.</th><th class="text-end">Valor Unit.</th><th class="text-center">Status</th></tr></thead>' +
+            '<thead><tr><th>Lote</th><th>Validade</th><th class="text-center">Qtd.</th><th class="text-end">Valor Compra</th><th class="text-end">Valor Venda</th><th class="text-center">Status</th></tr></thead>' +
             '<tbody>' + linhas + '</tbody></table></div>';
     }
 
@@ -497,9 +628,9 @@ if (isset($_GET['ok'])) {
             return;
         }
         var qtd = opt.getAttribute('data-quantidade');
-        var valor = opt.getAttribute('data-valor');
+        var valorVenda = opt.getAttribute('data-valor-venda');
         quantidadeInput.max = qtd;
-        loteSelectHint.textContent = qtd + ' unidade(s) disponível(is) neste lote · Valor unitário: ' + formatarMoeda(valor);
+        loteSelectHint.textContent = qtd + ' unidade(s) disponível(is) neste lote · Valor venda: ' + formatarMoeda(valorVenda);
     }
 
     // Medicamento e insumo funcionam exatamente do mesmo jeito na Entrada/Saída (ambos rastreados
@@ -555,7 +686,7 @@ if (isset($_GET['ok'])) {
                             return;
                         }
                         loteSelect.innerHTML = m.lotes.map(function (l) {
-                            return '<option value="' + l.id + '" data-quantidade="' + l.quantidade + '" data-lote="' + esc(l.lote) + '" data-validade-br="' + esc(l.validade_br) + '" data-valor="' + l.valor_unitario + '">' +
+                            return '<option value="' + l.id + '" data-quantidade="' + l.quantidade + '" data-lote="' + esc(l.lote) + '" data-validade-br="' + esc(l.validade_br) + '" data-valor="' + l.valor_unitario + '" data-valor-venda="' + l.valor_venda + '">' +
                                 l.lote + ' · vence em ' + l.validade_br + ' · ' + l.quantidade + ' un.' +
                                 '</option>';
                         }).join('');
@@ -596,7 +727,7 @@ if (isset($_GET['ok'])) {
                             return;
                         }
                         loteSelect.innerHTML = i.lotes.map(function (l) {
-                            return '<option value="' + l.id + '" data-quantidade="' + l.quantidade + '" data-lote="' + esc(l.lote) + '" data-validade-br="' + esc(l.validade_br) + '" data-valor="' + l.valor_unitario + '">' +
+                            return '<option value="' + l.id + '" data-quantidade="' + l.quantidade + '" data-lote="' + esc(l.lote) + '" data-validade-br="' + esc(l.validade_br) + '" data-valor="' + l.valor_unitario + '" data-valor-venda="' + l.valor_venda + '">' +
                                 l.lote + ' · vence em ' + l.validade_br + ' · ' + l.quantidade + ' ' + i.unidade_medida +
                                 '</option>';
                         }).join('');
@@ -702,6 +833,436 @@ if (isset($_GET['ok'])) {
         });
     })();
 
+    // ---- Entrada: busca e seleção do fornecedor de quem os itens vieram (uma vez por
+    // confirmação, não item a item) — mesmo padrão do paciente na Saída. selecionarFornecedor()
+    // também é chamada pela importação de NFe logo abaixo, pra vincular automaticamente o
+    // fornecedor da nota (cadastrando-o na hora, se ainda não existir). ----
+    var selecionarFornecedor = function () {};
+    if (tab === 'entrada') (function () {
+        var fornecedorIdField = document.getElementById('fornecedorIdField');
+        var fornecedorBuscaInput = document.getElementById('fornecedorBuscaInput');
+        var fornecedorResultados = document.getElementById('fornecedorResultados');
+        var fornecedorBuscaWrap = document.getElementById('fornecedorBuscaWrap');
+        var fornecedorSelecionadoWrap = document.getElementById('fornecedorSelecionadoWrap');
+        var fornecedorSelecionadoNome = document.getElementById('fornecedorSelecionadoNome');
+        var fornecedorSelecionadoCnpj = document.getElementById('fornecedorSelecionadoCnpj');
+        var fornecedorTrocarBtn = document.getElementById('fornecedorTrocarBtn');
+        var fornecedorBuscaTimer = null;
+
+        selecionarFornecedor = function (f) {
+            fornecedorIdField.value = f.id;
+            fornecedorSelecionadoNome.textContent = f.razao_social + (f.nome_fantasia ? ' (' + f.nome_fantasia + ')' : '');
+            fornecedorSelecionadoCnpj.textContent = f.cnpj;
+            fornecedorSelecionadoWrap.style.display = '';
+            fornecedorBuscaWrap.style.display = 'none';
+            fornecedorResultados.innerHTML = '';
+            fornecedorBuscaInput.value = '';
+        };
+
+        fornecedorBuscaInput.addEventListener('input', function () {
+            clearTimeout(fornecedorBuscaTimer);
+            var termo = fornecedorBuscaInput.value.trim();
+            if (termo.length < 2) {
+                fornecedorResultados.innerHTML = '';
+                return;
+            }
+            fornecedorBuscaTimer = setTimeout(function () {
+                fetch('ajax_buscar_fornecedor.php?busca=' + encodeURIComponent(termo))
+                    .then(function (r) { return r.json(); })
+                    .then(function (data) {
+                        if (!data.fornecedores || !data.fornecedores.length) {
+                            fornecedorResultados.innerHTML = '<div class="text-muted small mt-2">Nenhum fornecedor encontrado.</div>';
+                            return;
+                        }
+                        fornecedorResultados.innerHTML = '<div class="list-group mt-2">' +
+                            data.fornecedores.map(function (f, idx) {
+                                return '<button type="button" class="list-group-item list-group-item-action py-2 btn-fornecedor-opcao" data-idx="' + idx + '">' +
+                                    '<div class="fw-bold" style="font-size:13px;">' + esc(f.razao_social) + (f.nome_fantasia ? ' <span class="text-muted fw-normal">(' + esc(f.nome_fantasia) + ')</span>' : '') + '</div>' +
+                                    '<div class="small text-muted mono">' + esc(f.cnpj) + '</div>' +
+                                    '</button>';
+                            }).join('') + '</div>';
+                        fornecedorResultados.querySelectorAll('.btn-fornecedor-opcao').forEach(function (btn) {
+                            btn.addEventListener('click', function () {
+                                selecionarFornecedor(data.fornecedores[parseInt(btn.getAttribute('data-idx'), 10)]);
+                            });
+                        });
+                    })
+                    .catch(function () {
+                        fornecedorResultados.innerHTML = '<div class="alert alert-danger small mt-2 mb-0">Erro ao buscar fornecedor.</div>';
+                    });
+            }, 300);
+        });
+
+        fornecedorTrocarBtn.addEventListener('click', function () {
+            fornecedorIdField.value = '';
+            fornecedorSelecionadoWrap.style.display = 'none';
+            fornecedorBuscaWrap.style.display = '';
+            fornecedorBuscaInput.focus();
+        });
+    })();
+
+    // ---- Entrada: importação de Nota Fiscal (XML) — lê os itens da nota, tenta casar cada um
+    // com um medicamento (por EAN) ou insumo (por EAN) já cadastrado, e deixa o operador conferir
+    // lote/validade/valor antes de jogar cada item na mesma fila usada pelo scan manual. ----
+    if (tab === 'entrada') (function () {
+        var nfeAbrirModalBtn = document.getElementById('nfeAbrirModalBtn');
+        var nfeAreaWrap = document.getElementById('nfeAreaWrap');
+        var nfeFecharBtn = document.getElementById('nfeFecharBtn');
+        var nfeResumoBadge = document.getElementById('nfeResumoBadge');
+        var nfeChaveInput = document.getElementById('nfeChaveInput');
+        var nfeChaveAviso = document.getElementById('nfeChaveAviso');
+        var nfeXmlInput = document.getElementById('nfeXmlInput');
+        var nfeImportarBtn = document.getElementById('nfeImportarBtn');
+        var nfeResumo = document.getElementById('nfeResumo');
+        var vincularNfeModalEl = document.getElementById('vincularNfeModal');
+        var vincularNfeModal = null; // só instanciado no primeiro uso, mesmo motivo do buscarNomeModal acima.
+        var vincularNfeInput = document.getElementById('vincularNfeInput');
+        var vincularNfeResultados = document.getElementById('vincularNfeResultados');
+        var vincularNfeNomeOriginal = document.getElementById('vincularNfeNomeOriginal');
+        var vincularNfeTimer = null;
+
+        var nfeInfo = null;
+        var nfeItens = [];
+        var nfeVincularIndex = null;
+
+        function round2(v) {
+            return Math.round((Number(v) + Number.EPSILON) * 100) / 100;
+        }
+
+        // Não é modal: só mostra/esconde a área de importação dentro do próprio fluxo da página
+        // (largura total do conteúdo, mas sem cobrir o rail/topbar da aplicação).
+        nfeAbrirModalBtn.addEventListener('click', function () {
+            nfeAreaWrap.style.display = '';
+            nfeAreaWrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+        nfeFecharBtn.addEventListener('click', function () {
+            nfeAreaWrap.style.display = 'none';
+        });
+
+        nfeChaveInput.addEventListener('input', function () {
+            nfeChaveInput.value = nfeChaveInput.value.replace(/\D/g, '').slice(0, 44);
+        });
+
+        // Recalcula quantidade/valor de venda exibidos quando o item é marcado como fracionado —
+        // a quantidade da nota (por caixa/embalagem) vira quantidade de unidades soltas, e o VALOR
+        // DE VENDA por caixa é rateado entre elas (o valor de compra fica fixo, do jeito que veio
+        // da nota — não é dividido: representa o custo da embalagem inteira, não da fração).
+        function aplicarFracao(item) {
+            if (item.fracionado && item.fracaoQtd > 0) {
+                item.quantidade = Math.round(item.quantidadeBase * item.fracaoQtd);
+                item.valor_venda = round2(item.valorVendaBase / item.fracaoQtd);
+            } else {
+                item.quantidade = item.quantidadeBase;
+                item.valor_venda = item.valorVendaBase;
+            }
+        }
+
+        function renderNfeResumo() {
+            if (!nfeItens.length) { nfeResumo.innerHTML = ''; nfeResumoBadge.textContent = ''; return; }
+
+            var pendentes = nfeItens.filter(function (it) { return !it.encontrado; }).length;
+            var aAdicionar = nfeItens.filter(function (it) { return !it.adicionado; }).length;
+
+            nfeResumoBadge.textContent = nfeItens.length + ' item(ns) na nota' +
+                (aAdicionar ? ', ' + aAdicionar + ' pendente(s) de adicionar' : ', todos adicionados') +
+                (pendentes ? ' (' + pendentes + ' novo(s), sem cadastro ainda)' : '');
+
+            var cabecalho = '<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">' +
+                '<div class="small text-muted">' +
+                    (nfeInfo && nfeInfo.numero ? 'NF nº ' + esc(nfeInfo.numero) + (nfeInfo.emitente ? ' · ' + esc(nfeInfo.emitente) : '') : 'Itens da nota') +
+                    (pendentes ? ' · <span class="text-warning fw-bold">' + pendentes + ' item(ns) novo(s) — sem correspondência no catálogo</span>' : '') +
+                '</div>' +
+                (aAdicionar ? '<button type="button" class="btn btn-sm btn-outline-success" id="nfeAdicionarTodosBtn"><i class="bi bi-plus-lg"></i> Adicionar todos (' + aAdicionar + ')</button>' : '') +
+            '</div>';
+
+            var linhas = nfeItens.map(function (it, idx) {
+                // Item não encontrado no catálogo (nem por EAN, nem por id): não bloqueia a
+                // confirmação — é cadastrado como insumo novo automaticamente ao ser adicionado
+                // (mesma lógica já usada pro fornecedor da nota). "Vincular a item existente" fica
+                // como alternativa só pra quando o produto já existe sob outro nome/EAN.
+                var produtoCel = it.encontrado
+                    ? '<span class="badge ' + (it.tipo === 'medicamento' ? 'bg-info text-dark' : 'bg-secondary') + ' mb-1">' + (it.tipo === 'medicamento' ? 'Medicamento' : 'Insumo') + '</span><div style="font-size:12.5px;">' + esc(it.produto) + '</div>'
+                    : '<span class="badge bg-warning text-dark mb-1">Novo</span><div style="font-size:12.5px;">' + esc(it.nome_nfe) + '</div>' +
+                      '<div class="text-warning" style="font-size:11.5px;"><i class="bi bi-exclamation-triangle"></i> Não encontrado — será cadastrado como <strong>insumo</strong> ao adicionar.</div>' +
+                      '<button type="button" class="btn btn-sm btn-outline-secondary mt-1 btn-vincular-nfe" data-idx="' + idx + '">Vincular a item existente</button>';
+
+                var fracaoHtml = '<div class="d-flex align-items-center gap-1 mb-1">' +
+                        '<input type="checkbox" class="form-check-input nfe-fracionado" data-idx="' + idx + '" id="nfeFrac' + idx + '" ' + (it.fracionado ? 'checked' : '') + ' ' + (it.adicionado ? 'disabled' : '') + '>' +
+                        '<label for="nfeFrac' + idx + '" class="form-check-label small mb-0">Item Fracionado</label>' +
+                    '</div>' +
+                    (it.fracionado ?
+                        '<div class="d-flex gap-1">' +
+                            '<input type="number" min="1" step="1" class="form-control form-control-sm nfe-fracao-qtd" data-idx="' + idx + '" style="width:70px;" placeholder="Qtd." value="' + (it.fracaoQtd || '') + '" ' + (it.adicionado ? 'disabled' : '') + '>' +
+                            '<input type="text" class="form-control form-control-sm nfe-fracao-unidade" data-idx="' + idx + '" style="width:90px;" placeholder="unidade" value="' + esc(it.fracaoUnidade) + '" ' + (it.adicionado ? 'disabled' : '') + '>' +
+                        '</div>'
+                    : '');
+
+                return '<tr>' +
+                    '<td style="min-width:170px;">' + produtoCel + '</td>' +
+                    '<td style="width:90px;"><input type="number" min="1" class="form-control form-control-sm nfe-quantidade" data-idx="' + idx + '" value="' + it.quantidade + '" ' + (it.adicionado ? 'disabled' : '') + '></td>' +
+                    '<td style="width:120px;"><input type="text" class="form-control form-control-sm nfe-lote" data-idx="' + idx + '" value="' + esc(it.lote) + '" ' + (it.adicionado ? 'disabled' : '') + '></td>' +
+                    '<td style="width:130px;"><input type="month" class="form-control form-control-sm nfe-validade" data-idx="' + idx + '" value="' + (it.validade || '') + '" ' + (it.adicionado ? 'disabled' : '') + '></td>' +
+                    '<td style="width:110px;"><input type="number" min="0" step="0.01" class="form-control form-control-sm nfe-valor" data-idx="' + idx + '" value="' + it.valor_unitario + '" ' + (it.adicionado ? 'disabled' : '') + '></td>' +
+                    '<td style="width:110px;"><input type="number" min="0" step="0.01" class="form-control form-control-sm nfe-valor-venda" data-idx="' + idx + '" value="' + it.valor_venda + '" ' + (it.adicionado ? 'disabled' : '') + '></td>' +
+                    '<td style="width:150px;">' + fracaoHtml + '</td>' +
+                    '<td style="width:110px;">' +
+                        (it.adicionado
+                            ? '<span class="badge bg-success">Adicionado</span>'
+                            : '<button type="button" class="btn btn-sm btn-outline-success btn-adicionar-nfe" data-idx="' + idx + '"><i class="bi bi-plus-lg"></i> Adicionar</button>') +
+                    '</td>' +
+                '</tr>';
+            }).join('');
+
+            nfeResumo.innerHTML = cabecalho +
+                '<div class="table-responsive"><table class="table table-sm table-striped mb-0">' +
+                '<thead><tr><th>Produto</th><th>Quantidade</th><th>Lote</th><th>Validade</th><th>Valor Compra</th><th>Valor Venda</th><th>Fração</th><th></th></tr></thead>' +
+                '<tbody>' + linhas + '</tbody></table></div>';
+
+            nfeResumo.querySelectorAll('.nfe-quantidade').forEach(function (el) {
+                el.addEventListener('input', function () {
+                    var it = nfeItens[parseInt(el.getAttribute('data-idx'), 10)];
+                    it.quantidade = parseInt(el.value, 10) || 0;
+                    it.quantidadeBase = it.quantidade;
+                });
+            });
+            nfeResumo.querySelectorAll('.nfe-lote').forEach(function (el) {
+                el.addEventListener('input', function () {
+                    nfeItens[parseInt(el.getAttribute('data-idx'), 10)].lote = el.value;
+                });
+            });
+            nfeResumo.querySelectorAll('.nfe-validade').forEach(function (el) {
+                el.addEventListener('input', function () {
+                    nfeItens[parseInt(el.getAttribute('data-idx'), 10)].validade = el.value;
+                });
+            });
+            nfeResumo.querySelectorAll('.nfe-valor').forEach(function (el) {
+                el.addEventListener('input', function () {
+                    var it = nfeItens[parseInt(el.getAttribute('data-idx'), 10)];
+                    it.valor_unitario = parseFloat(el.value) || 0;
+                    it.valorUnitarioBase = it.valor_unitario;
+                });
+            });
+            nfeResumo.querySelectorAll('.nfe-valor-venda').forEach(function (el) {
+                el.addEventListener('input', function () {
+                    var it = nfeItens[parseInt(el.getAttribute('data-idx'), 10)];
+                    // Editar direto aqui sempre define o valor de venda da FRAÇÃO atual (não da
+                    // caixa/embalagem inteira) — reaplicar a fração de novo (ex.: mudar a
+                    // quantidade da fração depois) partiria desse valor já fracionado, o que
+                    // ficaria errado. Por isso o valor digitado vira a nova base direto.
+                    it.valorVendaBase = (parseFloat(el.value) || 0) * (it.fracionado && it.fracaoQtd > 0 ? it.fracaoQtd : 1);
+                    it.valor_venda = parseFloat(el.value) || 0;
+                });
+            });
+            nfeResumo.querySelectorAll('.nfe-fracionado').forEach(function (el) {
+                el.addEventListener('change', function () {
+                    var it = nfeItens[parseInt(el.getAttribute('data-idx'), 10)];
+                    it.fracionado = el.checked;
+                    aplicarFracao(it);
+                    renderNfeResumo();
+                });
+            });
+            nfeResumo.querySelectorAll('.nfe-fracao-qtd').forEach(function (el) {
+                el.addEventListener('input', function () {
+                    var it = nfeItens[parseInt(el.getAttribute('data-idx'), 10)];
+                    it.fracaoQtd = parseInt(el.value, 10) || 0;
+                    aplicarFracao(it);
+                    renderNfeResumo();
+                });
+            });
+            nfeResumo.querySelectorAll('.nfe-fracao-unidade').forEach(function (el) {
+                el.addEventListener('input', function () {
+                    nfeItens[parseInt(el.getAttribute('data-idx'), 10)].fracaoUnidade = el.value;
+                });
+            });
+            nfeResumo.querySelectorAll('.btn-vincular-nfe').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    nfeVincularIndex = parseInt(btn.getAttribute('data-idx'), 10);
+                    if (!vincularNfeModal) { vincularNfeModal = new bootstrap.Modal(vincularNfeModalEl); }
+                    vincularNfeNomeOriginal.textContent = 'Item na nota: ' + nfeItens[nfeVincularIndex].nome_nfe;
+                    vincularNfeInput.value = '';
+                    vincularNfeResultados.innerHTML = '';
+                    vincularNfeModal.show();
+                    setTimeout(function () { vincularNfeInput.focus(); }, 300);
+                });
+            });
+            nfeResumo.querySelectorAll('.btn-adicionar-nfe').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    adicionarNfeItem(parseInt(btn.getAttribute('data-idx'), 10));
+                });
+            });
+            var todosBtn = document.getElementById('nfeAdicionarTodosBtn');
+            if (todosBtn) {
+                todosBtn.addEventListener('click', function () {
+                    var pulados = 0;
+                    nfeItens.forEach(function (it, idx) {
+                        if (!it.adicionado) {
+                            if (!adicionarNfeItem(idx, true)) pulados++;
+                        }
+                    });
+                    if (pulados) alert(pulados + ' item(ns) não foram adicionados por falta de lote, validade ou valor unitário — complete os dados e adicione manualmente.');
+                });
+            }
+        }
+
+        function adicionarNfeItem(idx, silencioso) {
+            var it = nfeItens[idx];
+            if (it.adicionado) return false;
+
+            var quantidade = parseInt(it.quantidade, 10);
+            if (!quantidade || quantidade <= 0) { if (!silencioso) alert('Informe uma quantidade válida.'); return false; }
+            var lote = (it.lote || '').trim();
+            if (!lote) { if (!silencioso) alert('Informe o lote de "' + it.produto + '".'); return false; }
+            if (!it.validade) { if (!silencioso) alert('Informe a validade de "' + it.produto + '".'); return false; }
+            var valorUnitario = parseFloat(it.valor_unitario);
+            if (isNaN(valorUnitario) || valorUnitario < 0) { if (!silencioso) alert('Informe o valor de compra de "' + it.produto + '".'); return false; }
+            var valorVenda = parseFloat(it.valor_venda) || 0;
+
+            var observacao = 'Nota fiscal' + (nfeInfo && nfeInfo.numero ? ' nº ' + nfeInfo.numero : '') + (nfeInfo && nfeInfo.emitente ? ' · ' + nfeInfo.emitente : '');
+            if (it.fracionado && it.fracaoQtd > 0) {
+                observacao += ' · Fracionado: embalagem com ' + it.fracaoQtd + ' ' + (it.fracaoUnidade || 'un.');
+            }
+
+            // Item sem correspondência no catálogo (it.tipo/it.item_id nulos) é sempre tratado como
+            // insumo novo — o backend cadastra na hora ao confirmar (ver "Novo — será cadastrado..."
+            // acima e a mesma lógica já usada pro fornecedor da nota).
+            itens.push({
+                tipo_item: it.tipo || 'insumo',
+                item_id: it.item_id || 0,
+                codigo_barras: it.codigo_barras || '',
+                produto: it.produto,
+                apresentacao: it.apresentacao,
+                laboratorio: it.laboratorio,
+                quantidade: quantidade,
+                observacao: observacao,
+                lote: lote,
+                validade: it.validade,
+                validadeBr: formatarDataBr(it.validade),
+                valor_unitario: valorUnitario,
+                valor_venda: valorVenda
+            });
+            renderItens();
+
+            it.adicionado = true;
+            renderNfeResumo();
+            return true;
+        }
+
+        nfeImportarBtn.addEventListener('click', function () {
+            if (!nfeXmlInput.files || !nfeXmlInput.files.length) {
+                alert('Selecione o arquivo XML da nota fiscal.');
+                return;
+            }
+            var csrfToken = document.querySelector('input[name="csrf_token"]').value;
+            var body = new FormData();
+            body.set('csrf_token', csrfToken);
+            body.set('xml', nfeXmlInput.files[0]);
+
+            nfeImportarBtn.disabled = true;
+            nfeResumo.innerHTML = '<div class="text-muted small">Lendo nota fiscal...</div>';
+            nfeChaveAviso.textContent = '';
+
+            fetch('ajax_nfe_importar.php', { method: 'POST', body: body })
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    nfeImportarBtn.disabled = false;
+                    if (!data.sucesso) {
+                        nfeResumo.innerHTML = '<div class="alert alert-danger mb-0">' + esc(data.error) + '</div>';
+                        return;
+                    }
+                    nfeInfo = data.nfe;
+                    if (data.fornecedor) {
+                        selecionarFornecedor(data.fornecedor);
+                    }
+                    nfeItens = data.itens.map(function (it) {
+                        return Object.assign({}, it, {
+                            quantidadeBase: it.quantidade,
+                            valorUnitarioBase: it.valor_unitario,
+                            // A nota não traz preço de venda — fica em branco pro operador
+                            // preencher (é opcional; some entradas não têm preço de venda definido).
+                            valor_venda: 0,
+                            valorVendaBase: 0,
+                            fracionado: false,
+                            fracaoQtd: null,
+                            fracaoUnidade: '',
+                            adicionado: false
+                        });
+                    });
+
+                    var chaveLida = nfeChaveInput.value.trim();
+                    if (chaveLida && nfeInfo.chave && chaveLida !== nfeInfo.chave) {
+                        nfeChaveAviso.innerHTML = '<span class="text-danger fw-bold">Atenção: a chave lida no código de barras não confere com a chave desta nota.</span>';
+                    } else if (nfeInfo.chave) {
+                        nfeChaveInput.value = nfeInfo.chave;
+                    }
+
+                    renderNfeResumo();
+                })
+                .catch(function () {
+                    nfeImportarBtn.disabled = false;
+                    nfeResumo.innerHTML = '<div class="alert alert-danger mb-0">Erro ao importar a nota. Tente novamente.</div>';
+                });
+        });
+
+        // ---- Busca (por nome) pra vincular um item da nota sem EAN reconhecido a um medicamento
+        // ou insumo já cadastrado — mesmo endpoint da busca principal, resultado só atualiza a
+        // linha da nota em vez do formulário de scan. ----
+        vincularNfeInput.addEventListener('input', function () {
+            clearTimeout(vincularNfeTimer);
+            var termo = vincularNfeInput.value.trim();
+            if (termo.length < 2) {
+                vincularNfeResultados.innerHTML = '';
+                return;
+            }
+            vincularNfeTimer = setTimeout(function () {
+                fetch('ajax_buscar_nome.php?busca=' + encodeURIComponent(termo))
+                    .then(function (r) { return r.json(); })
+                    .then(function (data) {
+                        if (!data.itens || !data.itens.length) {
+                            vincularNfeResultados.innerHTML = '<div class="text-muted small mt-2">Nenhum resultado encontrado.</div>';
+                            return;
+                        }
+                        vincularNfeResultados.innerHTML = '<div class="list-group">' +
+                            data.itens.map(function (it, idx) {
+                                return '<button type="button" class="list-group-item list-group-item-action py-2 btn-vincular-opcao" data-idx="' + idx + '">' +
+                                    '<span class="badge ' + (it.tipo === 'medicamento' ? 'bg-info text-dark' : 'bg-secondary') + ' mb-1">' + (it.tipo === 'medicamento' ? 'Medicamento' : 'Insumo') + '</span>' +
+                                    '<div class="fw-bold" style="font-size:13px;">' + esc(it.titulo) + '</div>' +
+                                    (it.subtitulo ? '<div class="small text-muted">' + esc(it.subtitulo) + '</div>' : '') +
+                                    '</button>';
+                            }).join('') + '</div>';
+                        vincularNfeResultados.querySelectorAll('.btn-vincular-opcao').forEach(function (btn) {
+                            btn.addEventListener('click', function () {
+                                var escolhido = data.itens[parseInt(btn.getAttribute('data-idx'), 10)];
+                                fetch('ajax_buscar_item.php?id=' + escolhido.id + '&tipo=' + escolhido.tipo)
+                                    .then(function (r) { return r.json(); })
+                                    .then(function (resultado) {
+                                        if (!resultado.found) { alert('Item não encontrado.'); return; }
+                                        var it = nfeItens[nfeVincularIndex];
+                                        if (resultado.tipo === 'medicamento') {
+                                            var m = resultado.medicamento;
+                                            it.tipo = 'medicamento'; it.item_id = m.id; it.produto = m.produto;
+                                            it.laboratorio = m.laboratorio; it.apresentacao = m.apresentacao; it.codigo_barras = m.codigo_barras;
+                                        } else {
+                                            var i2 = resultado.insumo;
+                                            it.tipo = 'insumo'; it.item_id = i2.id; it.produto = i2.nome_comercial;
+                                            it.laboratorio = i2.marca; it.apresentacao = i2.categoria; it.codigo_barras = i2.codigo_barras;
+                                        }
+                                        it.encontrado = true;
+                                        vincularNfeModal.hide();
+                                        renderNfeResumo();
+                                    })
+                                    .catch(function () {
+                                        alert('Erro ao buscar. Tente novamente.');
+                                    });
+                            });
+                        });
+                    })
+                    .catch(function () {
+                        vincularNfeResultados.innerHTML = '<div class="alert alert-danger small mt-2 mb-0">Erro ao buscar.</div>';
+                    });
+            }, 300);
+        });
+    })();
+
     // ---- Saída: busca e seleção do paciente a quem os itens se destinam (uma vez por
     // confirmação, não item a item) ----
     if (tab === 'saida') {
@@ -784,7 +1345,16 @@ if (isset($_GET['ok'])) {
             var detalheLote = item.lote
                 ? 'Lote ' + esc(item.lote) + ' · vence em ' + esc(item.validadeBr) + ' · '
                 : '';
-            var subtotal = (item.valor_unitario || 0) * item.quantidade;
+            // Entrada acompanha custo (compra); Saída — o que interessa é o valor de venda, já que
+            // é isso que é "consumido"/repassado na retirada.
+            var subtotal = tab === 'saida'
+                ? (item.valor_venda || 0) * item.quantidade
+                : (item.valor_unitario || 0) * item.quantidade;
+            var linhaValores = tab === 'saida'
+                ? formatarMoeda(item.valor_venda) + ' / un. · Subtotal: ' + formatarMoeda(subtotal)
+                : 'Compra: ' + formatarMoeda(item.valor_unitario) + ' / un.' +
+                    (item.valor_venda ? ' · Venda: ' + formatarMoeda(item.valor_venda) + ' / un.' : '') +
+                    ' · Subtotal: ' + formatarMoeda(subtotal);
             return '<div class="entity-card" style="padding:10px 12px;margin-bottom:8px;">' +
                 '<div class="d-flex justify-content-between align-items-start gap-2">' +
                     '<div class="min-w-0">' +
@@ -796,7 +1366,7 @@ if (isset($_GET['ok'])) {
                         '<div class="entity-sub">' + detalheLote + esc(item.quantidade) + ' un.' +
                             (item.observacao ? ' · ' + esc(item.observacao) : '') +
                         '</div>' +
-                        '<div class="entity-sub mono">' + formatarMoeda(item.valor_unitario) + ' / un. · Subtotal: ' + formatarMoeda(subtotal) + '</div>' +
+                        '<div class="entity-sub mono">' + linhaValores + '</div>' +
                     '</div>' +
                     '<button type="button" class="btn btn-sm btn-outline-danger btn-remover-item" data-idx="' + idx + '" title="Remover"><i class="bi bi-x-lg"></i></button>' +
                 '</div>' +
@@ -804,7 +1374,8 @@ if (isset($_GET['ok'])) {
         }).join('');
 
         if (resumoFinanceiroWrap) {
-            var totalGeral = itens.reduce(function (soma, item) { return soma + (item.valor_unitario || 0) * item.quantidade; }, 0);
+            // Resumo financeiro da Saída é em cima do valor de venda, não do custo de compra.
+            var totalGeral = itens.reduce(function (soma, item) { return soma + (item.valor_venda || 0) * item.quantidade; }, 0);
             resumoFinanceiroTotal.textContent = formatarMoeda(totalGeral);
             resumoFinanceiroWrap.style.setProperty('display', 'flex', 'important');
         }
@@ -825,7 +1396,7 @@ if (isset($_GET['ok'])) {
         if (!quantidade || quantidade <= 0) { alert('Informe uma quantidade válida.'); return; }
 
         if (tab === 'entrada' && (valorUnitarioInput.value.trim() === '' || parseFloat(valorUnitarioInput.value) < 0)) {
-            alert('Informe o valor unitário.');
+            alert('Informe o valor de compra.');
             return;
         }
 
@@ -857,6 +1428,7 @@ if (isset($_GET['ok'])) {
                 novoItem.estoque_minimo = parseInt(quantidadeMinimaInput.value, 10);
             }
             novoItem.valor_unitario = parseFloat(valorUnitarioInput.value);
+            novoItem.valor_venda = parseFloat(valorVendaInput.value) || 0;
         } else {
             var opt = loteSelect.options[loteSelect.selectedIndex];
             if (!opt || !opt.value) { alert('Selecione o lote.'); return; }
@@ -866,6 +1438,7 @@ if (isset($_GET['ok'])) {
             novoItem.lote = opt.getAttribute('data-lote');
             novoItem.validadeBr = opt.getAttribute('data-validade-br');
             novoItem.valor_unitario = parseFloat(opt.getAttribute('data-valor')) || 0;
+            novoItem.valor_venda = parseFloat(opt.getAttribute('data-valor-venda')) || 0;
         }
 
         itens.push(novoItem);
@@ -876,6 +1449,7 @@ if (isset($_GET['ok'])) {
         scanResult.innerHTML = '';
         campos.style.display = 'none';
         if (valorUnitarioInput) valorUnitarioInput.value = '';
+        if (valorVendaInput) valorVendaInput.value = '';
         codigoInput.focus();
     });
 
@@ -888,6 +1462,11 @@ if (isset($_GET['ok'])) {
         if (tab === 'saida' && !pacienteIdField.value) {
             e.preventDefault();
             alert('Selecione o paciente a quem os itens desta saída se destinam.');
+            return;
+        }
+        if (tab === 'entrada' && !document.getElementById('fornecedorIdField').value) {
+            e.preventDefault();
+            alert('Selecione o fornecedor de quem os itens desta entrada vieram.');
             return;
         }
         var mensagem = tab === 'entrada' ? 'Você confirma os itens a serem inseridos?' : 'Você confirma os itens a serem retirados?';

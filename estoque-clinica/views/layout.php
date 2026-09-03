@@ -47,6 +47,7 @@ function navLink($targetPage, $currentPage, $label, $iconPath) {
             <?php
             navLink('insumos', $page, 'Insumos', '<path d="M20.5 7.5l-8.5-5-8.5 5 8.5 5 8.5-5z"/><path d="M3.5 7.5v9l8.5 5 8.5-5v-9"/><path d="M12 12.5v9"/>');
             navLink('pacientes', $page, 'Pacientes', '<circle cx="12" cy="8" r="3.5"/><path d="M4.5 20c0-4.14 3.36-7.5 7.5-7.5s7.5 3.36 7.5 7.5"/>');
+            navLink('fornecedores', $page, 'Fornecedores', '<rect x="3.5" y="7.5" width="17" height="12" rx="1.5"/><path d="M8 7.5V6a2.5 2.5 0 015 0v1.5M3.5 12h17"/>');
             ?>
         </div>
 

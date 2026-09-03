@@ -548,12 +548,12 @@ function calcularIdade($dataNascimento) {
                                             '<td>' + esc(i.laboratorio || '—') + '</td>' +
                                             '<td class="mono">' + esc(i.lote || '—') + '</td>' +
                                             '<td class="text-center">' + esc(i.quantidade) + '</td>' +
-                                            '<td class="text-end mono">' + fmtMoeda(i.valor_unitario) + '</td>' +
+                                            '<td class="text-end mono">' + fmtMoeda(i.valor_venda) + '</td>' +
                                             '<td class="text-end mono">' + fmtMoeda(i.subtotal) + '</td>' +
                                             '</tr>';
                                     }).join('');
                                     itensModalBody.innerHTML = '<div class="table-responsive"><table class="table table-sm table-striped mb-0">' +
-                                        '<thead><tr><th>Medicamento/Insumo</th><th>Laboratório/Marca</th><th>Lote</th><th class="text-center">Qtd.</th><th class="text-end">Valor Unit.</th><th class="text-end">Subtotal</th></tr></thead>' +
+                                        '<thead><tr><th>Medicamento/Insumo</th><th>Laboratório/Marca</th><th>Lote</th><th class="text-center">Qtd.</th><th class="text-end">Valor Venda</th><th class="text-end">Subtotal</th></tr></thead>' +
                                         '<tbody>' + itensLinhas + '</tbody></table></div>' +
                                         '<div class="d-flex justify-content-between align-items-center border-top mt-2 pt-2">' +
                                             '<span class="fw-bold">Resumo financeiro da operação</span>' +

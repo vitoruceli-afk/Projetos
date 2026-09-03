@@ -158,7 +158,7 @@ function timeAgoEC($datetime) {
                                     <tr class="<?= $st === 'vencido' ? 'table-danger' : ($st === 'urgente' ? 'table-warning' : '') ?>">
                                         <td><?= htmlspecialchars($l['produto']) ?></td>
                                         <td class="mono"><?= htmlspecialchars($l['lote']) ?></td>
-                                        <td class="mono"><?= date('d/m/Y', strtotime($l['validade'])) ?></td>
+                                        <td class="mono"><?= formatarValidade($l['validade']) ?></td>
                                         <td class="text-center"><?= (int)$l['quantidade'] ?></td>
                                         <td class="text-center"><span class="badge <?= statusVencimentoBadgeClass($st) ?>"><?= statusVencimentoLabel($st) ?></span></td>
                                     </tr>

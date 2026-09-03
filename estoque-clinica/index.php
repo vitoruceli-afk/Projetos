@@ -7,7 +7,7 @@ checkAuth();
 verificarEnviarNotificacaoDiaria(getDB());
 
 $page = $_GET['page'] ?? null;
-$allowed_pages = ['dashboard', 'movimentacao', 'estoque', 'relatorios', 'usuarios', 'medicamentos', 'insumos', 'pacientes', 'notificacoes', 'logs'];
+$allowed_pages = ['dashboard', 'movimentacao', 'estoque', 'relatorios', 'usuarios', 'medicamentos', 'insumos', 'pacientes', 'fornecedores', 'notificacoes', 'logs'];
 
 // Usuário padrão acessa Dashboard, Entrada/Saída, Estoque, Relatórios, Insumos e Pacientes;
 // Usuários, Medicamentos, Notificações e Log continuam restritos ao Administrador.

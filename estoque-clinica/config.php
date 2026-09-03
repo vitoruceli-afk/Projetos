@@ -33,7 +33,7 @@ define('UPLOAD_URL_PACIENTES', 'uploads/pacientes');
 
 // Incrementar sempre que uma migração (CREATE TABLE/ALTER TABLE) for adicionada em getDB() — é o
 // que faz o bloco de migração rodar de novo (uma única vez) na próxima requisição após o deploy.
-define('SCHEMA_VERSION', 2);
+define('SCHEMA_VERSION', 4);
 
 function getDB() {
     // Conexão + schema são cacheados numa estática por requisição (mesmo motivo documentado
@@ -106,6 +106,11 @@ function getDB() {
             }
         }
 
+        // Quantidade, lote, validade e valor unitário NÃO ficam aqui: assim como medicamento, o
+        // catálogo de insumos guarda só os dados fixos do item — estoque é sempre por lote, em
+        // insumo_lotes, lançado pela tela Entrada/Saída (ver migração de insumo_id em insumo_lotes
+        // logo abaixo). estoque_minimo NULL = nunca configurado (mesma regra de
+        // medicamentos_anvisa.estoque_minimo).
         $db->exec("CREATE TABLE IF NOT EXISTS insumos (
             id INT AUTO_INCREMENT PRIMARY KEY,
             nome_comercial VARCHAR(200) NOT NULL,
@@ -113,17 +118,12 @@ function getDB() {
             marca VARCHAR(150) DEFAULT '',
             categoria VARCHAR(100) DEFAULT '',
             codigo_barras VARCHAR(64) DEFAULT '',
-            quantidade INT NOT NULL DEFAULT 0,
-            estoque_minimo INT NOT NULL DEFAULT 0,
+            estoque_minimo INT NULL,
             unidade_medida VARCHAR(30) NOT NULL DEFAULT 'unidade',
-            lote VARCHAR(80) DEFAULT '',
-            validade DATE NULL,
-            valor_unitario DECIMAL(10,2) NOT NULL DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             INDEX idx_insumos_nome (nome_comercial),
             INDEX idx_insumos_categoria (categoria),
-            INDEX idx_insumos_validade (validade),
             INDEX idx_insumos_codigo_barras (codigo_barras)
         )");
 
@@ -133,14 +133,6 @@ function getDB() {
             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'insumos' AND COLUMN_NAME = 'codigo_barras'")->fetchColumn();
         if (!$temCodigoBarrasInsumo) {
             $db->exec("ALTER TABLE insumos ADD COLUMN codigo_barras VARCHAR(64) DEFAULT '' AFTER categoria, ADD INDEX idx_insumos_codigo_barras (codigo_barras)");
-        }
-
-        // Migração leve: valor unitário (custo de aquisição) informado na Entrada, pra Saída poder
-        // trazer o valor automaticamente e montar o resumo financeiro.
-        $temValorInsumo = (bool)$db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
-            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'insumos' AND COLUMN_NAME = 'valor_unitario'")->fetchColumn();
-        if (!$temValorInsumo) {
-            $db->exec("ALTER TABLE insumos ADD COLUMN valor_unitario DECIMAL(10,2) NOT NULL DEFAULT 0 AFTER validade");
         }
 
         // Migração histórica de uma versão bem antiga, onde insumo_id referenciava o catálogo de
@@ -186,6 +178,15 @@ function getDB() {
             $db->exec("ALTER TABLE insumo_lotes ADD COLUMN valor_unitario DECIMAL(10,2) NOT NULL DEFAULT 0 AFTER quantidade");
         }
 
+        // Migração leve: valor de venda do lote (o que a clínica cobra/repassa por unidade),
+        // separado do valor de compra (custo de aquisição) já existente. Informado na Entrada,
+        // opcional — fica 0 se o item não tiver preço de venda definido.
+        $temValorVendaLote = (bool)$db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'insumo_lotes' AND COLUMN_NAME = 'valor_venda'")->fetchColumn();
+        if (!$temValorVendaLote) {
+            $db->exec("ALTER TABLE insumo_lotes ADD COLUMN valor_venda DECIMAL(10,2) NOT NULL DEFAULT 0 AFTER valor_unitario");
+        }
+
         // Cabeçalho de uma confirmação em lote (tela Entrada: vários itens conferidos juntos e
         // gravados de uma vez em "Confirmar Entrada"). Cada linha de movimentacoes gerada por essa
         // confirmação aponta pra cá via confirmacao_id, permitindo que o relatório mostre a ação
@@ -207,6 +208,37 @@ function getDB() {
             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'movimentacao_confirmacoes' AND COLUMN_NAME = 'paciente_id'")->fetchColumn();
         if (!$temPacienteIdConfirmacao) {
             $db->exec("ALTER TABLE movimentacao_confirmacoes ADD COLUMN paciente_id INT NULL AFTER usuario, ADD INDEX idx_confirmacoes_paciente (paciente_id)");
+        }
+
+        // Cadastro de fornecedores — toda Entrada é atrelada a um fornecedor (igual Saída já é
+        // atrelada a um paciente). Quando a entrada vem de uma NFe importada (ajax_nfe_importar.php)
+        // e o CNPJ do emitente ainda não está cadastrado, o fornecedor é criado automaticamente com
+        // os dados da própria nota (ver buscarOuCriarFornecedor()).
+        $db->exec("CREATE TABLE IF NOT EXISTS fornecedores (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            razao_social VARCHAR(200) NOT NULL,
+            nome_fantasia VARCHAR(200) DEFAULT '',
+            cnpj VARCHAR(14) NOT NULL,
+            endereco VARCHAR(255) DEFAULT '',
+            bairro VARCHAR(150) DEFAULT '',
+            cep VARCHAR(10) DEFAULT '',
+            municipio VARCHAR(150) DEFAULT '',
+            telefone VARCHAR(30) DEFAULT '',
+            uf VARCHAR(2) DEFAULT '',
+            pais VARCHAR(100) NOT NULL DEFAULT 'Brasil',
+            inscricao_estadual VARCHAR(30) DEFAULT '',
+            inscricao_municipal VARCHAR(30) DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_fornecedores_cnpj (cnpj),
+            INDEX idx_fornecedores_razao (razao_social)
+        )");
+
+        // Migração leve: instalações que já tinham movimentacao_confirmacoes sem fornecedor_id.
+        $temFornecedorIdConfirmacao = (bool)$db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'movimentacao_confirmacoes' AND COLUMN_NAME = 'fornecedor_id'")->fetchColumn();
+        if (!$temFornecedorIdConfirmacao) {
+            $db->exec("ALTER TABLE movimentacao_confirmacoes ADD COLUMN fornecedor_id INT NULL AFTER paciente_id, ADD INDEX idx_confirmacoes_fornecedor (fornecedor_id)");
         }
 
         // Histórico de entradas/saídas — cada linha é um movimento de um medicamento OU de um
@@ -238,6 +270,16 @@ function getDB() {
             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'movimentacoes' AND COLUMN_NAME = 'valor_unitario'")->fetchColumn();
         if (!$temValorMov) {
             $db->exec("ALTER TABLE movimentacoes ADD COLUMN valor_unitario DECIMAL(10,2) NOT NULL DEFAULT 0 AFTER quantidade");
+        }
+
+        // Migração leve: valor de venda congelado no momento do movimento, mesmo motivo do
+        // valor_unitario acima — na Entrada é o que foi informado; na Saída é o valor de venda do
+        // lote no momento da retirada (não o de compra: o resumo financeiro da Saída passa a ser
+        // calculado em cima do valor de venda).
+        $temValorVendaMov = (bool)$db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'movimentacoes' AND COLUMN_NAME = 'valor_venda'")->fetchColumn();
+        if (!$temValorVendaMov) {
+            $db->exec("ALTER TABLE movimentacoes ADD COLUMN valor_venda DECIMAL(10,2) NOT NULL DEFAULT 0 AFTER valor_unitario");
         }
 
         // Migração leve: se movimentacoes já existia (de uma versão anterior a este recurso) sem
@@ -586,7 +628,7 @@ function csrfVerify() {
 
 // ---- Log de auditoria ----
 
-const LOG_CATEGORIAS = ['Autenticação', 'Usuários', 'Medicamentos', 'Movimentação', 'Insumos', 'Pacientes', 'Notificações'];
+const LOG_CATEGORIAS = ['Autenticação', 'Usuários', 'Medicamentos', 'Movimentação', 'Insumos', 'Pacientes', 'Fornecedores', 'Notificações'];
 
 // Registra uma linha no log de auditoria. $usuario pode ser informado explicitamente para casos
 // em que a ação altera a própria sessão (ex.: logout, timeout) — nesses casos o valor precisa ser
@@ -650,6 +692,36 @@ function insumoLotesComSaldo(PDO $db, $insumoId) {
     return $stmt->fetchAll();
 }
 
+// Cadastra um insumo novo no catálogo a partir de um item de NFe sem correspondência (nem por id,
+// nem por EAN) — é o "informe e avise que o mesmo será cadastrado" da tela Entrada: em vez de
+// travar a confirmação pedindo pra vincular um item que talvez nem exista ainda, o produto da nota
+// vira um insumo novo na hora. Se já existir um insumo com esse EAN (ex.: duas notas diferentes
+// trazendo o mesmo produto novo, ou duas linhas da mesma nota), reaproveita em vez de duplicar —
+// mesma ideia de buscarOuCriarFornecedor(), só que sem a corrida por chave única (codigo_barras
+// não é UNIQUE em insumos, já que a maioria fica em branco).
+function buscarOuCriarInsumo(PDO $db, string $nome, string $codigoBarras = ''): array {
+    $nome = trim($nome) ?: 'Insumo sem descrição';
+    $codigoBarras = trim($codigoBarras);
+
+    if ($codigoBarras !== '') {
+        $stmt = $db->prepare("SELECT * FROM insumos WHERE codigo_barras = :c LIMIT 1");
+        $stmt->execute([':c' => $codigoBarras]);
+        $existente = $stmt->fetch();
+        if ($existente) {
+            return $existente;
+        }
+    }
+
+    $db->prepare("INSERT INTO insumos (nome_comercial, codigo_barras) VALUES (:n, :c)")
+       ->execute([':n' => $nome, ':c' => $codigoBarras]);
+    $id = (int)$db->lastInsertId();
+    registrarLog('Insumos', 'Insumo cadastrado automaticamente (via NFe)', "nome: {$nome}" . ($codigoBarras !== '' ? ", EAN: {$codigoBarras}" : ''));
+
+    $stmt = $db->prepare("SELECT * FROM insumos WHERE id = :id");
+    $stmt->execute([':id' => $id]);
+    return $stmt->fetch();
+}
+
 // Insumos cujo estoque atual (soma de todos os lotes com saldo) já está no mínimo cadastrado ou
 // abaixo dele. Mesma regra de medicamentosAbaixoDoMinimo(): só considera quem TEM um mínimo
 // definido — estoque_minimo NULL significa "nunca configurado", não "mínimo zero".
@@ -663,6 +735,30 @@ function insumosAbaixoDoMinimo(PDO $db) {
         HAVING estoque_atual <= i.estoque_minimo
         ORDER BY i.nome_comercial ASC";
     return $db->query($sql)->fetchAll();
+}
+
+// Converte "AAAA-MM" (o que os campos de validade — só mês/ano — mandam) na data do ÚLTIMO dia
+// daquele mês, no formato "AAAA-MM-DD" usado pela coluna DATE de insumo_lotes.validade. O lote
+// continua "válido" até o fim do mês informado, e os cálculos de vencido/urgente/alerta (que são
+// por dia) continuam funcionando sem precisar de nenhuma lógica própria de granularidade mensal.
+// Devolve null se o valor não vier no formato esperado.
+function mesAnoParaUltimoDia($anoMes) {
+    $anoMes = trim((string)$anoMes);
+    if (!preg_match('/^\d{4}-\d{2}$/', $anoMes)) {
+        return null;
+    }
+    $data = DateTime::createFromFormat('Y-m-d', $anoMes . '-01');
+    if (!$data) {
+        return null;
+    }
+    return $data->format('Y-m-t');
+}
+
+// Formata uma data de validade (armazenada como AAAA-MM-DD) só como mês/ano — o dia gravado é
+// sempre o último do mês (ver mesAnoParaUltimoDia()) e não tem significado próprio pro operador.
+function formatarValidade($validade) {
+    if (!$validade) return null;
+    return date('m/Y', strtotime($validade));
 }
 
 // 'vencido' | 'urgente' (<= 7 dias) | 'alerta' (<= 30 dias) | 'ok' | null (sem lote com saldo)
@@ -1008,6 +1104,86 @@ function pacienteFotoUrl($foto) {
     return UPLOAD_URL_PACIENTES . '/' . rawurlencode($foto);
 }
 
+// ---- Fornecedores ----
+
+// Valida um CNPJ pelo algoritmo oficial de dígitos verificadores (não apenas o formato). Aceita
+// tanto o CNPJ formatado quanto só os 14 dígitos.
+function validarCNPJ($cnpj) {
+    $cnpj = preg_replace('/\D/', '', (string)$cnpj);
+    if (strlen($cnpj) !== 14 || preg_match('/^(\d)\1{13}$/', $cnpj)) {
+        return false; // tamanho errado ou os 14 dígitos iguais, sempre inválido
+    }
+    $digitoVerificador = function (string $cnpj, int $tamanho): int {
+        $pesos = $tamanho === 12 ? [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2] : [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+        $soma = 0;
+        for ($i = 0; $i < $tamanho; $i++) {
+            $soma += (int)$cnpj[$i] * $pesos[$i];
+        }
+        $resto = $soma % 11;
+        return $resto < 2 ? 0 : 11 - $resto;
+    };
+    if ((int)$cnpj[12] !== $digitoVerificador($cnpj, 12)) return false;
+    if ((int)$cnpj[13] !== $digitoVerificador($cnpj, 13)) return false;
+    return true;
+}
+
+function formatarCNPJ($cnpj) {
+    $cnpj = preg_replace('/\D/', '', (string)$cnpj);
+    if (strlen($cnpj) !== 14) return $cnpj;
+    return substr($cnpj, 0, 2) . '.' . substr($cnpj, 2, 3) . '.' . substr($cnpj, 5, 3) . '/' . substr($cnpj, 8, 4) . '-' . substr($cnpj, 12, 2);
+}
+
+// Busca um fornecedor pelo CNPJ; se não existir, cadastra automaticamente com os dados vindos do
+// emitente de uma NFe importada (ver ajax_nfe_importar.php) — é o "caso o fornecedor que está na
+// nota não exista, realize o cadastro do fornecedor com a informação da nota fiscal" pedido pro
+// fluxo de Entrada. Devolve null se o CNPJ vier vazio ou inválido (a nota fica sem fornecedor
+// vinculado automaticamente; o operador escolhe/cadastra manualmente na tela).
+function buscarOuCriarFornecedor(PDO $db, array $dados): ?array {
+    $cnpj = preg_replace('/\D/', '', (string)($dados['cnpj'] ?? ''));
+    if (!validarCNPJ($cnpj)) {
+        return null;
+    }
+
+    $stmt = $db->prepare("SELECT * FROM fornecedores WHERE cnpj = :cnpj");
+    $stmt->execute([':cnpj' => $cnpj]);
+    $existente = $stmt->fetch();
+    if ($existente) {
+        return $existente;
+    }
+
+    try {
+        $razaoSocial = trim((string)($dados['razao_social'] ?? '')) ?: ('Fornecedor ' . formatarCNPJ($cnpj));
+        $db->prepare("INSERT INTO fornecedores
+            (razao_social, nome_fantasia, cnpj, endereco, bairro, cep, municipio, uf, pais, telefone, inscricao_estadual)
+            VALUES (:rs, :nf, :cnpj, :end, :ba, :cep, :mu, :uf, :pa, :tel, :ie)")
+           ->execute([
+                ':rs' => $razaoSocial,
+                ':nf' => trim((string)($dados['nome_fantasia'] ?? '')),
+                ':cnpj' => $cnpj,
+                ':end' => trim((string)($dados['endereco'] ?? '')),
+                ':ba' => trim((string)($dados['bairro'] ?? '')),
+                ':cep' => trim((string)($dados['cep'] ?? '')),
+                ':mu' => trim((string)($dados['municipio'] ?? '')),
+                ':uf' => strtoupper(trim((string)($dados['uf'] ?? ''))),
+                ':pa' => trim((string)($dados['pais'] ?? '')) ?: 'Brasil',
+                ':tel' => trim((string)($dados['telefone'] ?? '')),
+                ':ie' => trim((string)($dados['inscricao_estadual'] ?? '')),
+           ]);
+        registrarLog('Fornecedores', 'Fornecedor cadastrado automaticamente (via NFe)', "razão social: {$razaoSocial}, CNPJ: " . formatarCNPJ($cnpj));
+    } catch (PDOException $e) {
+        // Corrida: duas importações de NFe do mesmo fornecedor novo ao mesmo tempo — a segunda
+        // esbarra na UNIQUE KEY do CNPJ. Não é erro: só recupera a linha que a primeira acabou de
+        // criar, em vez de derrubar a importação.
+        if (strpos($e->getMessage(), 'Duplicate') === false) {
+            throw $e;
+        }
+    }
+
+    $stmt = $db->prepare("SELECT * FROM fornecedores WHERE cnpj = :cnpj");
+    $stmt->execute([':cnpj' => $cnpj]);
+    return $stmt->fetch() ?: null;
+}
+
 // ---- Notificações por e-mail (vencimento + estoque mínimo) ----
 
 // Linha única de configuração (id=1), criada com valores padrão se ainda não existir.
@@ -1220,13 +1396,13 @@ function montarConteudoNotificacaoDiaria(PDO $db) {
     $html .= $secao('Vencendo em até 7 dias', '#dc2626', $vencendo7, function ($l) {
         return '<tr style="border-bottom:1px solid #eee;"><td style="padding:6px 4px;">' . htmlspecialchars($l['nome']) . '</td>'
             . '<td style="padding:6px 4px;">Lote ' . htmlspecialchars($l['lote']) . '</td>'
-            . '<td style="padding:6px 4px;">' . date('d/m/Y', strtotime($l['validade'])) . '</td>'
+            . '<td style="padding:6px 4px;">' . formatarValidade($l['validade']) . '</td>'
             . '<td style="padding:6px 4px;text-align:right;">' . (int)$l['quantidade'] . ' un.</td></tr>';
     });
     $html .= $secao('Vencendo em até 30 dias', '#f97803', $vencendo30, function ($l) {
         return '<tr style="border-bottom:1px solid #eee;"><td style="padding:6px 4px;">' . htmlspecialchars($l['nome']) . '</td>'
             . '<td style="padding:6px 4px;">Lote ' . htmlspecialchars($l['lote']) . '</td>'
-            . '<td style="padding:6px 4px;">' . date('d/m/Y', strtotime($l['validade'])) . '</td>'
+            . '<td style="padding:6px 4px;">' . formatarValidade($l['validade']) . '</td>'
             . '<td style="padding:6px 4px;text-align:right;">' . (int)$l['quantidade'] . ' un.</td></tr>';
     });
     $html .= $secao('Estoque mínimo atingido', '#b8790a', $abaixoMinimo, function ($it) {

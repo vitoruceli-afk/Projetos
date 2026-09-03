@@ -20,7 +20,7 @@ $grupoSql = movimentacaoGrupoChaveSql('mv');
 // LEFT JOIN nas duas origens possíveis (medicamento ou insumo — mv.medicamento_id/insumo_id são
 // mutuamente exclusivos) e COALESCE pra exibir o nome de qual delas bateu. Lote/validade vêm
 // sempre de insumo_lotes (l), que agora guarda o lote tanto de medicamento quanto de insumo.
-$stmt = $db->prepare("SELECT mv.quantidade, mv.valor_unitario, mv.observacao,
+$stmt = $db->prepare("SELECT mv.quantidade, mv.valor_unitario, mv.valor_venda, mv.observacao,
         COALESCE(md.produto, ins.nome_comercial) AS produto,
         COALESCE(md.laboratorio, ins.marca) AS laboratorio,
         COALESCE(md.apresentacao, ins.categoria) AS apresentacao,
@@ -40,18 +40,22 @@ if (!$itens) {
     exit;
 }
 
+// Saída é sobre o valor de venda (o que foi repassado na retirada); Entrada continua sobre o
+// valor de compra (o custo investido) — mesmo critério do resumo financeiro na tela Movimentação.
 $valorTotal = 0;
-$itensSaida = array_map(function ($i) use (&$valorTotal) {
-    $subtotal = (float)$i['valor_unitario'] * (int)$i['quantidade'];
+$itensSaida = array_map(function ($i) use (&$valorTotal, $tipo) {
+    $valorBase = $tipo === 'saida' ? (float)$i['valor_venda'] : (float)$i['valor_unitario'];
+    $subtotal = $valorBase * (int)$i['quantidade'];
     $valorTotal += $subtotal;
     return [
         'produto' => $i['produto'],
         'laboratorio' => $i['laboratorio'],
         'apresentacao' => $i['apresentacao'],
         'lote' => $i['lote'],
-        'validade_br' => $i['validade'] ? date('d/m/Y', strtotime($i['validade'])) : null,
+        'validade_br' => formatarValidade($i['validade']),
         'quantidade' => (int)$i['quantidade'],
         'valor_unitario' => (float)$i['valor_unitario'],
+        'valor_venda' => (float)$i['valor_venda'],
         'subtotal' => $subtotal,
         'observacao' => $i['observacao'],
     ];

@@ -167,6 +167,7 @@ document.addEventListener('DOMContentLoaded', function () {
                             '<td class="mono">' + esc(l.validade_br) + '</td>' +
                             '<td class="text-center">' + esc(l.quantidade) + '</td>' +
                             '<td class="text-end mono">' + fmtMoeda(l.valor_unitario) + '</td>' +
+                            '<td class="text-end mono">' + fmtMoeda(l.valor_venda) + '</td>' +
                             '<td class="text-end mono">' + fmtMoeda(l.valor_total) + '</td>' +
                             '<td class="text-center"><span class="badge ' + statusBadgeClass(l.status) + '">' + esc(l.status_label) + '</span></td>' +
                             '</tr>';
@@ -174,7 +175,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
                     modalBody.innerHTML = cabecalho +
                         '<div class="table-responsive"><table class="table table-sm table-striped mb-0">' +
-                            '<thead><tr><th>Lote</th><th>Validade</th><th class="text-center">Qtd.</th><th class="text-end">Valor Unit.</th><th class="text-end">Valor Total</th><th class="text-center">Status</th></tr></thead>' +
+                            '<thead><tr><th>Lote</th><th>Validade</th><th class="text-center">Qtd.</th><th class="text-end">Valor Compra</th><th class="text-end">Valor Venda</th><th class="text-end">Valor Total</th><th class="text-center">Status</th></tr></thead>' +
                             '<tbody>' + linhas + '</tbody></table></div>';
                 })
                 .catch(function () {

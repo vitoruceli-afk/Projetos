@@ -74,9 +74,10 @@ if ($item['tipo'] === 'medicamento') {
                     'id' => (int)$l['id'],
                     'lote' => $l['lote'],
                     'validade' => $l['validade'],
-                    'validade_br' => date('d/m/Y', strtotime($l['validade'])),
+                    'validade_br' => formatarValidade($l['validade']),
                     'quantidade' => (int)$l['quantidade'],
                     'valor_unitario' => (float)$l['valor_unitario'],
+                    'valor_venda' => (float)$l['valor_venda'],
                     'status' => $st,
                     'status_label' => statusVencimentoLabel($st),
                 ];
@@ -113,9 +114,10 @@ if ($item['tipo'] === 'medicamento') {
                     'id' => (int)$l['id'],
                     'lote' => $l['lote'],
                     'validade' => $l['validade'],
-                    'validade_br' => date('d/m/Y', strtotime($l['validade'])),
+                    'validade_br' => formatarValidade($l['validade']),
                     'quantidade' => (int)$l['quantidade'],
                     'valor_unitario' => (float)$l['valor_unitario'],
+                    'valor_venda' => (float)$l['valor_venda'],
                     'status' => $st,
                     'status_label' => statusVencimentoLabel($st),
                 ];
