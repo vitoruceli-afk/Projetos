@@ -33,7 +33,11 @@ define('UPLOAD_URL_PACIENTES', 'uploads/pacientes');
 
 // Incrementar sempre que uma migração (CREATE TABLE/ALTER TABLE) for adicionada em getDB() — é o
 // que faz o bloco de migração rodar de novo (uma única vez) na próxima requisição após o deploy.
-define('SCHEMA_VERSION', 4);
+define('SCHEMA_VERSION', 6);
+
+// Motor de etiquetas (modelos, elementos e renderização) — arquivo próprio pra não inchar ainda
+// mais este config, mas carregado junto, como o resto dos helpers da aplicação.
+require_once __DIR__ . '/etiquetas_lib.php';
 
 function getDB() {
     // Conexão + schema são cacheados numa estática por requisição (mesmo motivo documentado
@@ -241,6 +245,134 @@ function getDB() {
             $db->exec("ALTER TABLE movimentacao_confirmacoes ADD COLUMN fornecedor_id INT NULL AFTER paciente_id, ADD INDEX idx_confirmacoes_fornecedor (fornecedor_id)");
         }
 
+        // ---- Módulo de etiquetas parametrizável --------------------------------------------
+        // Um modelo descreve a etiqueta em milímetros (nunca em pixels): tamanho, folha, grade,
+        // margens, espaçamentos, gap, DPI, orientação e calibração. Formato novo é cadastro pela
+        // tela, não alteração de código.
+        $db->exec("CREATE TABLE IF NOT EXISTS etiqueta_modelos (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            nome VARCHAR(150) NOT NULL,
+            fabricante VARCHAR(100) DEFAULT '',
+            codigo_modelo VARCHAR(60) DEFAULT '',
+            descricao VARCHAR(255) DEFAULT '',
+            tipo VARCHAR(10) NOT NULL DEFAULT 'rolo',
+            material VARCHAR(60) DEFAULT '',
+            largura_mm DECIMAL(7,2) NOT NULL DEFAULT 0,
+            altura_mm DECIMAL(7,2) NOT NULL DEFAULT 0,
+            largura_folha_mm DECIMAL(7,2) NOT NULL DEFAULT 0,
+            altura_folha_mm DECIMAL(7,2) NOT NULL DEFAULT 0,
+            linhas INT NOT NULL DEFAULT 1,
+            colunas INT NOT NULL DEFAULT 1,
+            margem_superior_mm DECIMAL(7,2) NOT NULL DEFAULT 0,
+            margem_inferior_mm DECIMAL(7,2) NOT NULL DEFAULT 0,
+            margem_esquerda_mm DECIMAL(7,2) NOT NULL DEFAULT 0,
+            margem_direita_mm DECIMAL(7,2) NOT NULL DEFAULT 0,
+            espacamento_horizontal_mm DECIMAL(7,2) NOT NULL DEFAULT 0,
+            espacamento_vertical_mm DECIMAL(7,2) NOT NULL DEFAULT 0,
+            gap_mm DECIMAL(7,2) NOT NULL DEFAULT 0,
+            dpi INT NOT NULL DEFAULT 203,
+            orientacao VARCHAR(10) NOT NULL DEFAULT 'retrato',
+            rotacao INT NOT NULL DEFAULT 0,
+            impressao_tipo VARCHAR(30) NOT NULL DEFAULT 'termica_direta',
+            ajuste_x_mm DECIMAL(6,2) NOT NULL DEFAULT 0,
+            ajuste_y_mm DECIMAL(6,2) NOT NULL DEFAULT 0,
+            escala DECIMAL(5,3) NOT NULL DEFAULT 1,
+            ativo TINYINT(1) NOT NULL DEFAULT 1,
+            padrao TINYINT(1) NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_etiqueta_modelos_tipo (tipo),
+            INDEX idx_etiqueta_modelos_ativo (ativo)
+        )");
+
+        // O que é impresso e onde: cada elemento tem posição/tamanho em mm dentro da etiqueta.
+        // 'campo' liga a um dado do cadastro (produto, lote, validade...), sem texto digitado à mão.
+        $db->exec("CREATE TABLE IF NOT EXISTS etiqueta_elementos (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            modelo_id INT NOT NULL,
+            tipo VARCHAR(20) NOT NULL DEFAULT 'campo',
+            campo VARCHAR(40) DEFAULT '',
+            texto_fixo VARCHAR(255) DEFAULT '',
+            x_mm DECIMAL(7,2) NOT NULL DEFAULT 0,
+            y_mm DECIMAL(7,2) NOT NULL DEFAULT 0,
+            largura_mm DECIMAL(7,2) NOT NULL DEFAULT 0,
+            altura_mm DECIMAL(7,2) NOT NULL DEFAULT 0,
+            fonte VARCHAR(40) NOT NULL DEFAULT 'Arial',
+            tamanho_fonte DECIMAL(5,1) NOT NULL DEFAULT 6,
+            negrito TINYINT(1) NOT NULL DEFAULT 0,
+            alinhamento VARCHAR(10) NOT NULL DEFAULT 'left',
+            rotacao INT NOT NULL DEFAULT 0,
+            mostrar_valor TINYINT(1) NOT NULL DEFAULT 1,
+            ordem INT NOT NULL DEFAULT 1,
+            ativo TINYINT(1) NOT NULL DEFAULT 1,
+            INDEX idx_etiqueta_elementos_modelo (modelo_id)
+        )");
+
+        // Impressoras são cadastro de referência (DPI, largura máxima, tipo): a impressão em si é
+        // feita pelo navegador/driver do sistema, sem depender de API proprietária de fabricante.
+        $db->exec("CREATE TABLE IF NOT EXISTS etiqueta_impressoras (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            nome VARCHAR(120) NOT NULL,
+            fabricante VARCHAR(80) DEFAULT '',
+            modelo VARCHAR(80) DEFAULT '',
+            tipo VARCHAR(30) NOT NULL DEFAULT 'termica',
+            dpi INT NOT NULL DEFAULT 203,
+            largura_max_mm DECIMAL(7,2) NOT NULL DEFAULT 0,
+            impressao_tipo VARCHAR(30) NOT NULL DEFAULT 'termica_direta',
+            driver VARCHAR(120) DEFAULT '',
+            observacao VARCHAR(255) DEFAULT '',
+            ativo TINYINT(1) NOT NULL DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )");
+
+        // Modelo e impressora padrão de cada usuário — dois operadores podem trabalhar com
+        // etiquetas diferentes na mesma instalação.
+        $temPadraoEtiqueta = (bool)$db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'local_users' AND COLUMN_NAME = 'etiqueta_modelo_id'")->fetchColumn();
+        if (!$temPadraoEtiqueta) {
+            $db->exec("ALTER TABLE local_users
+                ADD COLUMN etiqueta_modelo_id INT NULL,
+                ADD COLUMN etiqueta_impressora_id INT NULL");
+        }
+
+        // Sequência dos códigos internos das unidades fracionadas, uma linha por prefixo (AMP,
+        // FRS...). A geração reserva a faixa com SELECT ... FOR UPDATE dentro da transação da
+        // Entrada (ver gerarCodigosUnidade()) — nunca MAX(codigo)+1, que duplicaria códigos com
+        // dois operadores fracionando ao mesmo tempo.
+        $db->exec("CREATE TABLE IF NOT EXISTS unidade_sequencias (
+            prefixo VARCHAR(3) NOT NULL PRIMARY KEY,
+            ultimo_numero BIGINT UNSIGNED NOT NULL DEFAULT 0
+        )");
+
+        // Uma linha por UNIDADE FÍSICA etiquetada no fracionamento (uma ampola, um frasco...).
+        // O saldo do estoque continua sendo insumo_lotes.quantidade — esta tabela é a camada de
+        // rastreabilidade individual por cima do lote: cada unidade guarda de qual lote e de qual
+        // movimentação de entrada veio, e o status próprio (DISPONIVEL/UTILIZADA/...). Medicamento,
+        // lote e validade não são duplicados aqui: vêm por relacionamento via lote_id.
+        $db->exec("CREATE TABLE IF NOT EXISTS unidades_estoque (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            codigo_interno CHAR(13) NOT NULL,
+            prefixo VARCHAR(3) NOT NULL,
+            medicamento_id INT NULL,
+            insumo_id INT NULL,
+            lote_id INT NOT NULL,
+            confirmacao_id INT NULL,
+            movimentacao_id INT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'DISPONIVEL',
+            criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            criado_por VARCHAR(100) DEFAULT '',
+            utilizado_em DATETIME NULL,
+            utilizado_por VARCHAR(100) DEFAULT '',
+            movimentacao_saida_id INT NULL,
+            observacao VARCHAR(255) DEFAULT '',
+            UNIQUE KEY uq_unidades_codigo (codigo_interno),
+            INDEX idx_unidades_lote (lote_id),
+            INDEX idx_unidades_status (status),
+            INDEX idx_unidades_confirmacao (confirmacao_id),
+            INDEX idx_unidades_medicamento (medicamento_id),
+            INDEX idx_unidades_insumo (insumo_id)
+        )");
+
         // Histórico de entradas/saídas — cada linha é um movimento de um medicamento OU de um
         // insumo, sempre com o lote específico via lote_id, nunca os dois ao mesmo tempo:
         // exatamente uma das colunas medicamento_id/insumo_id é preenchida por linha.
@@ -280,6 +412,15 @@ function getDB() {
             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'movimentacoes' AND COLUMN_NAME = 'valor_venda'")->fetchColumn();
         if (!$temValorVendaMov) {
             $db->exec("ALTER TABLE movimentacoes ADD COLUMN valor_venda DECIMAL(10,2) NOT NULL DEFAULT 0 AFTER valor_unitario");
+        }
+
+        // Migração leve: saída lida pelo código interno de uma unidade fracionada aponta pra qual
+        // unidade física foi baixada (NULL em toda movimentação por quantidade agregada, que segue
+        // sendo o fluxo normal).
+        $temUnidadeIdMov = (bool)$db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'movimentacoes' AND COLUMN_NAME = 'unidade_id'")->fetchColumn();
+        if (!$temUnidadeIdMov) {
+            $db->exec("ALTER TABLE movimentacoes ADD COLUMN unidade_id INT NULL AFTER lote_id, ADD INDEX idx_mov_unidade (unidade_id)");
         }
 
         // Migração leve: se movimentacoes já existia (de uma versão anterior a este recurso) sem
@@ -502,6 +643,17 @@ function getDB() {
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )");
 
+        // Catálogo inicial de modelos de etiqueta (rolos térmicos comuns + grades A4). São só o
+        // ponto de partida: ficam editáveis na tela e o usuário pode criar quantos quiser. Semeia
+        // uma única vez — se a tabela já tem modelo, não mexe no que o usuário configurou.
+        $jaTemModelos = (int)$db->query("SELECT COUNT(*) FROM etiqueta_modelos")->fetchColumn() > 0;
+        if (!$jaTemModelos) {
+            foreach (etiquetaCatalogoInicial() as $indice => $modelo) {
+                $modelo['padrao'] = $modelo['codigo_modelo'] === 'ROLO-50X25' ? 1 : 0;
+                etiquetaCriarModelo($db, $modelo);
+            }
+        }
+
         if ($versaoAplicada === 0) {
             $db->exec("INSERT INTO schema_migrations (versao) VALUES (" . SCHEMA_VERSION . ")");
         } else {
@@ -628,7 +780,7 @@ function csrfVerify() {
 
 // ---- Log de auditoria ----
 
-const LOG_CATEGORIAS = ['Autenticação', 'Usuários', 'Medicamentos', 'Movimentação', 'Insumos', 'Pacientes', 'Fornecedores', 'Notificações'];
+const LOG_CATEGORIAS = ['Autenticação', 'Usuários', 'Medicamentos', 'Movimentação', 'Insumos', 'Pacientes', 'Fornecedores', 'Unidades', 'Etiquetas', 'Notificações'];
 
 // Registra uma linha no log de auditoria. $usuario pode ser informado explicitamente para casos
 // em que a ação altera a própria sessão (ex.: logout, timeout) — nesses casos o valor precisa ser
@@ -815,6 +967,12 @@ function findInsumoByBarcode(PDO $db, $codigo) {
 // quanto no catálogo de Insumos, e devolve o resultado marcado com o tipo encontrado. Medicamento
 // tem prioridade em caso de colisão de código (cenário raro, já que são catálogos independentes).
 function buscarItemMovimentacao(PDO $db, $codigo) {
+    // Código interno de unidade fracionada (3 letras + 10 dígitos) vem primeiro: identifica uma
+    // unidade física específica, não um produto. Não colide com EAN, que é só numérico.
+    if (validarCodigoUnidade($codigo) !== null) {
+        $unidade = buscarUnidadePorCodigo($db, $codigo);
+        return $unidade ? ['tipo' => 'unidade', 'dados' => $unidade] : null;
+    }
     $medicamento = findMedicamentoByBarcode($db, $codigo);
     if ($medicamento) {
         return ['tipo' => 'medicamento', 'dados' => $medicamento];
@@ -1182,6 +1340,285 @@ function buscarOuCriarFornecedor(PDO $db, array $dados): ?array {
     $stmt = $db->prepare("SELECT * FROM fornecedores WHERE cnpj = :cnpj");
     $stmt->execute([':cnpj' => $cnpj]);
     return $stmt->fetch() ?: null;
+}
+
+// ---- Unidades fracionadas (código de barras interno) ----
+
+// Tipos de unidade física que podem receber etiqueta própria. O código interno tem SEMPRE 13
+// caracteres: 3 do prefixo + 10 dígitos de sequência (AMP0000000001). Novos tipos entram só
+// adicionando aqui — nada mais no código depende de "AMP" especificamente.
+const UNIDADE_PREFIXOS = [
+    'AMP' => 'Ampola',
+    'FRS' => 'Frasco',
+    'CPR' => 'Comprimido',
+    'SER' => 'Seringa',
+    'BOL' => 'Bolsa',
+    'UNI' => 'Unidade',
+    'PCT' => 'Pacote',
+];
+
+// DISPONIVEL é o único status que permite dar saída; UTILIZADA é definitivo (não volta a ser
+// baixado). Os demais existem pra registrar o destino de unidades que saíram do fluxo normal.
+const UNIDADE_STATUS = ['DISPONIVEL', 'RESERVADA', 'UTILIZADA', 'DEVOLVIDA', 'DANIFICADA', 'PERDIDA', 'CANCELADA'];
+
+function unidadeStatusLabel($status) {
+    return match ($status) {
+        'DISPONIVEL' => 'Disponível',
+        'RESERVADA' => 'Reservada',
+        'UTILIZADA' => 'Utilizada',
+        'DEVOLVIDA' => 'Devolvida',
+        'DANIFICADA' => 'Danificada',
+        'PERDIDA' => 'Perdida',
+        'CANCELADA' => 'Cancelada',
+        default => (string)$status,
+    };
+}
+
+function unidadeStatusBadgeClass($status) {
+    return match ($status) {
+        'DISPONIVEL' => 'bg-success',
+        'RESERVADA' => 'bg-info text-dark',
+        'UTILIZADA' => 'bg-secondary',
+        default => 'bg-danger',
+    };
+}
+
+// Valida o código interno: exatamente 3 letras de um prefixo conhecido + 10 dígitos. Devolve o
+// código normalizado (maiúsculo) ou null se não casar. Mesma regra vale no front — mas a do
+// backend é a que decide, o front é só conveniência.
+function validarCodigoUnidade($codigo) {
+    $codigo = strtoupper(trim((string)$codigo));
+    if (!preg_match('/^([A-Z]{3})([0-9]{10})$/', $codigo, $m)) {
+        return null;
+    }
+    return array_key_exists($m[1], UNIDADE_PREFIXOS) ? $codigo : null;
+}
+
+// Código de referência da entrada, derivado do id da confirmação (ENT-000012345) em vez de uma
+// coluna própria: não duplica dado, é estável e dá pra voltar ao id quando necessário.
+function codigoReferenciaEntrada($confirmacaoId) {
+    return 'ENT-' . str_pad((string)(int)$confirmacaoId, 9, '0', STR_PAD_LEFT);
+}
+
+// Prefixo sugerido a partir da unidade de medida cadastrada no insumo — só uma sugestão inicial
+// na tela; o operador confirma/troca no momento do fracionamento.
+function unidadePrefixoSugerido($unidadeMedida) {
+    return match (strtolower(trim((string)$unidadeMedida))) {
+        'frasco' => 'FRS',
+        'seringa' => 'SER',
+        'bolsa' => 'BOL',
+        'comprimido' => 'CPR',
+        default => 'AMP',
+    };
+}
+
+// Reserva uma faixa da sequência do prefixo e devolve os códigos já formatados. Precisa rodar
+// DENTRO da transação de quem chama: o SELECT ... FOR UPDATE segura a linha do prefixo até o
+// commit, então dois fracionamentos simultâneos pegam faixas diferentes em vez de colidirem
+// (a UNIQUE de codigo_interno ainda é a rede de segurança final).
+function gerarCodigosUnidade(PDO $db, string $prefixo, int $quantidade): array {
+    if (!array_key_exists($prefixo, UNIDADE_PREFIXOS)) {
+        throw new RuntimeException('Tipo de unidade inválido para geração de código interno.');
+    }
+    if ($quantidade < 1) {
+        return [];
+    }
+
+    $db->prepare("INSERT INTO unidade_sequencias (prefixo, ultimo_numero) VALUES (:p, 0)
+        ON DUPLICATE KEY UPDATE prefixo = prefixo")->execute([':p' => $prefixo]);
+
+    $stmt = $db->prepare("SELECT ultimo_numero FROM unidade_sequencias WHERE prefixo = :p FOR UPDATE");
+    $stmt->execute([':p' => $prefixo]);
+    $ultimo = (int)$stmt->fetchColumn();
+    $novo = $ultimo + $quantidade;
+
+    if ($novo > 9999999999) {
+        throw new RuntimeException("A sequência de códigos do tipo {$prefixo} chegou ao limite de 10 dígitos.");
+    }
+
+    $db->prepare("UPDATE unidade_sequencias SET ultimo_numero = :n WHERE prefixo = :p")
+       ->execute([':n' => $novo, ':p' => $prefixo]);
+
+    $codigos = [];
+    for ($n = $ultimo + 1; $n <= $novo; $n++) {
+        $codigos[] = $prefixo . str_pad((string)$n, 10, '0', STR_PAD_LEFT);
+    }
+    return $codigos;
+}
+
+// Quantas unidades DISPONIVEL o lote já tem etiquetadas — usado pra não emitir mais etiquetas do
+// que existe saldo no lote e pra bloquear a saída por quantidade nesses lotes (quando existe
+// etiqueta, a baixa tem que ser pela leitura do código, senão o saldo desce sem baixar unidade
+// nenhuma e as etiquetas ficam "penduradas" sem lastro em estoque).
+function unidadesDisponiveisDoLote(PDO $db, int $loteId): int {
+    $stmt = $db->prepare("SELECT COUNT(*) FROM unidades_estoque WHERE lote_id = :l AND status = 'DISPONIVEL'");
+    $stmt->execute([':l' => $loteId]);
+    return (int)$stmt->fetchColumn();
+}
+
+// Mesma contagem, mas para vários lotes de uma vez — a tela de Saída precisa marcar, na lista de
+// lotes do item, quais exigem leitura de etiqueta.
+function unidadesDisponiveisPorLote(PDO $db, array $loteIds): array {
+    $loteIds = array_values(array_unique(array_map('intval', $loteIds)));
+    if (!$loteIds) {
+        return [];
+    }
+    $marcadores = implode(',', array_fill(0, count($loteIds), '?'));
+    $stmt = $db->prepare("SELECT lote_id, COUNT(*) AS total FROM unidades_estoque
+        WHERE status = 'DISPONIVEL' AND lote_id IN ({$marcadores}) GROUP BY lote_id");
+    $stmt->execute($loteIds);
+
+    $mapa = [];
+    foreach ($stmt->fetchAll() as $linha) {
+        $mapa[(int)$linha['lote_id']] = (int)$linha['total'];
+    }
+    return $mapa;
+}
+
+// Cria as N unidades de um fracionamento, todas ligadas ao lote e à movimentação de entrada que
+// as originou. Roda dentro da transação da Entrada.
+function criarUnidadesEstoque(PDO $db, array $dados): array {
+    $codigos = gerarCodigosUnidade($db, $dados['prefixo'], (int)$dados['quantidade']);
+    if (!$codigos) {
+        return [];
+    }
+
+    $stmt = $db->prepare("INSERT INTO unidades_estoque
+        (codigo_interno, prefixo, medicamento_id, insumo_id, lote_id, confirmacao_id, movimentacao_id, status, criado_por, observacao)
+        VALUES (:c, :p, :m, :i, :l, :cf, :mv, 'DISPONIVEL', :u, :o)");
+    foreach ($codigos as $codigo) {
+        $stmt->execute([
+            ':c' => $codigo,
+            ':p' => $dados['prefixo'],
+            ':m' => $dados['medicamento_id'] ?? null,
+            ':i' => $dados['insumo_id'] ?? null,
+            ':l' => $dados['lote_id'],
+            ':cf' => $dados['confirmacao_id'] ?? null,
+            ':mv' => $dados['movimentacao_id'] ?? null,
+            ':u' => $dados['usuario'] ?? '',
+            ':o' => $dados['observacao'] ?? '',
+        ]);
+    }
+    return $codigos;
+}
+
+// SELECT completo de uma unidade com tudo que a leitura precisa mostrar (medicamento/insumo, lote,
+// validade e entrada de origem) — a rastreabilidade vem toda por relacionamento, o código guarda
+// só o identificador.
+function unidadeSelectSql(): string {
+    return "SELECT u.*,
+            COALESCE(md.produto, ins.nome_comercial) AS produto,
+            COALESCE(md.laboratorio, ins.marca) AS origem,
+            COALESCE(md.apresentacao, ins.categoria) AS apresentacao,
+            ins.unidade_medida,
+            l.lote, l.validade, l.quantidade AS lote_quantidade, l.valor_unitario, l.valor_venda
+        FROM unidades_estoque u
+        LEFT JOIN insumo_lotes l ON l.id = u.lote_id
+        LEFT JOIN medicamentos_anvisa md ON md.id = u.medicamento_id
+        LEFT JOIN insumos ins ON ins.id = u.insumo_id";
+}
+
+function buscarUnidadePorCodigo(PDO $db, $codigo) {
+    $codigo = validarCodigoUnidade($codigo);
+    if ($codigo === null) {
+        return null;
+    }
+    $stmt = $db->prepare(unidadeSelectSql() . " WHERE u.codigo_interno = :c LIMIT 1");
+    $stmt->execute([':c' => $codigo]);
+    return $stmt->fetch() ?: null;
+}
+
+// ---- Code 128 (código de barras das etiquetas) ----
+
+// Tabela padrão dos 107 símbolos do Code 128 (largura das barras/espaços de cada símbolo).
+function code128Padroes(): array {
+    static $padroes = null;
+    if ($padroes === null) {
+        $padroes = [
+            '212222','222122','222221','121223','121322','131222','122213','122312','132212','221213',
+            '221312','231212','112232','122132','122231','113222','123122','123221','223211','221132',
+            '221231','213212','223112','312131','311222','321122','321221','312212','322112','322211',
+            '212123','212321','232121','111323','131123','131321','112313','132113','132311','211313',
+            '231113','231311','112133','112331','132131','113123','113321','133121','313121','211331',
+            '231131','213113','213311','213131','311123','311321','331121','312113','312311','332111',
+            '314111','221411','431111','111224','111422','121124','121421','141122','141221','112214',
+            '112412','122114','122411','142112','142211','241211','221114','413111','241112','134111',
+            '111242','121142','121241','114212','124112','124211','411212','421112','421211','212141',
+            '214121','412121','111143','111341','131141','114113','114311','411113','411311','113141',
+            '114131','311141','411131','211412','211214','211232','2331112',
+        ];
+    }
+    return $padroes;
+}
+
+// Converte o texto nos valores do Code 128, alternando entre os conjuntos B (letras) e C (pares de
+// dígitos) — C deixa o código bem mais curto, o que importa numa etiqueta de ampola.
+function code128Valores(string $texto): array {
+    $valores = [];
+    $modo = null;
+    $pos = 0;
+    $len = strlen($texto);
+
+    while ($pos < $len) {
+        $digitos = 0;
+        while ($pos + $digitos < $len && ctype_digit($texto[$pos + $digitos])) {
+            $digitos++;
+        }
+
+        if (($digitos >= 4 && $digitos % 2 === 0) || $digitos >= 6) {
+            if ($modo === null) { $valores[] = 105; $modo = 'C'; }
+            elseif ($modo !== 'C') { $valores[] = 99; $modo = 'C'; }
+            for ($par = 0; $par < intdiv($digitos, 2); $par++) {
+                $valores[] = (int)substr($texto, $pos, 2);
+                $pos += 2;
+            }
+            continue;
+        }
+
+        if ($modo === null) { $valores[] = 104; $modo = 'B'; }
+        elseif ($modo !== 'B') { $valores[] = 100; $modo = 'B'; }
+        $valores[] = ord($texto[$pos]) - 32;
+        $pos++;
+    }
+
+    if ($modo === null) {
+        $valores[] = 104;
+    }
+    return $valores;
+}
+
+// Desenha o código de barras como SVG (texto puro — este PHP não tem GD/Imagick, e SVG ainda
+// imprime melhor: escala sem perder definição, essencial pra leitura do código).
+function code128Svg(string $texto, float $modulo = 1.5, float $altura = 36.0): string {
+    $padroes = code128Padroes();
+    $valores = code128Valores($texto);
+
+    $soma = $valores[0];
+    for ($i = 1; $i < count($valores); $i++) {
+        $soma += $valores[$i] * $i;
+    }
+    $valores[] = $soma % 103; // dígito verificador
+    $valores[] = 106;         // stop
+
+    $quiet = 10; // zona de silêncio obrigatória nas duas pontas
+    $x = $quiet;
+    $barras = '';
+    foreach ($valores as $valor) {
+        $padrao = $padroes[$valor];
+        $ehBarra = true;
+        for ($i = 0; $i < strlen($padrao); $i++) {
+            $largura = (int)$padrao[$i];
+            if ($ehBarra) {
+                $barras .= '<rect x="' . round($x * $modulo, 2) . '" y="0" width="' . round($largura * $modulo, 2) . '" height="' . $altura . '"/>';
+            }
+            $x += $largura;
+            $ehBarra = !$ehBarra;
+        }
+    }
+
+    $larguraTotal = round(($x + $quiet) * $modulo, 2);
+    return '<svg xmlns="http://www.w3.org/2000/svg" width="' . $larguraTotal . '" height="' . $altura . '" viewBox="0 0 ' . $larguraTotal . ' ' . $altura . '" shape-rendering="crispEdges">'
+        . '<rect width="100%" height="100%" fill="#ffffff"/><g fill="#000000">' . $barras . '</g></svg>';
 }
 
 // ---- Notificações por e-mail (vencimento + estoque mínimo) ----

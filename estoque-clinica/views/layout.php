@@ -38,6 +38,7 @@ function navLink($targetPage, $currentPage, $label, $iconPath) {
             <?php
             navLink('movimentacao', $page, 'Entrada / Saída', '<path d="M4 7l4-4 4 4M8 3v12M20 17l-4 4-4-4M16 21V9"/>');
             navLink('estoque', $page, 'Estoque', '<path d="M3.5 7.5l8.5-5 8.5 5-8.5 5-8.5-5z"/><path d="M3.5 7.5v9l8.5 5 8.5-5v-9"/><path d="M12 12.5v9"/>');
+            navLink('etiquetas', $page, 'Etiquetas', '<rect x="3" y="6" width="18" height="12" rx="1.5"/><path d="M6.5 9v6M9 9v6M11.5 9v6M14.5 9v6M17.5 9v6"/>');
             navLink('relatorios', $page, 'Relatórios', '<path d="M5 3h9l5 5v13H5z"/><path d="M9 12h6M9 16h6M9 8h3"/>');
             ?>
         </div>
@@ -57,6 +58,7 @@ function navLink($targetPage, $currentPage, $label, $iconPath) {
             <?php
             navLink('medicamentos', $page, 'Medicamentos', '<path d="M10.5 3.5h3a2 2 0 012 2V7h-7V5.5a2 2 0 012-2z"/><rect x="4" y="7" width="16" height="13.5" rx="2"/><path d="M9 13h6M12 10v6"/>');
             navLink('usuarios', $page, 'Usuários', '<circle cx="9" cy="8" r="3"/><path d="M3.5 20c0-3.5 2.5-6 5.5-6s5.5 2.5 5.5 6"/><path d="M16 8.2a3 3 0 010 5.6M19 20c0-2.8-1.6-5-3.5-5.8"/>');
+            navLink('etiqueta_modelos', $page, 'Modelos de Etiqueta', '<rect x="3" y="6" width="18" height="12" rx="1.5"/><path d="M7 10h6M7 14h4"/><circle cx="17.5" cy="13" r="1.5"/>');
             navLink('notificacoes', $page, 'Notificações', '<path d="M12 3.5a5.5 5.5 0 00-5.5 5.5v3.5L4.5 16h15L17.5 12.5V9A5.5 5.5 0 0012 3.5z"/><path d="M9.5 19a2.5 2.5 0 005 0"/>');
             navLink('logs', $page, 'Log', '<path d="M6 3.5h9l4 4V20a1 1 0 01-1 1H6a1 1 0 01-1-1V4.5a1 1 0 011-1z"/><path d="M15 3.5V8h4"/><path d="M8 12h8M8 15.5h8M8 8.5h3"/>');
             ?>

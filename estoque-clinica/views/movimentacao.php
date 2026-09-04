@@ -56,6 +56,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         } else {
           try {
             $erroItem = null;
+            $unidadesGeradas = 0; // quantas unidades físicas foram etiquetadas nesta confirmação
             $db->beginTransaction();
 
             // Cabeçalho da confirmação: liga todos os itens desta mesma ação de "Confirmar
@@ -73,6 +74,57 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $quantidade = (int)($item['quantidade'] ?? 0);
                 $observacao = trim($item['observacao'] ?? '');
                 $numero = $idx + 1;
+
+                // Saída lida pelo código interno de uma unidade fracionada: a baixa é sempre de 1
+                // unidade física, identificada pelo código, e não pela quantidade digitada. Trava a
+                // unidade E o lote na mesma transação — assim duas leituras simultâneas do mesmo
+                // código não conseguem baixar a mesma ampola duas vezes, e o saldo do lote
+                // (que segue sendo a fonte de verdade do estoque) desce junto.
+                if (!$ehEntrada && !empty($item['unidade_id'])) {
+                    $stmt = $db->prepare("SELECT * FROM unidades_estoque WHERE id = :id FOR UPDATE");
+                    $stmt->execute([':id' => (int)$item['unidade_id']]);
+                    $unidade = $stmt->fetch();
+
+                    if (!$unidade) {
+                        $erroItem = "Item {$numero}: unidade não encontrada.";
+                        break;
+                    }
+                    if ($unidade['status'] !== 'DISPONIVEL') {
+                        $erroItem = "Item {$numero}: a unidade " . htmlspecialchars($unidade['codigo_interno'])
+                            . ' não está disponível (status atual: ' . unidadeStatusLabel($unidade['status']) . ').';
+                        break;
+                    }
+
+                    $stmt = $db->prepare("SELECT * FROM insumo_lotes WHERE id = :id FOR UPDATE");
+                    $stmt->execute([':id' => $unidade['lote_id']]);
+                    $loteRow = $stmt->fetch();
+                    if (!$loteRow || (int)$loteRow['quantidade'] < 1) {
+                        $erroItem = "Item {$numero}: o lote da unidade " . htmlspecialchars($unidade['codigo_interno']) . ' está sem saldo em estoque.';
+                        break;
+                    }
+
+                    $db->prepare("UPDATE insumo_lotes SET quantidade = quantidade - 1 WHERE id = :id")
+                       ->execute([':id' => $loteRow['id']]);
+
+                    $db->prepare("INSERT INTO movimentacoes (medicamento_id, insumo_id, lote_id, unidade_id, confirmacao_id, tipo, quantidade, valor_unitario, valor_venda, usuario, observacao)
+                        VALUES (:m, :i, :lo, :un, :c, :t, 1, :vu, :vv, :u, :o)")
+                       ->execute([
+                            ':m' => $unidade['medicamento_id'], ':i' => $unidade['insumo_id'], ':lo' => $loteRow['id'],
+                            ':un' => $unidade['id'], ':c' => $confirmacaoId, ':t' => $tipoMov,
+                            ':vu' => (float)$loteRow['valor_unitario'], ':vv' => (float)$loteRow['valor_venda'],
+                            ':u' => $_SESSION['user_logged_in'], ':o' => $observacao,
+                       ]);
+                    $movimentacaoSaidaId = (int)$db->lastInsertId();
+
+                    $db->prepare("UPDATE unidades_estoque SET status = 'UTILIZADA', utilizado_em = NOW(), utilizado_por = :u, movimentacao_saida_id = :mv WHERE id = :id")
+                       ->execute([':u' => $_SESSION['user_logged_in'], ':mv' => $movimentacaoSaidaId, ':id' => $unidade['id']]);
+
+                    registrarLog('Unidades', 'Unidade utilizada na saída',
+                        'código: ' . $unidade['codigo_interno'] . ', lote ' . $loteRow['lote']
+                        . ', validade ' . formatarValidade($loteRow['validade'])
+                        . ', entrada ' . codigoReferenciaEntrada((int)$unidade['confirmacao_id']));
+                    continue;
+                }
 
                 if ($tipoItem === 'medicamento') {
                     // Busca preferencialmente por id (vem de qualquer um dos dois jeitos de achar
@@ -158,6 +210,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                             break;
                         }
 
+                        // Lote com unidades etiquetadas só sai pela leitura do código de cada
+                        // unidade: baixar por quantidade aqui derrubaria o saldo sem marcar
+                        // nenhuma unidade como utilizada, deixando etiquetas válidas sem lastro.
+                        $etiquetadas = unidadesDisponiveisDoLote($db, (int)$loteRow['id']);
+                        if ($etiquetadas > 0) {
+                            $erroItem = "Item {$numero} (" . htmlspecialchars($medicamento['produto']) . '): o lote "' . htmlspecialchars($loteRow['lote'])
+                                . '" tem ' . $etiquetadas . ' unidade(s) etiquetada(s) — a saída precisa ser feita lendo o código de barras de cada unidade.';
+                            break;
+                        }
+
                         $db->prepare("UPDATE insumo_lotes SET quantidade = quantidade - :q WHERE id = :id")
                            ->execute([':q' => $quantidade, ':id' => $loteRow['id']]);
                         $loteId = $loteRow['id'];
@@ -170,6 +232,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
                     $db->prepare("INSERT INTO movimentacoes (medicamento_id, lote_id, confirmacao_id, tipo, quantidade, valor_unitario, valor_venda, usuario, observacao) VALUES (:m, :lo, :c, :t, :q, :vu, :vv, :u, :o)")
                        ->execute([':m' => $medicamento['id'], ':lo' => $loteId, ':c' => $confirmacaoId, ':t' => $tipoMov, ':q' => $quantidade, ':vu' => $valorUnitario, ':vv' => $valorVenda, ':u' => $_SESSION['user_logged_in'], ':o' => $observacao]);
+                    $movimentacaoId = (int)$db->lastInsertId();
+                    $unidadeDono = ['medicamento_id' => $medicamento['id'], 'insumo_id' => null];
+                    $unidadeNome = $medicamento['produto'];
                 } else {
                     // Insumo funciona exatamente como medicamento: lotes em insumo_lotes
                     // (insumo_id em vez de medicamento_id), quantidade/lote/validade/valor
@@ -258,6 +323,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                             break;
                         }
 
+                        // Mesma regra do medicamento: lote etiquetado sai só pela leitura da
+                        // etiqueta de cada unidade.
+                        $etiquetadas = unidadesDisponiveisDoLote($db, (int)$loteRow['id']);
+                        if ($etiquetadas > 0) {
+                            $erroItem = "Item {$numero} (" . htmlspecialchars($insumo['nome_comercial']) . '): o lote "' . htmlspecialchars($loteRow['lote'])
+                                . '" tem ' . $etiquetadas . ' unidade(s) etiquetada(s) — a saída precisa ser feita lendo o código de barras de cada unidade.';
+                            break;
+                        }
+
                         $db->prepare("UPDATE insumo_lotes SET quantidade = quantidade - :q WHERE id = :id")
                            ->execute([':q' => $quantidade, ':id' => $loteRow['id']]);
                         $loteId = $loteRow['id'];
@@ -270,6 +344,56 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
                     $db->prepare("INSERT INTO movimentacoes (insumo_id, lote_id, confirmacao_id, tipo, quantidade, valor_unitario, valor_venda, usuario, observacao) VALUES (:i, :lo, :c, :t, :q, :vu, :vv, :u, :o)")
                        ->execute([':i' => $insumo['id'], ':lo' => $loteId, ':c' => $confirmacaoId, ':t' => $tipoMov, ':q' => $quantidade, ':vu' => $valorUnitario, ':vv' => $valorVenda, ':u' => $_SESSION['user_logged_in'], ':o' => $observacao]);
+                    $movimentacaoId = (int)$db->lastInsertId();
+                    $unidadeDono = ['medicamento_id' => null, 'insumo_id' => $insumo['id']];
+                    $unidadeNome = $insumo['nome_comercial'];
+                }
+
+                // Fracionamento com etiqueta: gera uma unidade física (código interno de 13
+                // caracteres) por item etiquetado, ligada ao lote e à movimentação de entrada que
+                // a originou. Só na Entrada, só quando o operador pediu, e nunca mais unidades do
+                // que o saldo do lote comporta — o saldo continua sendo insumo_lotes.quantidade,
+                // estas linhas são a camada de rastreabilidade individual por cima dele.
+                if ($ehEntrada && !empty($item['gerar_unidades'])) {
+                    $prefixo = strtoupper(trim((string)($item['unidade_prefixo'] ?? '')));
+                    if (!array_key_exists($prefixo, UNIDADE_PREFIXOS)) {
+                        $erroItem = "Item {$numero} (" . htmlspecialchars($unidadeNome) . '): selecione um tipo de unidade válido para gerar os códigos de barras.';
+                        break;
+                    }
+
+                    $qtdEtiquetas = (int)($item['unidades_qtd'] ?? 0);
+                    if ($qtdEtiquetas <= 0 || $qtdEtiquetas > $quantidade) {
+                        $qtdEtiquetas = $quantidade;
+                    }
+
+                    $stmtSaldo = $db->prepare("SELECT quantidade FROM insumo_lotes WHERE id = :id FOR UPDATE");
+                    $stmtSaldo->execute([':id' => $loteId]);
+                    $saldoLote = (int)$stmtSaldo->fetchColumn();
+                    $jaEtiquetadas = unidadesDisponiveisDoLote($db, (int)$loteId);
+                    if ($jaEtiquetadas + $qtdEtiquetas > $saldoLote) {
+                        $erroItem = "Item {$numero} (" . htmlspecialchars($unidadeNome) . '): o lote "' . htmlspecialchars($lote)
+                            . '" tem ' . $saldoLote . ' unidade(s) em estoque e ' . $jaEtiquetadas
+                            . ' já etiquetada(s) — não é possível gerar ' . $qtdEtiquetas . ' etiqueta(s).';
+                        break;
+                    }
+
+                    $codigosGerados = criarUnidadesEstoque($db, [
+                        'prefixo' => $prefixo,
+                        'quantidade' => $qtdEtiquetas,
+                        'medicamento_id' => $unidadeDono['medicamento_id'],
+                        'insumo_id' => $unidadeDono['insumo_id'],
+                        'lote_id' => $loteId,
+                        'confirmacao_id' => $confirmacaoId,
+                        'movimentacao_id' => $movimentacaoId,
+                        'usuario' => $_SESSION['user_logged_in'],
+                        'observacao' => $observacao,
+                    ]);
+
+                    $unidadesGeradas += count($codigosGerados);
+                    registrarLog('Unidades', 'Unidades fracionadas geradas',
+                        count($codigosGerados) . ' unidade(s) ' . UNIDADE_PREFIXOS[$prefixo] . ' de ' . $unidadeNome
+                        . ', lote ' . $lote . ', entrada ' . codigoReferenciaEntrada($confirmacaoId)
+                        . ' (' . $codigosGerados[0] . ' a ' . $codigosGerados[count($codigosGerados) - 1] . ')');
                 }
             }
 
@@ -290,8 +414,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     $nomeFornecedor->execute([':id' => $fornecedorId]);
                     $detalhesLog .= ', fornecedor: ' . $nomeFornecedor->fetchColumn();
                 }
+                if ($unidadesGeradas > 0) {
+                    $detalhesLog .= ', ' . $unidadesGeradas . ' unidade(s) etiquetada(s)';
+                }
                 registrarLog('Movimentação', $acaoLog, $detalhesLog);
-                header('Location: index.php?page=movimentacao&tab=' . $tipoMov . '&ok=1&qtd=' . count($itens));
+                $destino = 'index.php?page=movimentacao&tab=' . $tipoMov . '&ok=1&qtd=' . count($itens);
+                if ($unidadesGeradas > 0) {
+                    // Leva a referência da entrada pra tela oferecer a impressão das etiquetas
+                    // recém-geradas logo após a confirmação.
+                    $destino .= '&unidades=' . $unidadesGeradas . '&entrada=' . $confirmacaoId;
+                }
+                header('Location: ' . $destino);
                 exit;
             }
           } catch (PDOException $e) {
@@ -310,12 +443,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     }
 }
 
+$linkEtiquetas = '';
 if (isset($_GET['ok'])) {
     $qtd = (int)($_GET['qtd'] ?? 1);
     if ($tab === 'entrada') {
         $formSuccess = $qtd === 1 ? '1 item inserido com sucesso.' : "{$qtd} itens inseridos com sucesso.";
     } else {
         $formSuccess = $qtd === 1 ? '1 item retirado com sucesso.' : "{$qtd} itens retirados com sucesso.";
+    }
+    // Entrada que gerou etiquetas: oferece a impressão logo aqui, que é quando o operador ainda
+    // está com as embalagens na mão pra colar as etiquetas.
+    $unidadesGeradasMsg = (int)($_GET['unidades'] ?? 0);
+    $entradaGerada = (int)($_GET['entrada'] ?? 0);
+    if ($unidadesGeradasMsg > 0 && $entradaGerada > 0) {
+        $formSuccess .= ' ' . $unidadesGeradasMsg . ' unidade(s) etiquetada(s) na entrada ' . codigoReferenciaEntrada($entradaGerada) . '.';
+        $linkEtiquetas = 'index.php?page=etiquetas_imprimir&entrada=' . $entradaGerada;
     }
 }
 ?>
@@ -332,7 +474,14 @@ if (isset($_GET['ok'])) {
 </ul>
 
 <?php if ($formError): ?><div class="alert alert-danger"><?= $formError ?></div><?php endif; ?>
-<?php if ($formSuccess): ?><div class="alert alert-success"><?= htmlspecialchars($formSuccess) ?></div><?php endif; ?>
+<?php if ($formSuccess): ?>
+    <div class="alert alert-success d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <span><?= htmlspecialchars($formSuccess) ?></span>
+        <?php if ($linkEtiquetas): ?>
+            <a href="<?= htmlspecialchars($linkEtiquetas) ?>" target="_blank" class="btn btn-sm btn-outline-success"><i class="bi bi-printer"></i> Imprimir etiquetas</a>
+        <?php endif; ?>
+    </div>
+<?php endif; ?>
 
 <form method="POST" id="movForm">
     <?= csrfField() ?>
@@ -459,8 +608,8 @@ if (isset($_GET['ok'])) {
                             <input type="text" id="loteInput" class="form-control">
                         </div>
                         <div class="col-sm-4" id="validadeWrap">
-                            <label class="form-label">Validade (mês/ano)</label>
-                            <input type="month" id="validadeInput" class="form-control">
+                            <label class="form-label">Validade (MM/AA)</label>
+                            <input type="text" id="validadeInput" class="form-control mono" inputmode="numeric" placeholder="MM/AA" maxlength="5">
                         </div>
                         <?php endif; ?>
                     </div>
@@ -479,6 +628,44 @@ if (isset($_GET['ok'])) {
                             <label class="form-label">Quantidade mínima</label>
                             <input type="number" id="quantidadeMinimaInput" class="form-control" min="0" placeholder="Não cadastrada">
                             <div class="form-text">Nível de estoque abaixo do qual este item deve ser reposto. Fica salvo pra próxima entrada já vir preenchido.</div>
+                        </div>
+                    </div>
+                    <div class="border rounded p-2 mt-2">
+                        <div class="form-check">
+                            <input type="checkbox" class="form-check-input" id="fracionadoCheck">
+                            <label class="form-check-label" for="fracionadoCheck">Item Fracionado</label>
+                        </div>
+                        <div class="form-text">Embalagem que será aberta em unidades soltas (ex.: caixa com 10 ampolas). A quantidade digitada acima é multiplicada pela fração e o valor de venda é rateado entre as unidades.</div>
+
+                        <div id="fracionadoCamposWrap" style="display:none;">
+                            <div class="row g-2 mt-1">
+                                <div class="col-sm-6">
+                                    <label class="form-label">Unidades por embalagem</label>
+                                    <input type="number" id="fracaoQtdInput" class="form-control" min="1" max="9999" step="1" placeholder="Ex.: 10">
+                                </div>
+                                <div class="col-sm-6">
+                                    <label class="form-label">Unidade da fração</label>
+                                    <select id="fracaoUnidadeInput" class="form-select">
+                                        <?php foreach (UNIDADE_PREFIXOS as $pfx => $nome): ?>
+                                            <option value="<?= $pfx ?>"><?= htmlspecialchars($nome) ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="form-check mt-2">
+                                <input type="checkbox" class="form-check-input" id="gerarUnidadesCheck">
+                                <label class="form-check-label" for="gerarUnidadesCheck">Gerar códigos de barras internos para as unidades</label>
+                            </div>
+                            <div class="form-text">Cada unidade recebe uma etiqueta própria (Code 128) para ser lida na Saída — necessário quando a unidade solta não tem código de barras do fabricante. O tipo do código segue a unidade da fração escolhida acima.</div>
+
+                            <div class="row g-2 mt-1" id="unidadesCamposWrap" style="display:none;">
+                                <div class="col-sm-6">
+                                    <label class="form-label">Unidades a etiquetar</label>
+                                    <input type="number" id="unidadesQtdInput" class="form-control" min="1" max="9999" step="1" placeholder="Todas">
+                                    <div class="form-text">Em branco = todas. Menos que o total = fracionamento parcial.</div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <?php endif; ?>
@@ -569,6 +756,21 @@ if (isset($_GET['ok'])) {
     var quantidadeMinimaInput = document.getElementById('quantidadeMinimaInput');
     var valorUnitarioInput = document.getElementById('valorUnitarioInput');
     var valorVendaInput = document.getElementById('valorVendaInput');
+    var fracionadoCheck = document.getElementById('fracionadoCheck');
+    var fracionadoCamposWrap = document.getElementById('fracionadoCamposWrap');
+    var fracaoQtdInput = document.getElementById('fracaoQtdInput');
+    var fracaoUnidadeInput = document.getElementById('fracaoUnidadeInput');
+    var gerarUnidadesCheck = document.getElementById('gerarUnidadesCheck');
+    var unidadesCamposWrap = document.getElementById('unidadesCamposWrap');
+    var unidadesQtdInput = document.getElementById('unidadesQtdInput');
+
+    // Tipos de unidade (AMP, FRS, UNI, PCT...) vindos do PHP: a mesma lista serve pra "unidade da
+    // fração" e pro prefixo do código de barras da etiqueta — são a mesma coisa, então um campo só
+    // define os dois e não há risco de escolher "ampola" na fração e "frasco" na etiqueta.
+    var unidadePrefixos = <?= json_encode(UNIDADE_PREFIXOS, JSON_UNESCAPED_UNICODE) ?>;
+    function nomeUnidade(prefixo) {
+        return unidadePrefixos[prefixo] || prefixo || 'un.';
+    }
     var observacaoInput = document.getElementById('observacaoInput');
     var inserirBtn = document.getElementById('inserirBtn');
     var itensLista = document.getElementById('itensLista');
@@ -601,6 +803,51 @@ if (isset($_GET['ok'])) {
         return 'R$ ' + (Number(valor) || 0).toFixed(2).replace('.', ',');
     }
 
+    // ---- Campo de validade: digitado direto como "MM/AA" (máscara automática), convertido pra
+    // "AAAA-MM" (o que o backend espera) só na hora de montar o item. Ano de 2 dígitos sempre cai
+    // no século 2000 (AA=26 -> 2026) — suficiente pra validade de estoque. ----
+    function aplicarMascaraValidade(input) {
+        var v = input.value.replace(/\D/g, '').slice(0, 4);
+        if (v.length > 2) v = v.replace(/(\d{2})(\d{1,2})/, '$1/$2');
+        input.value = v;
+    }
+
+    // "MM/AA" -> "AAAA-MM", ou null se incompleto/inválido.
+    function validadeParaAnoMes(mmAa) {
+        var m = /^(\d{2})\/(\d{2})$/.exec(String(mmAa || '').trim());
+        if (!m) return null;
+        var mes = parseInt(m[1], 10);
+        if (mes < 1 || mes > 12) return null;
+        return (2000 + parseInt(m[2], 10)) + '-' + (mes < 10 ? '0' + mes : String(mes));
+    }
+
+    // "AAAA-MM" (ou "AAAA-MM-DD") -> "MM/AA", pra preencher o campo com um valor que já veio
+    // pronto (ex.: validade extraída do XML da NFe).
+    function anoMesParaValidade(anoMes) {
+        var m = /^(\d{4})-(\d{2})/.exec(String(anoMes || ''));
+        return m ? (m[2] + '/' + m[1].slice(2)) : '';
+    }
+
+    if (validadeInput) {
+        validadeInput.addEventListener('input', function () { aplicarMascaraValidade(validadeInput); });
+    }
+
+    // Fracionamento na entrada manual: os campos da fração só aparecem com a caixa marcada, e a
+    // geração de etiquetas só aparece dentro do fracionamento (etiqueta interna só faz sentido
+    // pra unidade solta que veio de uma embalagem aberta).
+    if (fracionadoCheck) {
+        fracionadoCheck.addEventListener('change', function () {
+            fracionadoCamposWrap.style.display = fracionadoCheck.checked ? '' : 'none';
+            if (!fracionadoCheck.checked) {
+                gerarUnidadesCheck.checked = false;
+                unidadesCamposWrap.style.display = 'none';
+            }
+        });
+        gerarUnidadesCheck.addEventListener('change', function () {
+            unidadesCamposWrap.style.display = gerarUnidadesCheck.checked ? '' : 'none';
+        });
+    }
+
     function montarListaLotes(lotes) {
         if (!lotes.length) {
             return '<div class="text-muted small mt-2">Nenhum lote com saldo em estoque.</div>';
@@ -629,8 +876,20 @@ if (isset($_GET['ok'])) {
         }
         var qtd = opt.getAttribute('data-quantidade');
         var valorVenda = opt.getAttribute('data-valor-venda');
+        var etiquetadas = parseInt(opt.getAttribute('data-etiquetadas'), 10) || 0;
         quantidadeInput.max = qtd;
-        loteSelectHint.textContent = qtd + ' unidade(s) disponível(is) neste lote · Valor venda: ' + formatarMoeda(valorVenda);
+
+        // Lote etiquetado não sai por quantidade: cada unidade tem código próprio e precisa ser
+        // lida, senão o saldo desceria sem nenhuma unidade ser marcada como utilizada. O backend
+        // recusa de qualquer forma — aqui é só pra o operador entender antes de tentar.
+        if (etiquetadas > 0) {
+            inserirBtn.disabled = true;
+            loteSelectHint.innerHTML = '<span class="text-danger fw-bold">Este lote tem ' + etiquetadas +
+                ' unidade(s) etiquetada(s): leia o código de barras da etiqueta de cada unidade para dar saída.</span>';
+        } else {
+            inserirBtn.disabled = false;
+            loteSelectHint.textContent = qtd + ' unidade(s) disponível(is) neste lote · Valor venda: ' + formatarMoeda(valorVenda);
+        }
     }
 
     // Medicamento e insumo funcionam exatamente do mesmo jeito na Entrada/Saída (ambos rastreados
@@ -648,6 +907,65 @@ if (isset($_GET['ok'])) {
             scanResult.innerHTML = '<div class="alert alert-warning mt-3 mb-0">' + esc(data.error) + '</div>';
             return;
         }
+
+        // Código interno de unidade fracionada: mostra a ficha completa da unidade (produto, lote,
+        // validade, entrada de origem e status) e libera a baixa só se estiver DISPONIVEL. Se já
+        // foi utilizada, bloqueia aqui mesmo e informa quando e por quem — o backend revalida
+        // isso de novo na confirmação, esta checagem é só pra dar o retorno imediato ao operador.
+        if (data.tipo === 'unidade') {
+            var u = data.unidade;
+            itemAtual = null;
+            campos.style.display = 'none';
+
+            var ficha =
+                '<div class="scan-summary"><div style="width:100%;">' +
+                    '<span class="badge bg-dark mb-2">' + esc(u.tipo_unidade) + ' · unidade fracionada</span> ' +
+                    '<span class="badge ' + u.status_badge + ' mb-2">' + esc(u.status_label) + '</span>' +
+                    '<div class="scan-summary-title">' + esc(u.produto) + '</div>' +
+                    '<div class="scan-summary-sub">' + esc(u.origem || '—') + '</div>' +
+                    '<div class="scan-summary-grid">' +
+                        '<div><div class="entity-field-label">Código interno</div><div class="entity-field-value mono">' + esc(u.codigo_interno) + '</div></div>' +
+                        '<div><div class="entity-field-label">Lote</div><div class="entity-field-value mono">' + esc(u.lote) + '</div></div>' +
+                        '<div><div class="entity-field-label">Validade</div><div class="entity-field-value mono">' + esc(u.validade_br) + '</div></div>' +
+                        '<div><div class="entity-field-label">Entrada de origem</div><div class="entity-field-value mono">' + esc(u.entrada || '—') + '</div></div>' +
+                    '</div>' +
+                '</div></div>';
+
+            if (tab !== 'saida') {
+                scanResult.innerHTML = ficha +
+                    '<div class="alert alert-warning mt-3 mb-0">Este código identifica uma unidade já existente em estoque — use a aba Saída para dar baixa nela.</div>';
+                return;
+            }
+
+            if (!u.disponivel) {
+                var motivo = u.status === 'UTILIZADA'
+                    ? 'Esta unidade <strong>já foi utilizada</strong>' +
+                      (u.utilizado_em ? ' em ' + esc(u.utilizado_em) : '') +
+                      (u.utilizado_por ? ' por ' + esc(u.utilizado_por) : '') + '.'
+                    : 'Esta unidade está com status <strong>' + esc(u.status_label) + '</strong> e não pode ser baixada.';
+                scanResult.innerHTML = ficha +
+                    '<div class="alert alert-danger mt-3 mb-0"><strong>ATENÇÃO:</strong> ' + motivo + ' Não é possível registrar uma nova saída para o código ' + esc(u.codigo_interno) + '.</div>';
+                return;
+            }
+
+            itemAtual = { tipo: 'unidade', dados: u };
+            scanResult.innerHTML = ficha;
+            // Unidade física é sempre 1: trava a quantidade e esconde a escolha de lote (o lote já
+            // está determinado pelo código lido).
+            if (loteSelectWrap) loteSelectWrap.style.display = 'none';
+            inserirBtn.disabled = false; // pode ter ficado travado por um lote etiquetado antes
+            quantidadeInput.value = 1;
+            quantidadeInput.readOnly = true;
+            quantidadeHint.textContent = 'Baixa de 1 unidade identificada pelo código ' + u.codigo_interno + '.';
+            campos.style.display = 'block';
+            observacaoInput.focus();
+            return;
+        }
+
+        // Item comum (por produto): devolve a tela ao estado normal, caso a leitura anterior
+        // tenha sido de uma unidade fracionada.
+        quantidadeInput.readOnly = false;
+        if (loteSelectWrap && tab === 'saida') loteSelectWrap.style.display = '';
 
         ajustarCamposPorTipo(data.tipo);
 
@@ -686,8 +1004,9 @@ if (isset($_GET['ok'])) {
                             return;
                         }
                         loteSelect.innerHTML = m.lotes.map(function (l) {
-                            return '<option value="' + l.id + '" data-quantidade="' + l.quantidade + '" data-lote="' + esc(l.lote) + '" data-validade-br="' + esc(l.validade_br) + '" data-valor="' + l.valor_unitario + '" data-valor-venda="' + l.valor_venda + '">' +
+                            return '<option value="' + l.id + '" data-quantidade="' + l.quantidade + '" data-lote="' + esc(l.lote) + '" data-validade-br="' + esc(l.validade_br) + '" data-valor="' + l.valor_unitario + '" data-valor-venda="' + l.valor_venda + '" data-etiquetadas="' + (l.unidades_etiquetadas || 0) + '">' +
                                 l.lote + ' · vence em ' + l.validade_br + ' · ' + l.quantidade + ' un.' +
+                                (l.unidades_etiquetadas ? ' · exige leitura de etiqueta' : '') +
                                 '</option>';
                         }).join('');
                         loteSelect.selectedIndex = 0;
@@ -727,8 +1046,9 @@ if (isset($_GET['ok'])) {
                             return;
                         }
                         loteSelect.innerHTML = i.lotes.map(function (l) {
-                            return '<option value="' + l.id + '" data-quantidade="' + l.quantidade + '" data-lote="' + esc(l.lote) + '" data-validade-br="' + esc(l.validade_br) + '" data-valor="' + l.valor_unitario + '" data-valor-venda="' + l.valor_venda + '">' +
+                            return '<option value="' + l.id + '" data-quantidade="' + l.quantidade + '" data-lote="' + esc(l.lote) + '" data-validade-br="' + esc(l.validade_br) + '" data-valor="' + l.valor_unitario + '" data-valor-venda="' + l.valor_venda + '" data-etiquetadas="' + (l.unidades_etiquetadas || 0) + '">' +
                                 l.lote + ' · vence em ' + l.validade_br + ' · ' + l.quantidade + ' ' + i.unidade_medida +
+                                (l.unidades_etiquetadas ? ' · exige leitura de etiqueta' : '') +
                                 '</option>';
                         }).join('');
                         loteSelect.selectedIndex = 0;
@@ -929,6 +1249,14 @@ if (isset($_GET['ok'])) {
             return Math.round((Number(v) + Number.EPSILON) * 100) / 100;
         }
 
+        // Tipos de unidade disponíveis (AMP, FRS, ...) vêm do PHP — a lista é a mesma usada na
+        // validação do backend, então basta acrescentar um prefixo lá pra ele aparecer aqui.
+        function prefixosOptions(selecionado) {
+            return Object.keys(unidadePrefixos).map(function (pfx) {
+                return '<option value="' + pfx + '"' + (pfx === selecionado ? ' selected' : '') + '>' + esc(unidadePrefixos[pfx]) + '</option>';
+            }).join('');
+        }
+
         // Não é modal: só mostra/esconde a área de importação dentro do próprio fluxo da página
         // (largura total do conteúdo, mas sem cobrir o rail/topbar da aplicação).
         nfeAbrirModalBtn.addEventListener('click', function () {
@@ -962,15 +1290,21 @@ if (isset($_GET['ok'])) {
 
             var pendentes = nfeItens.filter(function (it) { return !it.encontrado; }).length;
             var aAdicionar = nfeItens.filter(function (it) { return !it.adicionado; }).length;
+            // A nota nem sempre traz lote/validade (grupo <rastro> é opcional) — sem os dois, o
+            // item não entra na fila mesmo clicando em Adicionar. Avisa isso de cara, além do
+            // destaque em vermelho nos campos da própria linha.
+            var incompletos = nfeItens.filter(function (it) { return !it.adicionado && (!(it.lote || '').trim() || !it.validade); }).length;
 
             nfeResumoBadge.textContent = nfeItens.length + ' item(ns) na nota' +
                 (aAdicionar ? ', ' + aAdicionar + ' pendente(s) de adicionar' : ', todos adicionados') +
-                (pendentes ? ' (' + pendentes + ' novo(s), sem cadastro ainda)' : '');
+                (pendentes ? ' (' + pendentes + ' novo(s), sem cadastro ainda)' : '') +
+                (incompletos ? ' — ' + incompletos + ' sem lote/validade' : '');
 
             var cabecalho = '<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">' +
                 '<div class="small text-muted">' +
                     (nfeInfo && nfeInfo.numero ? 'NF nº ' + esc(nfeInfo.numero) + (nfeInfo.emitente ? ' · ' + esc(nfeInfo.emitente) : '') : 'Itens da nota') +
                     (pendentes ? ' · <span class="text-warning fw-bold">' + pendentes + ' item(ns) novo(s) — sem correspondência no catálogo</span>' : '') +
+                    (incompletos ? ' · <span class="text-danger fw-bold">' + incompletos + ' item(ns) sem lote/validade — preencha antes de adicionar</span>' : '') +
                 '</div>' +
                 (aAdicionar ? '<button type="button" class="btn btn-sm btn-outline-success" id="nfeAdicionarTodosBtn"><i class="bi bi-plus-lg"></i> Adicionar todos (' + aAdicionar + ')</button>' : '') +
             '</div>';
@@ -984,6 +1318,12 @@ if (isset($_GET['ok'])) {
                     ? '<span class="badge ' + (it.tipo === 'medicamento' ? 'bg-info text-dark' : 'bg-secondary') + ' mb-1">' + (it.tipo === 'medicamento' ? 'Medicamento' : 'Insumo') + '</span><div style="font-size:12.5px;">' + esc(it.produto) + '</div>'
                     : '<span class="badge bg-warning text-dark mb-1">Novo</span><div style="font-size:12.5px;">' + esc(it.nome_nfe) + '</div>' +
                       '<div class="text-warning" style="font-size:11.5px;"><i class="bi bi-exclamation-triangle"></i> Não encontrado — será cadastrado como <strong>insumo</strong> ao adicionar.</div>' +
+                      // A nota frequentemente não traz EAN pra item novo (cEAN "SEM GTIN") — sem
+                      // código de barras salvo no cadastro, a Saída só consegue achar esse insumo
+                      // buscando por nome (leitor de código não serve). Deixa editável aqui pro
+                      // operador informar o código de barras real do produto (lido da embalagem,
+                      // por exemplo), mesmo que a nota não tenha trazido.
+                      '<input type="text" class="form-control form-control-sm nfe-codigo-barras mt-1" data-idx="' + idx + '" placeholder="Código de barras (opcional)" value="' + esc(it.codigo_barras) + '">' +
                       '<button type="button" class="btn btn-sm btn-outline-secondary mt-1 btn-vincular-nfe" data-idx="' + idx + '">Vincular a item existente</button>';
 
                 var fracaoHtml = '<div class="d-flex align-items-center gap-1 mb-1">' +
@@ -991,17 +1331,40 @@ if (isset($_GET['ok'])) {
                         '<label for="nfeFrac' + idx + '" class="form-check-label small mb-0">Item Fracionado</label>' +
                     '</div>' +
                     (it.fracionado ?
+                        // A unidade da fração é escolhida na lista (Ampola, Frasco, Unidade...) e é
+                        // ela que define o prefixo do código de barras da etiqueta — um campo só,
+                        // sem risco de fracionar em "ampola" e etiquetar como "frasco".
                         '<div class="d-flex gap-1">' +
-                            '<input type="number" min="1" step="1" class="form-control form-control-sm nfe-fracao-qtd" data-idx="' + idx + '" style="width:70px;" placeholder="Qtd." value="' + (it.fracaoQtd || '') + '" ' + (it.adicionado ? 'disabled' : '') + '>' +
-                            '<input type="text" class="form-control form-control-sm nfe-fracao-unidade" data-idx="' + idx + '" style="width:90px;" placeholder="unidade" value="' + esc(it.fracaoUnidade) + '" ' + (it.adicionado ? 'disabled' : '') + '>' +
-                        '</div>'
+                            '<input type="number" min="1" max="9999" step="1" class="form-control form-control-sm nfe-fracao-qtd" data-idx="' + idx + '" style="width:80px;" placeholder="Qtd." value="' + (it.fracaoQtd || '') + '" ' + (it.adicionado ? 'disabled' : '') + '>' +
+                            '<select class="form-select form-select-sm nfe-fracao-unidade" data-idx="' + idx + '" style="width:110px;" ' + (it.adicionado ? 'disabled' : '') + '>' +
+                                prefixosOptions(it.fracaoUnidade) +
+                            '</select>' +
+                        '</div>' +
+                        // Etiqueta interna: a unidade solta que sai de uma embalagem aberta
+                        // normalmente não tem código de barras próprio do fabricante — marcando
+                        // aqui, cada unidade ganha um código interno (Code 128) pra Saída.
+                        '<div class="d-flex align-items-center gap-1 mt-1">' +
+                            '<input type="checkbox" class="form-check-input nfe-gerar-unidades" data-idx="' + idx + '" id="nfeGerUn' + idx + '" ' + (it.gerarUnidades ? 'checked' : '') + ' ' + (it.adicionado ? 'disabled' : '') + '>' +
+                            '<label for="nfeGerUn' + idx + '" class="form-check-label small mb-0">Gerar códigos de barras</label>' +
+                        '</div>' +
+                        (it.gerarUnidades ?
+                            '<input type="number" min="1" max="9999" step="1" class="form-control form-control-sm nfe-unidades-qtd mt-1" data-idx="' + idx + '" style="width:110px;" placeholder="Todas" value="' + (it.unidadesQtd || '') + '" ' + (it.adicionado ? 'disabled' : '') + '>'
+                        : '')
                     : '');
 
-                return '<tr>' +
+                // A nota nem sempre traz lote/validade pro item (grupo <rastro> é opcional e varia
+                // por produto, principalmente em itens "Novo" sem cadastro prévio) — mas os dois são
+                // obrigatórios pra dar entrada. Sem destacar isso na própria linha, "Adicionar"
+                // falha com um alerta fácil de não notar (principalmente no "Adicionar todos", que
+                // só soma quantos falharam) e o item nunca chega a ser cadastrado/lançado.
+                var faltaLote = !it.adicionado && !(it.lote || '').trim();
+                var faltaValidade = !it.adicionado && !it.validade;
+
+                return '<tr' + ((faltaLote || faltaValidade) ? ' class="table-warning"' : '') + '>' +
                     '<td style="min-width:170px;">' + produtoCel + '</td>' +
                     '<td style="width:90px;"><input type="number" min="1" class="form-control form-control-sm nfe-quantidade" data-idx="' + idx + '" value="' + it.quantidade + '" ' + (it.adicionado ? 'disabled' : '') + '></td>' +
-                    '<td style="width:120px;"><input type="text" class="form-control form-control-sm nfe-lote" data-idx="' + idx + '" value="' + esc(it.lote) + '" ' + (it.adicionado ? 'disabled' : '') + '></td>' +
-                    '<td style="width:130px;"><input type="month" class="form-control form-control-sm nfe-validade" data-idx="' + idx + '" value="' + (it.validade || '') + '" ' + (it.adicionado ? 'disabled' : '') + '></td>' +
+                    '<td style="width:120px;"><input type="text" class="form-control form-control-sm nfe-lote' + (faltaLote ? ' border-danger' : '') + '" data-idx="' + idx + '" placeholder="obrigatório" value="' + esc(it.lote) + '" ' + (it.adicionado ? 'disabled' : '') + '></td>' +
+                    '<td style="width:100px;"><input type="text" inputmode="numeric" maxlength="5" placeholder="MM/AA" class="form-control form-control-sm mono nfe-validade' + (faltaValidade ? ' border-danger' : '') + '" data-idx="' + idx + '" value="' + anoMesParaValidade(it.validade) + '" ' + (it.adicionado ? 'disabled' : '') + '></td>' +
                     '<td style="width:110px;"><input type="number" min="0" step="0.01" class="form-control form-control-sm nfe-valor" data-idx="' + idx + '" value="' + it.valor_unitario + '" ' + (it.adicionado ? 'disabled' : '') + '></td>' +
                     '<td style="width:110px;"><input type="number" min="0" step="0.01" class="form-control form-control-sm nfe-valor-venda" data-idx="' + idx + '" value="' + it.valor_venda + '" ' + (it.adicionado ? 'disabled' : '') + '></td>' +
                     '<td style="width:150px;">' + fracaoHtml + '</td>' +
@@ -1025,14 +1388,25 @@ if (isset($_GET['ok'])) {
                     it.quantidadeBase = it.quantidade;
                 });
             });
+            nfeResumo.querySelectorAll('.nfe-codigo-barras').forEach(function (el) {
+                el.addEventListener('input', function () {
+                    nfeItens[parseInt(el.getAttribute('data-idx'), 10)].codigo_barras = el.value.trim();
+                });
+            });
             nfeResumo.querySelectorAll('.nfe-lote').forEach(function (el) {
                 el.addEventListener('input', function () {
                     nfeItens[parseInt(el.getAttribute('data-idx'), 10)].lote = el.value;
+                    // Tira o destaque de "obrigatório" assim que o operador preenche, sem precisar
+                    // re-renderizar a tabela inteira (perderia o foco no meio da digitação).
+                    el.classList.toggle('border-danger', !el.value.trim());
                 });
             });
             nfeResumo.querySelectorAll('.nfe-validade').forEach(function (el) {
                 el.addEventListener('input', function () {
-                    nfeItens[parseInt(el.getAttribute('data-idx'), 10)].validade = el.value;
+                    aplicarMascaraValidade(el);
+                    var anoMes = validadeParaAnoMes(el.value);
+                    nfeItens[parseInt(el.getAttribute('data-idx'), 10)].validade = anoMes;
+                    el.classList.toggle('border-danger', !anoMes);
                 });
             });
             nfeResumo.querySelectorAll('.nfe-valor').forEach(function (el) {
@@ -1063,15 +1437,34 @@ if (isset($_GET['ok'])) {
             });
             nfeResumo.querySelectorAll('.nfe-fracao-qtd').forEach(function (el) {
                 el.addEventListener('input', function () {
-                    var it = nfeItens[parseInt(el.getAttribute('data-idx'), 10)];
+                    var idx = parseInt(el.getAttribute('data-idx'), 10);
+                    var it = nfeItens[idx];
                     it.fracaoQtd = parseInt(el.value, 10) || 0;
                     aplicarFracao(it);
-                    renderNfeResumo();
+                    // Atualiza só os campos afetados (quantidade e valor de venda) na mesma linha —
+                    // re-renderizar a tabela inteira aqui destruiria e recriaria este próprio campo
+                    // a cada tecla digitada, tirando o foco e deixando digitar só 1 dígito por vez.
+                    var qtdInput = nfeResumo.querySelector('.nfe-quantidade[data-idx="' + idx + '"]');
+                    if (qtdInput) qtdInput.value = it.quantidade;
+                    var vendaInput = nfeResumo.querySelector('.nfe-valor-venda[data-idx="' + idx + '"]');
+                    if (vendaInput) vendaInput.value = it.valor_venda;
                 });
             });
             nfeResumo.querySelectorAll('.nfe-fracao-unidade').forEach(function (el) {
-                el.addEventListener('input', function () {
+                el.addEventListener('change', function () {
                     nfeItens[parseInt(el.getAttribute('data-idx'), 10)].fracaoUnidade = el.value;
+                });
+            });
+            nfeResumo.querySelectorAll('.nfe-gerar-unidades').forEach(function (el) {
+                el.addEventListener('change', function () {
+                    var it = nfeItens[parseInt(el.getAttribute('data-idx'), 10)];
+                    it.gerarUnidades = el.checked;
+                    renderNfeResumo(); // mostra/esconde a quantidade a etiquetar — muda a estrutura
+                });
+            });
+            nfeResumo.querySelectorAll('.nfe-unidades-qtd').forEach(function (el) {
+                el.addEventListener('input', function () {
+                    nfeItens[parseInt(el.getAttribute('data-idx'), 10)].unidadesQtd = parseInt(el.value, 10) || 0;
                 });
             });
             nfeResumo.querySelectorAll('.btn-vincular-nfe').forEach(function (btn) {
@@ -1119,7 +1512,7 @@ if (isset($_GET['ok'])) {
 
             var observacao = 'Nota fiscal' + (nfeInfo && nfeInfo.numero ? ' nº ' + nfeInfo.numero : '') + (nfeInfo && nfeInfo.emitente ? ' · ' + nfeInfo.emitente : '');
             if (it.fracionado && it.fracaoQtd > 0) {
-                observacao += ' · Fracionado: embalagem com ' + it.fracaoQtd + ' ' + (it.fracaoUnidade || 'un.');
+                observacao += ' · Fracionado: embalagem com ' + it.fracaoQtd + ' ' + nomeUnidade(it.fracaoUnidade);
             }
 
             // Item sem correspondência no catálogo (it.tipo/it.item_id nulos) é sempre tratado como
@@ -1138,7 +1531,16 @@ if (isset($_GET['ok'])) {
                 validade: it.validade,
                 validadeBr: formatarDataBr(it.validade),
                 valor_unitario: valorUnitario,
-                valor_venda: valorVenda
+                valor_venda: valorVenda,
+                // Item fracionado: valor_unitario (compra) fica com o preço da embalagem inteira,
+                // não da fração — multiplicar por quantidade (já em unidades fracionadas) daria um
+                // subtotal inflado. O subtotal desse item usa o valor de venda (esse sim já
+                // fracionado) em vez do de compra — ver renderItens().
+                fracionado: !!(it.fracionado && it.fracaoQtd > 0),
+                // Geração das etiquetas com código interno (uma por unidade física).
+                gerar_unidades: !!(it.fracionado && it.gerarUnidades),
+                unidade_prefixo: it.fracaoUnidade || 'AMP',
+                unidades_qtd: (it.unidadesQtd && it.unidadesQtd > 0) ? Math.min(it.unidadesQtd, quantidade) : quantidade
             });
             renderItens();
 
@@ -1183,7 +1585,9 @@ if (isset($_GET['ok'])) {
                             valorVendaBase: 0,
                             fracionado: false,
                             fracaoQtd: null,
-                            fracaoUnidade: '',
+                            // Guarda o prefixo do tipo de unidade (AMP, FRS, UNI...): é ele que
+                            // nomeia a fração na observação e define o código da etiqueta.
+                            fracaoUnidade: 'AMP',
                             adicionado: false
                         });
                     });
@@ -1346,15 +1750,26 @@ if (isset($_GET['ok'])) {
                 ? 'Lote ' + esc(item.lote) + ' · vence em ' + esc(item.validadeBr) + ' · '
                 : '';
             // Entrada acompanha custo (compra); Saída — o que interessa é o valor de venda, já que
-            // é isso que é "consumido"/repassado na retirada.
-            var subtotal = tab === 'saida'
+            // é isso que é "consumido"/repassado na retirada. Item fracionado é exceção mesmo na
+            // Entrada: valor_unitario (compra) é o preço da embalagem inteira, não da fração — com
+            // a quantidade já em unidades fracionadas, compra × quantidade daria um total inflado.
+            // Usa o valor de venda (esse sim já fracionado por unidade) pro subtotal desses itens.
+            var usarVenda = tab === 'saida' || item.fracionado;
+            var subtotal = usarVenda
                 ? (item.valor_venda || 0) * item.quantidade
                 : (item.valor_unitario || 0) * item.quantidade;
-            var linhaValores = tab === 'saida'
-                ? formatarMoeda(item.valor_venda) + ' / un. · Subtotal: ' + formatarMoeda(subtotal)
-                : 'Compra: ' + formatarMoeda(item.valor_unitario) + ' / un.' +
+            var linhaValores;
+            if (tab === 'saida') {
+                linhaValores = formatarMoeda(item.valor_venda) + ' / un. · Subtotal: ' + formatarMoeda(subtotal);
+            } else if (item.fracionado) {
+                linhaValores = 'Compra (embalagem): ' + formatarMoeda(item.valor_unitario) +
                     (item.valor_venda ? ' · Venda: ' + formatarMoeda(item.valor_venda) + ' / un.' : '') +
                     ' · Subtotal: ' + formatarMoeda(subtotal);
+            } else {
+                linhaValores = 'Compra: ' + formatarMoeda(item.valor_unitario) + ' / un.' +
+                    (item.valor_venda ? ' · Venda: ' + formatarMoeda(item.valor_venda) + ' / un.' : '') +
+                    ' · Subtotal: ' + formatarMoeda(subtotal);
+            }
             return '<div class="entity-card" style="padding:10px 12px;margin-bottom:8px;">' +
                 '<div class="d-flex justify-content-between align-items-start gap-2">' +
                     '<div class="min-w-0">' +
@@ -1366,6 +1781,12 @@ if (isset($_GET['ok'])) {
                         '<div class="entity-sub">' + detalheLote + esc(item.quantidade) + ' un.' +
                             (item.observacao ? ' · ' + esc(item.observacao) : '') +
                         '</div>' +
+                        (item.unidade_codigo
+                            ? '<div class="entity-sub mono"><span class="badge bg-dark">Unidade</span> ' + esc(item.unidade_codigo) + '</div>'
+                            : '') +
+                        (item.gerar_unidades
+                            ? '<div class="entity-sub"><span class="badge bg-dark">Etiquetas</span> ' + esc(item.unidades_qtd) + ' código(s) ' + esc(item.unidade_prefixo) + ' serão gerados</div>'
+                            : '') +
                         '<div class="entity-sub mono">' + linhaValores + '</div>' +
                     '</div>' +
                     '<button type="button" class="btn btn-sm btn-outline-danger btn-remover-item" data-idx="' + idx + '" title="Remover"><i class="bi bi-x-lg"></i></button>' +
@@ -1390,6 +1811,43 @@ if (isset($_GET['ok'])) {
 
     inserirBtn.addEventListener('click', function () {
         if (!itemAtual) return;
+
+        // Saída lida por código interno: a baixa é de UMA unidade física específica — não tem
+        // escolha de lote nem quantidade, tudo já vem determinado pelo código da etiqueta.
+        if (itemAtual.tipo === 'unidade') {
+            var u = itemAtual.dados;
+            if (!u.disponivel) { alert('A unidade ' + u.codigo_interno + ' não está disponível para saída.'); return; }
+            var jaNaLista = itens.some(function (i) { return i.unidade_id === u.id; });
+            if (jaNaLista) { alert('A unidade ' + u.codigo_interno + ' já está na lista desta saída.'); return; }
+
+            itens.push({
+                tipo_item: u.tipo_item,
+                item_id: u.item_id,
+                unidade_id: u.id,
+                unidade_codigo: u.codigo_interno,
+                codigo_barras: u.codigo_interno,
+                produto: u.produto,
+                laboratorio: u.origem,
+                apresentacao: u.apresentacao,
+                quantidade: 1,
+                observacao: observacaoInput.value.trim(),
+                lote_id: u.lote_id,
+                lote: u.lote,
+                validadeBr: u.validade_br,
+                valor_unitario: u.valor_unitario,
+                valor_venda: u.valor_venda
+            });
+            renderItens();
+
+            itemAtual = null;
+            codigoInput.value = '';
+            observacaoInput.value = '';
+            scanResult.innerHTML = '';
+            campos.style.display = 'none';
+            codigoInput.focus();
+            return;
+        }
+
         var quantidade = parseInt(quantidadeInput.value, 10);
         var observacao = observacaoInput.value.trim();
 
@@ -1418,9 +1876,9 @@ if (isset($_GET['ok'])) {
 
         if (tab === 'entrada') {
             var lote = loteInput.value.trim();
-            var validade = validadeInput.value;
             if (!lote) { alert('Informe o lote.'); return; }
-            if (!validade) { alert('Informe a validade.'); return; }
+            var validade = validadeParaAnoMes(validadeInput.value);
+            if (!validade) { alert('Informe a validade no formato MM/AA.'); return; }
             novoItem.lote = lote;
             novoItem.validade = validade;
             novoItem.validadeBr = formatarDataBr(validade);
@@ -1429,6 +1887,31 @@ if (isset($_GET['ok'])) {
             }
             novoItem.valor_unitario = parseFloat(valorUnitarioInput.value);
             novoItem.valor_venda = parseFloat(valorVendaInput.value) || 0;
+
+            // Fracionamento na entrada manual: mesma regra do fracionado da NFe — a quantidade
+            // digitada (embalagens) vira quantidade de unidades soltas e o valor de venda é
+            // rateado entre elas; o valor de compra fica fixo, referente à embalagem inteira.
+            if (fracionadoCheck && fracionadoCheck.checked) {
+                var fracaoQtd = parseInt(fracaoQtdInput.value, 10);
+                if (!fracaoQtd || fracaoQtd < 1) { alert('Informe quantas unidades vêm na embalagem.'); return; }
+
+                var fracaoPrefixo = fracaoUnidadeInput.value;
+                novoItem.quantidade = quantidade * fracaoQtd;
+                novoItem.valor_venda = Math.round(((novoItem.valor_venda / fracaoQtd) + Number.EPSILON) * 100) / 100;
+                novoItem.fracionado = true;
+                novoItem.observacao = (observacao ? observacao + ' · ' : '') +
+                    'Fracionado: embalagem com ' + fracaoQtd + ' ' + nomeUnidade(fracaoPrefixo);
+
+                if (gerarUnidadesCheck.checked) {
+                    var etiquetas = parseInt(unidadesQtdInput.value, 10);
+                    // O tipo do código de barras é a própria unidade da fração escolhida.
+                    novoItem.gerar_unidades = true;
+                    novoItem.unidade_prefixo = fracaoPrefixo;
+                    novoItem.unidades_qtd = (etiquetas && etiquetas > 0)
+                        ? Math.min(etiquetas, novoItem.quantidade)
+                        : novoItem.quantidade;
+                }
+            }
         } else {
             var opt = loteSelect.options[loteSelect.selectedIndex];
             if (!opt || !opt.value) { alert('Selecione o lote.'); return; }
@@ -1450,6 +1933,15 @@ if (isset($_GET['ok'])) {
         campos.style.display = 'none';
         if (valorUnitarioInput) valorUnitarioInput.value = '';
         if (valorVendaInput) valorVendaInput.value = '';
+        if (fracionadoCheck) {
+            fracionadoCheck.checked = false;
+            gerarUnidadesCheck.checked = false;
+            fracionadoCamposWrap.style.display = 'none';
+            unidadesCamposWrap.style.display = 'none';
+            fracaoQtdInput.value = '';
+            fracaoUnidadeInput.selectedIndex = 0;
+            unidadesQtdInput.value = '';
+        }
         codigoInput.focus();
     });
 
