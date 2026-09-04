@@ -1,10 +1,15 @@
 <?php
 $db = getDB();
-$tab = in_array($_GET['tab'] ?? '', ['movimentacoes', 'historico', 'estoque_minimo'], true) ? $_GET['tab'] : 'estoque';
+$tab = in_array($_GET['tab'] ?? '', ['movimentacoes', 'entradas', 'saidas', 'estoque_minimo'], true) ? $_GET['tab'] : 'estoque';
 $labs = $db->query("SELECT DISTINCT laboratorio FROM medicamentos_anvisa WHERE laboratorio <> '' ORDER BY laboratorio ASC")->fetchAll(PDO::FETCH_COLUMN);
 
 $laboratorio = trim($_GET['laboratorio'] ?? '');
 $busca = trim($_GET['busca'] ?? '');
+
+function nomeFornecedorExibicao(?string $razao, ?string $fantasia): string {
+    if (!$razao) return '';
+    return ($fantasia && $fantasia !== $razao) ? "{$razao} ({$fantasia})" : $razao;
+}
 
 function csvOutput($filename, $header, $rows) {
     header('Content-Type: text/csv; charset=utf-8');
@@ -32,10 +37,12 @@ function buscarMovimentacoesAgrupadas(PDO $db, string $tipo, string $dataInicio,
     $sql = "SELECT {$grupoSql} AS grupo_chave, MIN(mv.created_at) AS created_at, MAX(mv.usuario) AS usuario,
             COUNT(*) AS total_itens, SUM(mv.quantidade) AS total_quantidade,
             SUM(mv.quantidade * mv.{$colunaValor}) AS valor_total,
-            MAX(p.nome_completo) AS paciente_nome
+            MAX(p.nome_completo) AS paciente_nome,
+            MAX(f.razao_social) AS fornecedor_razao, MAX(f.nome_fantasia) AS fornecedor_fantasia
         FROM movimentacoes mv
         LEFT JOIN movimentacao_confirmacoes mc ON mc.id = mv.confirmacao_id
         LEFT JOIN pacientes p ON p.id = mc.paciente_id
+        LEFT JOIN fornecedores f ON f.id = mc.fornecedor_id
         WHERE mv.tipo = :tipo AND mv.created_at >= :di AND mv.created_at < DATE_ADD(:df, INTERVAL 1 DAY)
         GROUP BY grupo_chave
         ORDER BY created_at DESC";
@@ -51,11 +58,14 @@ function buscarMovimentacoesDetalhado(PDO $db, string $tipo, string $dataInicio,
     $sql = "SELECT mv.created_at, mv.quantidade, mv.valor_unitario, mv.valor_venda, mv.usuario,
             COALESCE(md.produto, ins.nome_comercial) AS medicamento_nome,
             COALESCE(md.laboratorio, ins.marca) AS laboratorio_nome,
-            l.lote AS lote
+            l.lote AS lote,
+            f.razao_social AS fornecedor_razao, f.nome_fantasia AS fornecedor_fantasia
         FROM movimentacoes mv
         LEFT JOIN medicamentos_anvisa md ON md.id = mv.medicamento_id
         LEFT JOIN insumos ins ON ins.id = mv.insumo_id
         LEFT JOIN insumo_lotes l ON l.id = mv.lote_id
+        LEFT JOIN movimentacao_confirmacoes mc ON mc.id = mv.confirmacao_id
+        LEFT JOIN fornecedores f ON f.id = mc.fornecedor_id
         WHERE mv.tipo = :tipo AND mv.created_at >= :di AND mv.created_at < DATE_ADD(:df, INTERVAL 1 DAY)
         ORDER BY mv.created_at DESC";
     $stmt = $db->prepare($sql);
@@ -130,7 +140,7 @@ if ($tab === 'estoque') {
             COALESCE(md.produto, ins.nome_comercial) AS medicamento_nome,
             COALESCE(md.laboratorio, ins.marca) AS laboratorio_nome,
             md.codigo_ggrem,
-            l.lote AS lote
+            l.lote AS lote, l.validade AS validade
         FROM movimentacoes mv
         LEFT JOIN medicamentos_anvisa md ON md.id = mv.medicamento_id
         LEFT JOIN insumos ins ON ins.id = mv.insumo_id
@@ -145,6 +155,13 @@ if ($tab === 'estoque') {
     $stmt->execute($params);
     $linhas = $stmt->fetchAll();
 
+    $totalMovEntradas = 0; $totalMovSaidas = 0; $valorMovimentado = 0;
+    foreach ($linhas as $m) {
+        if ($m['tipo'] === 'entrada') { $totalMovEntradas++; $valorBase = (float)$m['valor_unitario']; }
+        else { $totalMovSaidas++; $valorBase = (float)$m['valor_venda']; }
+        $valorMovimentado += $valorBase * (int)$m['quantidade'];
+    }
+
     if (($_GET['format'] ?? '') === 'csv') {
         // Entrada usa o valor de compra (custo); Saída usa o valor de venda — a coluna "Tipo" já
         // diz qual dos dois é cada linha.
@@ -157,32 +174,36 @@ if ($tab === 'estoque') {
         csvOutput('relatorio_movimentacoes.csv', ['Data/Hora', 'Tipo', 'Medicamento', 'Laboratório', 'Lote', 'Quantidade', 'Valor (Compra/Venda)', 'Subtotal', 'Usuário', 'Observação'], $rows);
     }
 } else {
-    // historico: entradas e saídas, ambas agrupadas por confirmação, lado a lado.
+    // entradas / saidas: cada uma agora é uma visão própria (cheia largura), em vez de dividir a
+    // tela ao meio — dá espaço pra tabela respirar e caber mais colunas (ex: Fornecedor) sem
+    // espremer. tipoMov é o valor usado nas colunas tipo/tipo de movimentacoes ('entrada'/'saida'),
+    // já que o nome da aba é o plural.
+    $tipoMov = $tab === 'entradas' ? 'entrada' : 'saida';
     $dataInicio = trim($_GET['data_inicio'] ?? date('Y-m-01'));
     $dataFim = trim($_GET['data_fim'] ?? date('Y-m-d'));
 
-    $entradasAgrupadas = buscarMovimentacoesAgrupadas($db, 'entrada', $dataInicio, $dataFim);
-    $saidasAgrupadas = buscarMovimentacoesAgrupadas($db, 'saida', $dataInicio, $dataFim);
+    $agrupadas = buscarMovimentacoesAgrupadas($db, $tipoMov, $dataInicio, $dataFim);
 
-    $csvTipo = $_GET['csv_tipo'] ?? '';
-    if (($_GET['format'] ?? '') === 'csv' && in_array($csvTipo, ['entrada', 'saida'], true)) {
-        $colunaValorCsv = $csvTipo === 'saida' ? 'Valor Venda' : 'Valor Compra';
-        $rows = array_map(function ($m) use ($csvTipo) {
-            $valorBase = $csvTipo === 'saida' ? (float)$m['valor_venda'] : (float)$m['valor_unitario'];
+    if (($_GET['format'] ?? '') === 'csv') {
+        $colunaValorCsv = $tipoMov === 'saida' ? 'Valor Venda' : 'Valor Compra';
+        $rows = array_map(function ($m) use ($tipoMov) {
+            $valorBase = $tipoMov === 'saida' ? (float)$m['valor_venda'] : (float)$m['valor_unitario'];
             $valorFmt = number_format($valorBase, 2, ',', '');
             $subtotal = number_format($valorBase * (int)$m['quantidade'], 2, ',', '');
-            return [date('d/m/Y', strtotime($m['created_at'])), date('H:i', strtotime($m['created_at'])), $m['medicamento_nome'], $m['laboratorio_nome'], $m['lote'], $m['quantidade'], $valorFmt, $subtotal, $m['usuario']];
-        }, buscarMovimentacoesDetalhado($db, $csvTipo, $dataInicio, $dataFim));
-        $nome = $csvTipo === 'entrada' ? 'relatorio_entradas.csv' : 'relatorio_saidas.csv';
-        csvOutput($nome, ['Data', 'Hora', 'Medicamento', 'Laboratório', 'Lote', 'Quantidade', $colunaValorCsv, 'Subtotal', 'Usuário'], $rows);
+            $linha = [date('d/m/Y', strtotime($m['created_at'])), date('H:i', strtotime($m['created_at'])), $m['medicamento_nome'], $m['laboratorio_nome'], $m['lote'], $m['quantidade'], $valorFmt, $subtotal, $m['usuario']];
+            if ($tipoMov === 'entrada') $linha[] = nomeFornecedorExibicao($m['fornecedor_razao'], $m['fornecedor_fantasia']);
+            return $linha;
+        }, buscarMovimentacoesDetalhado($db, $tipoMov, $dataInicio, $dataFim));
+        $nome = $tipoMov === 'entrada' ? 'relatorio_entradas.csv' : 'relatorio_saidas.csv';
+        $header = ['Data', 'Hora', 'Medicamento', 'Laboratório', 'Lote', 'Quantidade', $colunaValorCsv, 'Subtotal', 'Usuário'];
+        if ($tipoMov === 'entrada') $header[] = 'Fornecedor';
+        csvOutput($nome, $header, $rows);
     }
 }
 
 $qs = $_GET;
-unset($qs['format'], $qs['csv_tipo']);
+unset($qs['format']);
 $csvQs = http_build_query(array_merge($qs, ['format' => 'csv']));
-$csvEntradasQs = http_build_query(array_merge($qs, ['format' => 'csv', 'csv_tipo' => 'entrada']));
-$csvSaidasQs = http_build_query(array_merge($qs, ['format' => 'csv', 'csv_tipo' => 'saida']));
 ?>
 <div class="page-head">
     <div>
@@ -194,7 +215,8 @@ $csvSaidasQs = http_build_query(array_merge($qs, ['format' => 'csv', 'csv_tipo' 
 <ul class="nav nav-tabs mb-4">
     <li class="nav-item"><a class="nav-link <?= $tab === 'estoque' ? 'active' : '' ?>" href="index.php?page=relatorios&tab=estoque">Estoque por Vencimento</a></li>
     <li class="nav-item"><a class="nav-link <?= $tab === 'estoque_minimo' ? 'active' : '' ?>" href="index.php?page=relatorios&tab=estoque_minimo">Estoque Mínimo</a></li>
-    <li class="nav-item"><a class="nav-link <?= $tab === 'historico' ? 'active' : '' ?>" href="index.php?page=relatorios&tab=historico">Entradas e Saídas</a></li>
+    <li class="nav-item"><a class="nav-link <?= $tab === 'entradas' ? 'active' : '' ?>" href="index.php?page=relatorios&tab=entradas">Entradas</a></li>
+    <li class="nav-item"><a class="nav-link <?= $tab === 'saidas' ? 'active' : '' ?>" href="index.php?page=relatorios&tab=saidas">Saídas</a></li>
     <li class="nav-item"><a class="nav-link <?= $tab === 'movimentacoes' ? 'active' : '' ?>" href="index.php?page=relatorios&tab=movimentacoes">Movimentações</a></li>
 </ul>
 
@@ -275,113 +297,107 @@ $csvSaidasQs = http_build_query(array_merge($qs, ['format' => 'csv', 'csv_tipo' 
         </table>
     </div>
 
-<?php elseif ($tab === 'historico'): ?>
+<?php elseif ($tab === 'entradas' || $tab === 'saidas'):
+    $ehEntrada = $tab === 'entradas';
+    $totalConfirmacoes = count($agrupadas);
+    $totalItensSoma = array_sum(array_map(function ($m) { return (int)$m['total_itens']; }, $agrupadas));
+    $totalQuantidadeSoma = array_sum(array_map(function ($m) { return (int)$m['total_quantidade']; }, $agrupadas));
+    $valorTotalSoma = array_sum(array_map(function ($m) { return (float)$m['valor_total']; }, $agrupadas));
+    ?>
     <form method="GET" class="entity-list-toolbar">
         <input type="hidden" name="page" value="relatorios">
-        <input type="hidden" name="tab" value="historico">
-        <input type="date" name="data_inicio" class="form-control" style="max-width:160px;" value="<?= htmlspecialchars($dataInicio) ?>">
-        <input type="date" name="data_fim" class="form-control" style="max-width:160px;" value="<?= htmlspecialchars($dataFim) ?>">
+        <input type="hidden" name="tab" value="<?= htmlspecialchars($tab) ?>">
+        <input type="date" name="data_inicio" class="form-control" style="max-width:170px;" value="<?= htmlspecialchars($dataInicio) ?>">
+        <input type="date" name="data_fim" class="form-control" style="max-width:170px;" value="<?= htmlspecialchars($dataFim) ?>">
         <button class="btn btn-outline-primary">Filtrar</button>
+        <a class="btn btn-outline-secondary ms-auto" href="?<?= htmlspecialchars($csvQs) ?>"><i class="bi bi-download"></i> Exportar CSV</a>
     </form>
 
-    <?php
-    $valorTotalEntradas = array_sum(array_map(function ($e) { return (float)$e['valor_total']; }, $entradasAgrupadas));
-    $valorTotalSaidas = array_sum(array_map(function ($s) { return (float)$s['valor_total']; }, $saidasAgrupadas));
-    ?>
-    <div class="row g-3">
-        <div class="col-lg-6">
-            <div class="card h-100">
-                <div class="card-header d-flex justify-content-between align-items-center">
-                    <span><i class="bi bi-arrow-down-circle text-success"></i> Entradas</span>
-                    <a class="small fw-bold" href="?<?= htmlspecialchars($csvEntradasQs) ?>"><i class="bi bi-download"></i> Exportar CSV</a>
-                </div>
-                <div class="form-text px-3 pt-2">Cada linha é uma confirmação de entrada — clique em "Ver Itens" para conferir os medicamentos incluídos.</div>
-                <div class="d-flex justify-content-between align-items-center px-3 py-2 border-bottom bg-light">
-                    <span class="small text-muted">Valor total investido no período</span>
-                    <span class="fw-bold">R$ <?= number_format($valorTotalEntradas, 2, ',', '.') ?></span>
-                </div>
-                <div class="table-responsive">
-                    <table class="table table-striped table-hover bg-white align-middle mb-0">
-                        <thead class="table-dark">
-                            <tr><th>Data</th><th>Hora</th><th>Usuário</th><th class="text-center">Itens</th><th class="text-center">Qtd. Total</th><th class="text-end">Valor Total</th><th></th></tr>
-                        </thead>
-                        <tbody>
-                            <?php if (empty($entradasAgrupadas)): ?>
-                                <tr><td colspan="7" class="text-center text-muted py-4">Nenhuma entrada neste período.</td></tr>
-                            <?php else: ?>
-                                <?php foreach ($entradasAgrupadas as $e): ?>
-                                    <tr>
-                                        <td class="mono text-nowrap"><?= date('d/m/Y', strtotime($e['created_at'])) ?></td>
-                                        <td class="mono"><?= date('H:i', strtotime($e['created_at'])) ?></td>
-                                        <td><?= htmlspecialchars($e['usuario']) ?></td>
-                                        <td class="text-center"><?= (int)$e['total_itens'] ?></td>
-                                        <td class="text-center"><?= (int)$e['total_quantidade'] ?></td>
-                                        <td class="text-end mono">R$ <?= number_format((float)$e['valor_total'], 2, ',', '.') ?></td>
-                                        <td class="text-nowrap">
-                                            <button type="button" class="btn btn-sm btn-outline-primary btn-ver-itens" data-grupo="<?= htmlspecialchars($e['grupo_chave']) ?>" data-tipo="entrada">
-                                                <i class="bi bi-list-ul"></i> Ver Itens
-                                            </button>
-                                        </td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            <?php endif; ?>
-                        </tbody>
-                    </table>
-                </div>
+    <div class="stat-strip">
+        <div class="stat-tile">
+            <div>
+                <div class="stat-label"><?= $ehEntrada ? 'Entradas Confirmadas' : 'Saídas Confirmadas' ?></div>
+                <div class="stat-value"><?= $totalConfirmacoes ?></div>
+                <div class="stat-note">no período selecionado</div>
+            </div>
+            <div class="stat-icon <?= $ehEntrada ? 'green' : 'red' ?>">
+                <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><?= $ehEntrada ? '<path d="M12 19V5M6 11l6-6 6 6"/>' : '<path d="M12 5v14M6 13l6 6 6-6"/>' ?></svg>
             </div>
         </div>
-        <div class="col-lg-6">
-            <div class="card h-100">
-                <div class="card-header d-flex justify-content-between align-items-center">
-                    <span><i class="bi bi-arrow-up-circle text-danger"></i> Saídas</span>
-                    <a class="small fw-bold" href="?<?= htmlspecialchars($csvSaidasQs) ?>"><i class="bi bi-download"></i> Exportar CSV</a>
-                </div>
-                <div class="form-text px-3 pt-2">Cada linha é uma confirmação de saída — clique em "Ver Itens" para conferir o resumo financeiro da operação.</div>
-                <div class="d-flex justify-content-between align-items-center px-3 py-2 border-bottom bg-light">
-                    <span class="small text-muted">Valor total retirado no período</span>
-                    <span class="fw-bold">R$ <?= number_format($valorTotalSaidas, 2, ',', '.') ?></span>
-                </div>
-                <div class="table-responsive">
-                    <table class="table table-striped table-hover bg-white align-middle mb-0">
-                        <thead class="table-dark">
-                            <tr><th>Data</th><th>Hora</th><th>Usuário</th><th>Paciente</th><th class="text-center">Itens</th><th class="text-center">Qtd. Total</th><th class="text-end">Valor Total</th><th></th></tr>
-                        </thead>
-                        <tbody>
-                            <?php if (empty($saidasAgrupadas)): ?>
-                                <tr><td colspan="8" class="text-center text-muted py-4">Nenhuma saída neste período.</td></tr>
-                            <?php else: ?>
-                                <?php foreach ($saidasAgrupadas as $s): ?>
-                                    <tr>
-                                        <td class="mono text-nowrap"><?= date('d/m/Y', strtotime($s['created_at'])) ?></td>
-                                        <td class="mono"><?= date('H:i', strtotime($s['created_at'])) ?></td>
-                                        <td><?= htmlspecialchars($s['usuario']) ?></td>
-                                        <td><?= htmlspecialchars($s['paciente_nome'] ?: '—') ?></td>
-                                        <td class="text-center"><?= (int)$s['total_itens'] ?></td>
-                                        <td class="text-center"><?= (int)$s['total_quantidade'] ?></td>
-                                        <td class="text-end mono">R$ <?= number_format((float)$s['valor_total'], 2, ',', '.') ?></td>
-                                        <td class="text-nowrap">
-                                            <button type="button" class="btn btn-sm btn-outline-primary btn-ver-itens" data-grupo="<?= htmlspecialchars($s['grupo_chave']) ?>" data-tipo="saida">
-                                                <i class="bi bi-list-ul"></i> Ver Itens
-                                            </button>
-                                        </td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            <?php endif; ?>
-                        </tbody>
-                    </table>
-                </div>
+        <div class="stat-tile">
+            <div>
+                <div class="stat-label">Itens Movimentados</div>
+                <div class="stat-value"><?= $totalItensSoma ?></div>
+                <div class="stat-note"><?= $totalQuantidadeSoma ?> unidade(s) ao todo</div>
             </div>
+            <div class="stat-icon blue"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 10h17M8 3.5v3M16 3.5v3"/></svg></div>
+        </div>
+        <div class="stat-tile">
+            <div>
+                <div class="stat-label"><?= $ehEntrada ? 'Valor Investido' : 'Valor Retirado' ?></div>
+                <div class="stat-value">R$ <?= number_format($valorTotalSoma, 2, ',', '.') ?></div>
+                <div class="stat-note"><?= $ehEntrada ? 'valor de compra no período' : 'valor de venda no período' ?></div>
+            </div>
+            <div class="stat-icon orange"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg></div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header d-flex align-items-center">
+            <span><i class="bi <?= $ehEntrada ? 'bi-arrow-down-circle text-success' : 'bi-arrow-up-circle text-danger' ?>"></i> <?= $ehEntrada ? 'Entradas do período' : 'Saídas do período' ?></span>
+        </div>
+        <div class="form-text px-3 pt-2">Cada linha é uma confirmação de <?= $ehEntrada ? 'entrada' : 'saída' ?> — clique em "Ver Itens" para conferir <?= $ehEntrada ? 'os medicamentos incluídos' : 'o resumo financeiro da operação' ?>.</div>
+        <div class="table-responsive">
+            <table class="table table-striped table-hover bg-white align-middle mb-0">
+                <thead class="table-dark">
+                    <tr>
+                        <th>Data</th><th>Hora</th><th>Usuário</th>
+                        <?php if ($ehEntrada): ?><th>Fornecedor</th><?php else: ?><th>Paciente</th><?php endif; ?>
+                        <th class="text-center">Itens</th><th class="text-center">Qtd. Total</th><th class="text-end">Valor Total</th><th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php if (empty($agrupadas)): ?>
+                        <tr><td colspan="8" class="text-center text-muted py-5">Nenhuma <?= $ehEntrada ? 'entrada' : 'saída' ?> neste período.</td></tr>
+                    <?php else: ?>
+                        <?php foreach ($agrupadas as $m): ?>
+                            <tr>
+                                <td class="mono text-nowrap"><?= date('d/m/Y', strtotime($m['created_at'])) ?></td>
+                                <td class="mono"><?= date('H:i', strtotime($m['created_at'])) ?></td>
+                                <td><?= htmlspecialchars($m['usuario']) ?></td>
+                                <?php if ($ehEntrada): ?>
+                                    <td><?= htmlspecialchars(nomeFornecedorExibicao($m['fornecedor_razao'], $m['fornecedor_fantasia']) ?: '—') ?></td>
+                                <?php else: ?>
+                                    <td><?= htmlspecialchars($m['paciente_nome'] ?: '—') ?></td>
+                                <?php endif; ?>
+                                <td class="text-center"><?= (int)$m['total_itens'] ?></td>
+                                <td class="text-center"><?= (int)$m['total_quantidade'] ?></td>
+                                <td class="text-end mono">R$ <?= number_format((float)$m['valor_total'], 2, ',', '.') ?></td>
+                                <td class="text-nowrap">
+                                    <button type="button" class="btn btn-sm btn-outline-primary btn-ver-itens"
+                                        data-grupo="<?= htmlspecialchars($m['grupo_chave']) ?>" data-tipo="<?= $tipoMov ?>"
+                                        data-data="<?= date('d/m/Y', strtotime($m['created_at'])) ?>" data-hora="<?= date('H:i', strtotime($m['created_at'])) ?>"
+                                        data-usuario="<?= htmlspecialchars($m['usuario']) ?>" data-terceiro-label="<?= $ehEntrada ? 'Fornecedor' : 'Paciente' ?>"
+                                        data-terceiro="<?= htmlspecialchars($ehEntrada ? (nomeFornecedorExibicao($m['fornecedor_razao'], $m['fornecedor_fantasia']) ?: '—') : ($m['paciente_nome'] ?: '—')) ?>">
+                                        <i class="bi bi-list-ul"></i> Ver Itens
+                                    </button>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
+                </tbody>
+            </table>
         </div>
     </div>
 
     <div class="modal fade" id="movItensModal" tabindex="-1" aria-hidden="true">
-        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
             <div class="modal-content">
                 <div class="modal-header">
                     <h5 class="modal-title" id="movItensModalTitle">Itens da Confirmação</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
                 </div>
-                <div class="modal-body" id="movItensModalBody">
+                <div class="modal-body p-4" id="movItensModalBody">
                     <div class="text-muted small">Carregando...</div>
                 </div>
             </div>
@@ -406,6 +422,13 @@ $csvSaidasQs = http_build_query(array_merge($qs, ['format' => 'csv', 'csv_tipo' 
             btn.addEventListener('click', function () {
                 var grupo = btn.getAttribute('data-grupo');
                 var tipo = btn.getAttribute('data-tipo');
+                var meta = {
+                    data: btn.getAttribute('data-data') || '',
+                    hora: btn.getAttribute('data-hora') || '',
+                    usuario: btn.getAttribute('data-usuario') || '',
+                    terceiroLabel: btn.getAttribute('data-terceiro-label') || '',
+                    terceiro: btn.getAttribute('data-terceiro') || '',
+                };
                 modalTitle.textContent = tipo === 'entrada' ? 'Itens da Entrada' : 'Itens da Saída';
                 modalBody.innerHTML = '<div class="text-muted small">Carregando...</div>';
                 modal.show();
@@ -432,15 +455,29 @@ $csvSaidasQs = http_build_query(array_merge($qs, ['format' => 'csv', 'csv_tipo' 
                                 '<td class="mono">' + esc(i.validade_br || '—') + '</td>' +
                                 '<td class="text-center">' + esc(i.quantidade) + '</td>' +
                                 '<td class="text-end mono">' + fmtMoeda(valor) + '</td>' +
-                                '<td class="text-end mono">' + fmtMoeda(i.subtotal) + '</td>' +
+                                '<td class="text-end mono fw-bold">' + fmtMoeda(i.subtotal) + '</td>' +
                                 '</tr>';
                         }).join('');
-                        modalBody.innerHTML = '<div class="table-responsive"><table class="table table-sm table-striped mb-0">' +
-                            '<thead><tr><th>Medicamento</th><th>Laboratório</th><th>Lote</th><th>Validade</th><th class="text-center">Qtd.</th><th class="text-end">' + colunaValor + '</th><th class="text-end">Subtotal</th></tr></thead>' +
-                            '<tbody>' + linhas + '</tbody></table></div>' +
-                            '<div class="d-flex justify-content-between align-items-center border-top mt-2 pt-2">' +
+
+                        // Faixa de metadados (data/usuário/fornecedor-ou-paciente) reaproveitando o
+                        // mesmo par label+valor dos cartões-resumo das abas Entradas/Saídas, pra dar
+                        // contexto à lista de itens sem repetir a linha inteira da tabela de fora.
+                        var faixaMeta = '<div class="d-flex flex-wrap gap-4 px-3 py-3 mb-3 bg-light rounded-3">' +
+                                '<div><div class="stat-label">Data/Hora</div><div class="fw-bold">' + esc(meta.data) + (meta.hora ? ' às ' + esc(meta.hora) : '') + '</div></div>' +
+                                '<div><div class="stat-label">Usuário</div><div class="fw-bold">' + esc(meta.usuario) + '</div></div>' +
+                                (meta.terceiroLabel ? '<div><div class="stat-label">' + esc(meta.terceiroLabel) + '</div><div class="fw-bold">' + esc(meta.terceiro) + '</div></div>' : '') +
+                            '</div>';
+
+                        modalBody.innerHTML = faixaMeta +
+                            '<div class="table-responsive">' +
+                                '<table class="table table-striped table-hover align-middle mb-0">' +
+                                    '<thead class="table-dark"><tr><th>Medicamento</th><th>Laboratório</th><th>Lote</th><th>Validade</th><th class="text-center">Qtd.</th><th class="text-end">' + colunaValor + '</th><th class="text-end">Subtotal</th></tr></thead>' +
+                                    '<tbody>' + linhas + '</tbody>' +
+                                '</table>' +
+                            '</div>' +
+                            '<div class="d-flex justify-content-between align-items-center border-top mt-3 pt-3">' +
                                 '<span class="fw-bold">Resumo financeiro da operação</span>' +
-                                '<span class="fw-bold fs-5">' + fmtMoeda(data.valor_total) + '</span>' +
+                                '<span class="fw-bold fs-4">' + fmtMoeda(data.valor_total) + '</span>' +
                             '</div>';
                     })
                     .catch(function () {
@@ -473,31 +510,132 @@ $csvSaidasQs = http_build_query(array_merge($qs, ['format' => 'csv', 'csv_tipo' 
         <a class="btn btn-outline-secondary ms-auto" href="?<?= htmlspecialchars($csvQs) ?>"><i class="bi bi-download"></i> Exportar CSV</a>
     </form>
 
-    <div class="table-responsive">
-        <table class="table table-striped table-hover bg-white align-middle">
-            <thead class="table-dark">
-                <tr><th>Data/Hora</th><th>Tipo</th><th>Medicamento</th><th>Laboratório</th><th>Lote</th><th class="text-center">Qtd.</th><th class="text-end">Valor (Compra/Venda)</th><th class="text-end">Subtotal</th><th>Usuário</th><th>Observação</th></tr>
-            </thead>
-            <tbody>
-                <?php if (empty($linhas)): ?>
-                    <tr><td colspan="10" class="text-center text-muted py-4">Nenhuma movimentação neste período.</td></tr>
-                <?php else: ?>
-                    <?php foreach ($linhas as $m): $valorBase = $m['tipo'] === 'saida' ? (float)$m['valor_venda'] : (float)$m['valor_unitario']; ?>
-                        <tr>
-                            <td class="mono text-nowrap"><?= date('d/m/Y H:i', strtotime($m['created_at'])) ?></td>
-                            <td><span class="badge <?= $m['tipo'] === 'entrada' ? 'bg-success' : 'bg-danger' ?>"><?= $m['tipo'] === 'entrada' ? 'Entrada' : 'Saída' ?></span></td>
-                            <td><?= htmlspecialchars($m['medicamento_nome']) ?></td>
-                            <td><?= htmlspecialchars($m['laboratorio_nome'] ?: '—') ?></td>
-                            <td class="mono"><?= htmlspecialchars($m['lote'] ?: '—') ?></td>
-                            <td class="text-center"><?= (int)$m['quantidade'] ?></td>
-                            <td class="text-end mono">R$ <?= number_format($valorBase, 2, ',', '.') ?></td>
-                            <td class="text-end mono">R$ <?= number_format($valorBase * (int)$m['quantidade'], 2, ',', '.') ?></td>
-                            <td><?= htmlspecialchars($m['usuario']) ?></td>
-                            <td><?= htmlspecialchars($m['observacao']) ?></td>
-                        </tr>
-                    <?php endforeach; ?>
-                <?php endif; ?>
-            </tbody>
-        </table>
+    <div class="stat-strip">
+        <div class="stat-tile">
+            <div>
+                <div class="stat-label">Movimentações</div>
+                <div class="stat-value"><?= count($linhas) ?></div>
+                <div class="stat-note">no período selecionado</div>
+            </div>
+            <div class="stat-icon blue"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M4 7l4-4 4 4M8 3v12M20 17l-4 4-4-4M16 21V9"/></svg></div>
+        </div>
+        <div class="stat-tile">
+            <div>
+                <div class="stat-label">Entradas</div>
+                <div class="stat-value"><?= $totalMovEntradas ?></div>
+                <div class="stat-note">confirmações no período</div>
+            </div>
+            <div class="stat-icon green"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 19V5M6 11l6-6 6 6"/></svg></div>
+        </div>
+        <div class="stat-tile">
+            <div>
+                <div class="stat-label">Saídas</div>
+                <div class="stat-value"><?= $totalMovSaidas ?></div>
+                <div class="stat-note">confirmações no período</div>
+            </div>
+            <div class="stat-icon red"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 5v14M6 13l6 6 6-6"/></svg></div>
+        </div>
+        <div class="stat-tile">
+            <div>
+                <div class="stat-label">Valor Movimentado</div>
+                <div class="stat-value">R$ <?= number_format($valorMovimentado, 2, ',', '.') ?></div>
+                <div class="stat-note">compra + venda no período</div>
+            </div>
+            <div class="stat-icon orange"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg></div>
+        </div>
     </div>
+
+    <div class="card">
+        <div class="card-header d-flex align-items-center">
+            <span><i class="bi bi-arrow-left-right"></i> Movimentações do período</span>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-striped table-hover bg-white align-middle mb-0">
+                <thead class="table-dark">
+                    <tr><th>Data/Hora</th><th>Tipo</th><th>Medicamento</th><th class="text-end text-nowrap">Valor (Compra/Venda)</th><th class="text-end">Subtotal</th><th>Usuário</th><th>Observação</th><th></th></tr>
+                </thead>
+                <tbody>
+                    <?php if (empty($linhas)): ?>
+                        <tr><td colspan="8" class="text-center text-muted py-5">Nenhuma movimentação neste período.</td></tr>
+                    <?php else: ?>
+                        <?php foreach ($linhas as $m): $valorBase = $m['tipo'] === 'saida' ? (float)$m['valor_venda'] : (float)$m['valor_unitario']; $subtotal = $valorBase * (int)$m['quantidade']; ?>
+                            <tr>
+                                <td class="mono text-nowrap"><?= date('d/m/Y H:i', strtotime($m['created_at'])) ?></td>
+                                <td><span class="badge <?= $m['tipo'] === 'entrada' ? 'bg-success' : 'bg-danger' ?>"><?= $m['tipo'] === 'entrada' ? 'Entrada' : 'Saída' ?></span></td>
+                                <td><?= htmlspecialchars($m['medicamento_nome']) ?></td>
+                                <td class="text-end mono text-nowrap"><?= $m['tipo'] === 'entrada' ? 'Compra' : 'Venda' ?>: R$ <?= number_format($valorBase, 2, ',', '.') ?></td>
+                                <td class="text-end mono text-nowrap fw-bold">R$ <?= number_format($subtotal, 2, ',', '.') ?></td>
+                                <td><?= htmlspecialchars($m['usuario']) ?></td>
+                                <td><?= htmlspecialchars($m['observacao']) ?></td>
+                                <td class="text-nowrap">
+                                    <button type="button" class="btn btn-sm btn-outline-primary btn-mov-detalhe"
+                                        data-tipo="<?= $m['tipo'] === 'entrada' ? 'Entrada' : 'Saída' ?>" data-data="<?= date('d/m/Y', strtotime($m['created_at'])) ?>" data-hora="<?= date('H:i', strtotime($m['created_at'])) ?>"
+                                        data-medicamento="<?= htmlspecialchars($m['medicamento_nome']) ?>" data-laboratorio="<?= htmlspecialchars($m['laboratorio_nome'] ?: '—') ?>"
+                                        data-lote="<?= htmlspecialchars($m['lote'] ?: '—') ?>" data-validade="<?= $m['validade'] ? formatarValidade($m['validade']) : '—' ?>"
+                                        data-quantidade="<?= (int)$m['quantidade'] ?>" data-valor-label="<?= $m['tipo'] === 'entrada' ? 'Valor Compra' : 'Valor Venda' ?>"
+                                        data-valor="R$ <?= number_format($valorBase, 2, ',', '.') ?>" data-subtotal="R$ <?= number_format($subtotal, 2, ',', '.') ?>"
+                                        data-usuario="<?= htmlspecialchars($m['usuario']) ?>" data-observacao="<?= htmlspecialchars($m['observacao'] ?: '—') ?>">
+                                        <i class="bi bi-info-circle"></i> Detalhes
+                                    </button>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="modal fade" id="movDetalheModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="movDetalheModalTitle">Detalhes da Movimentação</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+                </div>
+                <div class="modal-body p-4" id="movDetalheModalBody"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    document.addEventListener('DOMContentLoaded', function () {
+        var modalEl = document.getElementById('movDetalheModal');
+        if (!modalEl) return;
+        var modalBody = document.getElementById('movDetalheModalBody');
+        var modalTitle = document.getElementById('movDetalheModalTitle');
+        var modal = new bootstrap.Modal(modalEl);
+
+        function esc(s) {
+            var d = document.createElement('div');
+            d.textContent = (s === null || s === undefined) ? '' : String(s);
+            return d.innerHTML;
+        }
+        function campo(rotulo, valor, mono) {
+            return '<div><div class="stat-label">' + esc(rotulo) + '</div><div class="fw-bold' + (mono ? ' mono' : '') + '">' + esc(valor) + '</div></div>';
+        }
+
+        document.querySelectorAll('.btn-mov-detalhe').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                var d = btn.dataset;
+                modalTitle.textContent = 'Detalhes da ' + d.tipo;
+                modalBody.innerHTML =
+                    '<div class="d-flex flex-wrap gap-3 mb-3">' + campo('Medicamento', d.medicamento) + campo('Laboratório', d.laboratorio) + '</div>' +
+                    '<div class="d-flex flex-wrap gap-4 px-3 py-3 mb-3 bg-light rounded-3">' +
+                        campo('Data/Hora', d.data + ' às ' + d.hora) +
+                        campo('Lote', d.lote, true) +
+                        campo('Validade', d.validade, true) +
+                        campo('Quantidade', d.quantidade) +
+                    '</div>' +
+                    '<div class="d-flex flex-wrap gap-4 mb-3">' +
+                        campo(d.valorLabel, d.valor) +
+                        campo('Subtotal', d.subtotal) +
+                        campo('Usuário', d.usuario) +
+                    '</div>' +
+                    '<div class="border-top pt-3">' + campo('Observação', d.observacao) + '</div>';
+                modal.show();
+            });
+        });
+    });
+    </script>
 <?php endif; ?>
