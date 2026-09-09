@@ -6,7 +6,7 @@ class Config
 {
     const APP_NAME = 'Sistema de Manutenção de Máquinas';
     const APP_VERSION = '1.0.0';
-    const BASE_URL = 'http://localhost/manutencao/public';
+    const BASE_URL = 'http://manutencao.local';
     const TIMEZONE = 'America/Sao_Paulo';
     const LANGUAGE = 'pt_BR';
 

@@ -23,7 +23,7 @@ return [
         'nome'      => 'Sistema de Rateio',
         // URL base da aplicação (sem barra final). Ex.: "" para raiz do domínio
         // ou "/rateio" caso esteja em uma subpasta.
-        'base_url'  => '/rateio',
+        'base_url'  => '',
         'timezone'  => 'America/Sao_Paulo',
     ],
 
