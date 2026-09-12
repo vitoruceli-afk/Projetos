@@ -27,14 +27,30 @@ Session::set('contexto', $contexto);
 $tituloPagina = $tituloPagina ?? Config::get('app.nome');
 $ehAdmin      = Auth::ehAdmin();
 
-// Rótulo / cor do contexto atual
-$contextoInfo = match ($contexto) {
-    'microsoft' => ['rotulo' => 'Rateio Microsoft', 'classe' => 'bg-primary'],
-    'telefonia'      => ['rotulo' => 'Rateio Telefonia',      'classe' => 'bg-danger'],
-    default     => ['rotulo' => 'Área Inicial',     'classe' => 'bg-dark'],
-};
-
 $flashes = Session::pegarFlash();
+
+function navLink($targetPage, $currentPage, $label, $iconPath) {
+    $active = $targetPage === $currentPage ? ' is-active' : '';
+    echo '<a class="rail-link' . $active . '" href="' . url($targetPage) . '">'
+        . '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">' . $iconPath . '</svg>'
+        . htmlspecialchars($label) . '</a>';
+}
+
+// Determinar página ativa baseado no arquivo atual
+$pagina_atual = basename($_SERVER['PHP_SELF'], '.php');
+if (strpos($_SERVER['REQUEST_URI'], '/microsoft/') !== false) {
+    $pagina_atual = 'microsoft';
+} elseif (strpos($_SERVER['REQUEST_URI'], '/telefonia/') !== false) {
+    $pagina_atual = 'telefonia';
+} elseif (strpos($_SERVER['REQUEST_URI'], '/peps/') !== false) {
+    $pagina_atual = 'peps';
+} elseif (strpos($_SERVER['REQUEST_URI'], '/usuarios/') !== false) {
+    $pagina_atual = 'usuarios';
+} elseif (strpos($_SERVER['REQUEST_URI'], '/contatos/') !== false) {
+    $pagina_atual = 'contatos';
+} elseif (strpos($_SERVER['REQUEST_URI'], '/smtp/') !== false) {
+    $pagina_atual = 'smtp';
+}
 ?>
 <!DOCTYPE html>
 <html lang="pt-br">
@@ -44,147 +60,80 @@ $flashes = Session::pegarFlash();
     <title><?= e($tituloPagina) ?> - <?= e(Config::get('app.nome')) ?></title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="<?= url('assets/css/theme.css?v=' . filemtime(__DIR__ . '/../assets/css/theme.css')) ?>">
     <link href="<?= url('assets/css/app.css') ?>" rel="stylesheet">
 </head>
-<body class="bg-light">
-
-<!-- BARRA DE CONTEXTO -->
-<div class="context-bar <?= $contextoInfo['classe'] ?> text-white">
-    <div class="container-fluid d-flex justify-content-between align-items-center py-1 px-3">
-        <span class="small">
-            <i class="bi bi-geo-alt-fill"></i>
-            Você está em: <strong><?= e($contextoInfo['rotulo']) ?></strong>
-        </span>
-        <span class="small">
-            <i class="bi bi-person-circle"></i>
-            <?= e(Auth::nome()) ?>
-            <span class="badge bg-light text-dark ms-1"><?= e(ucfirst(Auth::perfil())) ?></span>
-        </span>
-    </div>
-</div>
-
-<!-- NAVBAR PRINCIPAL -->
-<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-    <div class="container-fluid">
-
-        <a class="navbar-brand" href="<?= url('index.php') ?>">
-            <i class="bi bi-pie-chart-fill"></i>
-            <?= e(Config::get('app.nome')) ?>
-        </a>
-
-        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#menu">
-            <span class="navbar-toggler-icon"></span>
-        </button>
-
-        <div class="collapse navbar-collapse" id="menu">
-            <ul class="navbar-nav me-auto">
-
-                <?php if ($contexto === 'inicial'): ?>
-
-                    <?php if ($ehAdmin): ?>
-                        <li class="nav-item">
-                            <a class="nav-link" href="<?= url('usuarios/listar.php') ?>">
-                                <i class="bi bi-people"></i> Usuários
-                            </a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link" href="<?= url('contatos/listar.php') ?>">
-                                <i class="bi bi-person-lines-fill"></i> Contatos
-                            </a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link" href="<?= url('smtp/index.php') ?>">
-                                <i class="bi bi-envelope-gear"></i> SMTP
-                            </a>
-                        </li>
-                    <?php endif; ?>
-
-                    <li class="nav-item">
-                        <a class="nav-link" href="<?= url('peps/listar.php') ?>">
-                            <i class="bi bi-diagram-3"></i> PEPs / Projetos
-                        </a>
-                    </li>
-
-                <?php elseif ($contexto === 'microsoft'): ?>
-
-                    <li class="nav-item">
-                        <a class="nav-link" href="<?= url('microsoft/contas/listar.php') ?>">Contas</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="<?= url('microsoft/licencas/listar.php') ?>">Licenças</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="<?= url('microsoft/cobrancas/listar.php') ?>">Cobranças</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="<?= url('microsoft/rateios/listar.php') ?>">Rateios Gerados</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="<?= url('microsoft/relatorios/index.php') ?>">Relatórios</a>
-                    </li>
-
-                <?php elseif ($contexto === 'telefonia'): ?>
-
-                    <li class="nav-item">
-                        <a class="nav-link" href="<?= url('telefonia/contas/listar.php') ?>">Contas</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="<?= url('telefonia/cobrancas/listar.php') ?>">Cobranças</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="<?= url('telefonia/rateios/listar.php') ?>">Rateios Gerados</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="<?= url('telefonia/relatorios/index.php') ?>">Relatórios</a>
-                    </li>
-
-                <?php endif; ?>
-
-            </ul>
-
-            <ul class="navbar-nav ms-auto">
-
-                <!-- ALTERNADOR DE CONTEXTO -->
-                <li class="nav-item dropdown">
-                    <a class="nav-link dropdown-toggle" href="#" role="button"
-                       data-bs-toggle="dropdown">
-                        <i class="bi bi-arrow-left-right"></i> Alternar Rateio
-                    </a>
-                    <ul class="dropdown-menu dropdown-menu-end">
-                        <li>
-                            <a class="dropdown-item" href="<?= url('index.php') ?>">
-                                <i class="bi bi-house"></i> Área Inicial
-                            </a>
-                        </li>
-                        <li><hr class="dropdown-divider"></li>
-                        <li>
-                            <a class="dropdown-item" href="<?= url('microsoft/contas/listar.php') ?>">
-                                <i class="bi bi-microsoft"></i> Rateio Microsoft
-                            </a>
-                        </li>
-                        <li>
-                            <a class="dropdown-item" href="<?= url('telefonia/contas/listar.php') ?>">
-                                <i class="bi bi-telephone"></i> Rateio Telefonia
-                            </a>
-                        </li>
-                    </ul>
-                </li>
-
-                <li class="nav-item">
-                    <a class="nav-link text-danger" href="<?= url('logout.php') ?>">
-                        <i class="bi bi-box-arrow-right"></i> Sair
-                    </a>
-                </li>
-            </ul>
+<body>
+<div class="app-shell">
+    <div class="rail-backdrop" id="railBackdrop"></div>
+    <nav class="rail" id="rail" aria-label="Navegação principal">
+        <div class="rail-brand">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                <path d="M12 2l9 5v7c0 7-6 9-9 11-3-2-9-4-9-11V7l9-5z"/>
+                <path d="M12 13v5M9 15h6"/>
+            </svg>
+            <span class="rail-brand-name">RATEIO<span>·</span>SISTEMA</span>
         </div>
-    </div>
-</nav>
 
-<div class="container my-4">
-
-    <?php foreach ($flashes as $msg): ?>
-        <div class="alert alert-<?= e($msg['tipo']) ?> alert-dismissible fade show">
-            <?= $msg['texto'] ?>
-            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        <div class="rail-nav">
+            <?php navLink('index.php', 'index', 'Início', '<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>'); ?>
         </div>
-    <?php endforeach; ?>
+
+        <div class="rail-nav">
+            <?php
+            navLink('microsoft/contas/listar.php', 'microsoft', 'Microsoft', '<path d="M3 3h8v8H3zM13 3h8v8h-8zM3 13h8v8H3zM13 13h8v8h-8z"/>');
+            navLink('telefonia/contas/listar.php', 'telefonia', 'Telefonia', '<path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/>');
+            ?>
+        </div>
+
+        <div class="rail-nav">
+            <div class="rail-section-label">Cadastros</div>
+            <?php
+            navLink('peps/listar.php', 'peps', 'PEPs / Projetos', '<path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>');
+            ?>
+        </div>
+
+        <?php if ($ehAdmin): ?>
+        <div class="rail-nav">
+            <div class="rail-section-label">Administração</div>
+            <?php
+            navLink('usuarios/listar.php', 'usuarios', 'Usuários', '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/><path d="M12 1v6m8-4l-4 4M4 3l4 4"/>');
+            navLink('contatos/listar.php', 'contatos', 'Contatos', '<path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/>');
+            navLink('smtp/index.php', 'smtp', 'SMTP', '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="M4 6l8 6 8-6"/>');
+            ?>
+        </div>
+        <?php endif; ?>
+
+        <div class="rail-foot">
+            <div class="avatar sm"><?= htmlspecialchars(userInitials(Auth::nome())) ?></div>
+            <div>
+                <div class="rail-user"><?= htmlspecialchars(Auth::nome()) ?></div>
+                <span class="rail-role"><?= $ehAdmin ? 'Administrador' : 'Usuário' ?></span>
+                <a href="<?= url('logout.php') ?>" class="rail-logout">Sair</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="main-col">
+        <div class="topbar">
+            <button type="button" class="hamburger-btn" id="railToggle" aria-label="Abrir menu" aria-expanded="false" aria-controls="rail">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+            </button>
+            <div class="topbar-brand">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                    <path d="M12 2l9 5v7c0 7-6 9-9 11-3-2-9-4-9-11V7l9-5z"/>
+                    <path d="M12 13v5M9 15h6"/>
+                </svg>
+                <span><?= e(Config::get('app.nome')) ?></span>
+            </div>
+            <div class="topbar-spacer"></div>
+            <div class="avatar" title="<?= htmlspecialchars(Auth::nome()) ?>"><?= htmlspecialchars(userInitials(Auth::nome())) ?></div>
+        </div>
+
+        <div class="main-content">
+            <?php foreach ($flashes as $msg): ?>
+                <div class="alert alert-<?= e($msg['tipo']) ?> alert-dismissible fade show">
+                    <?= $msg['texto'] ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+            <?php endforeach; ?>

@@ -1,31 +1,46 @@
 /* ---------------------------------------------------------------
-   Estilos da aplicação de Rateio
+   Estilos complementares da aplicação de Rateio
+   (complementa o theme.css com estilo padrão)
 --------------------------------------------------------------- */
 
-.context-bar {
-    font-size: .85rem;
-    border-bottom: 1px solid rgba(255, 255, 255, .15);
-}
-
+/* Area Cards - utilizado na página inicial */
 .area-card {
-    transition: transform .12s ease, box-shadow .12s ease;
+    transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease;
     cursor: pointer;
     text-decoration: none;
 }
 
 .area-card:hover {
-    transform: translateY(-4px);
-    box-shadow: 0 .5rem 1rem rgba(0, 0, 0, .12) !important;
+    transform: translateY(-2px);
+    border-color: var(--primary) !important;
 }
 
 .area-card .icone {
     font-size: 2.6rem;
 }
 
+/* Filtros */
+.filtro-bar .form-control {
+    max-width: 360px;
+}
+
+/* Tables */
 .table thead.table-dark th {
     white-space: nowrap;
 }
 
-.filtro-bar .form-control {
-    max-width: 360px;
+/* Ajustes responsivos para mobile */
+@media (max-width: 768px) {
+    .main-content {
+        padding: 12px 10px 24px;
+    }
+
+    .area-card .icone {
+        font-size: 2rem;
+    }
+
+    .page-title {
+        font-size: 18px;
+    }
 }
+

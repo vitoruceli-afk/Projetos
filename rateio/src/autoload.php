@@ -90,3 +90,19 @@ if (!function_exists('url')) {
         return $base . '/' . ltrim($caminho, '/');
     }
 }
+
+/*
+|--------------------------------------------------------------------------
+| userInitials() — extrai iniciais do nome do usuário
+|--------------------------------------------------------------------------
+*/
+if (!function_exists('userInitials')) {
+    function userInitials(string $username): string
+    {
+        $parts = array_values(array_filter(preg_split('/[.\s_-]+/', trim($username))));
+        if (count($parts) >= 2) {
+            return strtoupper(mb_substr($parts[0], 0, 1) . mb_substr($parts[1], 0, 1));
+        }
+        return strtoupper(mb_substr($username, 0, 2));
+    }
+}

@@ -92,9 +92,15 @@ CREATE TABLE IF NOT EXISTS contatos (
 --  PEPs / PROJETOS  (compartilhado entre Microsoft e Telefonia)
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS peps (
-    id      INT AUTO_INCREMENT PRIMARY KEY,
-    pep     VARCHAR(50)  NOT NULL UNIQUE,
-    projeto VARCHAR(200) NOT NULL
+    id                   INT AUTO_INCREMENT PRIMARY KEY,
+    pep                  VARCHAR(50)  NOT NULL UNIQUE,
+    projeto              VARCHAR(200) NOT NULL,
+    centro_custo         VARCHAR(12)  DEFAULT '',
+    periodo_meses        INT DEFAULT 12,
+    data_inicio          DATE DEFAULT NULL,
+    data_termino         DATE DEFAULT NULL,
+    responsavel_nome     VARCHAR(150) DEFAULT '',
+    responsavel_cpf      VARCHAR(20)  DEFAULT ''
 ) ENGINE=InnoDB;
 
 -- =====================================================================
