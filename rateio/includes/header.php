@@ -44,6 +44,8 @@ if (strpos($_SERVER['REQUEST_URI'], '/microsoft/') !== false) {
     $pagina_atual = 'telefonia';
 } elseif (strpos($_SERVER['REQUEST_URI'], '/peps/') !== false) {
     $pagina_atual = 'peps';
+} elseif (strpos($_SERVER['REQUEST_URI'], '/dispositivos/') !== false) {
+    $pagina_atual = 'dispositivos';
 } elseif (strpos($_SERVER['REQUEST_URI'], '/usuarios/') !== false) {
     $pagina_atual = 'usuarios';
 } elseif (strpos($_SERVER['REQUEST_URI'], '/contatos/') !== false) {
@@ -90,6 +92,7 @@ if (strpos($_SERVER['REQUEST_URI'], '/microsoft/') !== false) {
             <div class="rail-section-label">Cadastros</div>
             <?php
             navLink('peps/listar.php', 'peps', 'PEPs / Projetos', '<path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>');
+            navLink('dispositivos/listar.php', 'dispositivos', 'Dispositivos', '<rect x="3" y="4" width="18" height="12" rx="2"/><line x1="8" y1="20" x2="16" y2="20"/><line x1="12" y1="16" x2="12" y2="20"/>');
             ?>
         </div>
 
