@@ -222,7 +222,7 @@ CREATE TABLE IF NOT EXISTS dispositivos (
     tipo_id           INT NOT NULL,
     pep_id            INT,
     nome              VARCHAR(150) NOT NULL,
-    descricao         TEXT DEFAULT '',
+    descricao         TEXT,
     numero_serie      VARCHAR(100) DEFAULT '',
     imei              VARCHAR(20) DEFAULT NULL,
     modelo            VARCHAR(150) DEFAULT '',
@@ -232,7 +232,7 @@ CREATE TABLE IF NOT EXISTS dispositivos (
     localizacao       VARCHAR(200) DEFAULT '',
     responsavel       VARCHAR(150) DEFAULT '',
     valor_aquisicao   DECIMAL(10,2) DEFAULT 0,
-    observacoes       TEXT DEFAULT '',
+    observacoes       TEXT,
     
     -- Rastreamento de origem
     origem            ENUM('manual','glpi') DEFAULT 'manual',
@@ -260,7 +260,7 @@ CREATE TABLE IF NOT EXISTS sincronizacoes_glpi (
     total_items  INT DEFAULT 0,
     items_sucesso INT DEFAULT 0,
     items_erro   INT DEFAULT 0,
-    mensagem     TEXT DEFAULT '',
+    mensagem     TEXT,
     usuario      VARCHAR(150) DEFAULT '',
     detalhes_json JSON DEFAULT NULL
 ) ENGINE=InnoDB;

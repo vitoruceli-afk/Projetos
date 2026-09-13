@@ -21,9 +21,14 @@ $meses = [1=>'Jan',2=>'Fev',3=>'Mar',4=>'Abr',5=>'Mai',6=>'Jun',
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h2 class="mb-0">Cobranças</h2>
     <?php if ($ehAdmin): ?>
-        <a href="<?= url('telefonia/cobrancas/form.php') ?>" class="btn btn-danger">
-            <i class="bi bi-plus-lg"></i> Nova Cobrança
-        </a>
+        <div>
+            <a href="<?= url('telefonia/cobrancas/importar.php') ?>" class="btn btn-outline-danger">
+                <i class="bi bi-upload"></i> Importar CSV
+            </a>
+            <a href="<?= url('telefonia/cobrancas/form.php') ?>" class="btn btn-danger">
+                <i class="bi bi-plus-lg"></i> Nova Cobrança
+            </a>
+        </div>
     <?php endif; ?>
 </div>
 

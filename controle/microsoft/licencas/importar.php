@@ -5,22 +5,21 @@ declare(strict_types=1);
 use App\Core\Auth;
 use App\Core\Csv;
 use App\Core\CsvReader;
-use App\Models\TelefoniaConta;
-use App\Models\Pep;
+use App\Models\MsLicenca;
 
 require __DIR__ . '/../../includes/bootstrap.php';
 Auth::exigirAdmin();
 
-$cabecalho = ['Nome do Usuario', 'Telefone', 'Operadora', 'PEP', 'Projeto', 'Valor', 'Conta Telefonia'];
+$cabecalho = ['Codigo', 'Descricao', 'Valor', 'Modo Cobranca'];
 
 // Download do modelo CSV
 if (isset($_GET['modelo'])) {
-    Csv::download('modelo_contas_telefonia.csv', $cabecalho, [
-        ['Maria Exemplo', '11999998888', 'Claro', 'PEP001', 'Projeto Exemplo', '89,90', 'CTA-123'],
+    Csv::download('modelo_licencas_microsoft.csv', $cabecalho, [
+        ['E3', 'Office 365 E3', '120,00', 'Mensal'],
     ]);
 }
 
-$resultado = null;
+$resultado = null; // ['ok'=>int, 'erros'=>array<int,string>]
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $resultado = ['ok' => 0, 'erros' => []];
@@ -37,34 +36,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         foreach ($linhas as $n => $cols) {
             $numLinha = $n + 1;
 
-            $nome      = $cols[0] ?? '';
-            $telefone  = $cols[1] ?? '';
-            $operadora = $cols[2] ?? '';
-            $codPep    = $cols[3] ?? '';
-            // $cols[4] (Projeto) é informativo: vem do cadastro do PEP e não é gravado diretamente.
-            $valor     = valorBr($cols[5] ?? '0');
-            $contaTelefonia = $cols[6] ?? '';
+            $codigo    = $cols[0] ?? '';
+            $descricao = $cols[1] ?? '';
+            $valor     = valorBr($cols[2] ?? '0');
+            $modo      = $cols[3] ?? '';
 
-            if ($nome === '' || $telefone === '' || $codPep === '') {
-                $resultado['erros'][] = "Linha {$numLinha}: Nome, Telefone e PEP são obrigatórios.";
-                continue;
-            }
-
-            $pep = Pep::porCodigo($codPep);
-            if ($pep === null) {
-                $resultado['erros'][] = "Linha {$numLinha}: PEP \"{$codPep}\" não cadastrado.";
+            if ($codigo === '' || $descricao === '') {
+                $resultado['erros'][] = "Linha {$numLinha}: Código e Descrição são obrigatórios.";
                 continue;
             }
 
             try {
-                TelefoniaConta::criar(
-                    $nome,
-                    $telefone,
-                    $operadora,
-                    (int) $pep['id'],
-                    $valor,
-                    $contaTelefonia
-                );
+                MsLicenca::criar($codigo, $descricao, $valor, $modo);
                 $resultado['ok']++;
             } catch (\Throwable $e) {
                 $resultado['erros'][] = "Linha {$numLinha}: erro ao gravar (" . $e->getMessage() . ').';
@@ -73,16 +56,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-$contexto     = 'telefonia';
-$tituloPagina = 'Importar Contas';
+$contexto     = 'microsoft';
+$tituloPagina = 'Importar Licenças';
 require __DIR__ . '/../../includes/header.php';
 ?>
 
-<h2 class="mb-4">Importar Contas (CSV)</h2>
+<h2 class="mb-4">Importar Licenças (CSV)</h2>
 
 <?php if ($resultado !== null): ?>
     <div class="alert alert-<?= $resultado['ok'] > 0 ? 'success' : 'warning' ?>">
-        <strong><?= (int) $resultado['ok'] ?></strong> conta(s) importada(s) com sucesso.
+        <strong><?= (int) $resultado['ok'] ?></strong> licença(s) importada(s) com sucesso.
         <?php if ($resultado['erros'] !== []): ?>
             <strong><?= count($resultado['erros']) ?></strong> linha(s) com problema.
         <?php endif; ?>
@@ -109,10 +92,10 @@ require __DIR__ . '/../../includes/header.php';
             <button type="submit" class="btn btn-success">
                 <i class="bi bi-upload"></i> Importar
             </button>
-            <a href="<?= url('telefonia/contas/importar.php?modelo=1') ?>" class="btn btn-outline-secondary">
+            <a href="<?= url('microsoft/licencas/importar.php?modelo=1') ?>" class="btn btn-outline-secondary">
                 <i class="bi bi-download"></i> Baixar modelo
             </a>
-            <a href="<?= url('telefonia/contas/listar.php') ?>" class="btn btn-secondary">Voltar</a>
+            <a href="<?= url('microsoft/licencas/listar.php') ?>" class="btn btn-secondary">Voltar</a>
         </form>
     </div>
 </div>
@@ -120,13 +103,11 @@ require __DIR__ . '/../../includes/header.php';
 <div class="card border-info">
     <div class="card-header bg-info text-white">Formato esperado</div>
     <div class="card-body">
-        <p>Colunas (separadas por vírgula), com cabeçalho na primeira linha — mesmo modelo do CSV exportado:</p>
-        <code>Nome do Usuario, Telefone, Operadora, PEP, Projeto, Valor, "Conta Telefonia"</code>
+        <p>Colunas (separadas por vírgula), com cabeçalho na primeira linha:</p>
+        <code>Codigo, Descricao, Valor, Modo Cobranca</code>
         <ul class="mt-3 mb-0">
-            <li><strong>PEP</strong>: código do PEP já cadastrado em PEPs / Projetos.</li>
-            <li><strong>Projeto</strong>: apenas informativo (vem do cadastro do PEP); não precisa
-                estar correto para a importação funcionar.</li>
-            <li><strong>Valor</strong>: valor do consumo (ex.: 89,90).</li>
+            <li><strong>Valor</strong>: valor da licença (ex.: 120,00).</li>
+            <li><strong>Modo Cobranca</strong>: opcional (ex.: Mensal, Anual).</li>
             <li>O separador de colunas pode ser vírgula ou ponto e vírgula (detectado automaticamente).</li>
         </ul>
     </div>

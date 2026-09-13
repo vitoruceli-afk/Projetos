@@ -88,6 +88,29 @@ if (strpos($_SERVER['REQUEST_URI'], '/microsoft/') !== false) {
             ?>
         </div>
 
+        <?php if ($pagina_atual === 'microsoft'): ?>
+        <div class="rail-nav">
+            <div class="rail-section-label">Microsoft</div>
+            <?php
+            navLink('microsoft/contas/listar.php', 'contas', 'Contas', '<rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/>');
+            navLink('microsoft/licencas/listar.php', 'licencas', 'Licenças', '<path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>');
+            navLink('microsoft/cobrancas/listar.php', 'cobrancas', 'Cobranças', '<line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/>');
+            navLink('microsoft/rateios/listar.php', 'rateios', 'Rateios Gerados', '<path d="M21.21 15.89A10 10 0 118 2.83"/><path d="M22 12A10 10 0 0012 2v10z"/>');
+            navLink('microsoft/relatorios/index.php', 'relatorios', 'Relatórios', '<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>');
+            ?>
+        </div>
+        <?php elseif ($pagina_atual === 'telefonia'): ?>
+        <div class="rail-nav">
+            <div class="rail-section-label">Telefonia</div>
+            <?php
+            navLink('telefonia/contas/listar.php', 'contas', 'Contas', '<rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/>');
+            navLink('telefonia/cobrancas/listar.php', 'cobrancas', 'Cobranças', '<line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/>');
+            navLink('telefonia/rateios/listar.php', 'rateios', 'Rateios Gerados', '<path d="M21.21 15.89A10 10 0 118 2.83"/><path d="M22 12A10 10 0 0012 2v10z"/>');
+            navLink('telefonia/relatorios/index.php', 'relatorios', 'Relatórios', '<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>');
+            ?>
+        </div>
+        <?php endif; ?>
+
         <div class="rail-nav">
             <div class="rail-section-label">Cadastros</div>
             <?php

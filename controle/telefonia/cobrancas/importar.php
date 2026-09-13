@@ -5,22 +5,21 @@ declare(strict_types=1);
 use App\Core\Auth;
 use App\Core\Csv;
 use App\Core\CsvReader;
-use App\Models\TelefoniaConta;
-use App\Models\Pep;
+use App\Models\TelefoniaCobranca;
 
 require __DIR__ . '/../../includes/bootstrap.php';
 Auth::exigirAdmin();
 
-$cabecalho = ['Nome do Usuario', 'Telefone', 'Operadora', 'PEP', 'Projeto', 'Valor', 'Conta Telefonia'];
+$cabecalho = ['Mes', 'Ano', 'Valor Total', 'Conta Telefonia'];
 
 // Download do modelo CSV
 if (isset($_GET['modelo'])) {
-    Csv::download('modelo_contas_telefonia.csv', $cabecalho, [
-        ['Maria Exemplo', '11999998888', 'Claro', 'PEP001', 'Projeto Exemplo', '89,90', 'CTA-123'],
+    Csv::download('modelo_cobrancas_telefonia.csv', $cabecalho, [
+        ['1', '2026', '350,00', 'CTA-123'],
     ]);
 }
 
-$resultado = null;
+$resultado = null; // ['ok'=>int, 'erros'=>array<int,string>]
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $resultado = ['ok' => 0, 'erros' => []];
@@ -37,34 +36,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         foreach ($linhas as $n => $cols) {
             $numLinha = $n + 1;
 
-            $nome      = $cols[0] ?? '';
-            $telefone  = $cols[1] ?? '';
-            $operadora = $cols[2] ?? '';
-            $codPep    = $cols[3] ?? '';
-            // $cols[4] (Projeto) é informativo: vem do cadastro do PEP e não é gravado diretamente.
-            $valor     = valorBr($cols[5] ?? '0');
-            $contaTelefonia = $cols[6] ?? '';
+            $mes            = (int) ($cols[0] ?? 0);
+            $ano            = (int) ($cols[1] ?? 0);
+            $valor          = valorBr($cols[2] ?? '0');
+            $contaTelefonia = $cols[3] ?? '';
 
-            if ($nome === '' || $telefone === '' || $codPep === '') {
-                $resultado['erros'][] = "Linha {$numLinha}: Nome, Telefone e PEP são obrigatórios.";
+            if ($mes < 1 || $mes > 12) {
+                $resultado['erros'][] = "Linha {$numLinha}: mês inválido (informe de 1 a 12).";
                 continue;
             }
-
-            $pep = Pep::porCodigo($codPep);
-            if ($pep === null) {
-                $resultado['erros'][] = "Linha {$numLinha}: PEP \"{$codPep}\" não cadastrado.";
+            if ($ano < 2000) {
+                $resultado['erros'][] = "Linha {$numLinha}: ano inválido.";
+                continue;
+            }
+            if ($contaTelefonia === '') {
+                $resultado['erros'][] = "Linha {$numLinha}: Conta Telefonia é obrigatória.";
                 continue;
             }
 
             try {
-                TelefoniaConta::criar(
-                    $nome,
-                    $telefone,
-                    $operadora,
-                    (int) $pep['id'],
-                    $valor,
-                    $contaTelefonia
-                );
+                TelefoniaCobranca::criar($mes, $ano, $valor, $contaTelefonia);
                 $resultado['ok']++;
             } catch (\Throwable $e) {
                 $resultado['erros'][] = "Linha {$numLinha}: erro ao gravar (" . $e->getMessage() . ').';
@@ -74,15 +65,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $contexto     = 'telefonia';
-$tituloPagina = 'Importar Contas';
+$tituloPagina = 'Importar Cobranças';
 require __DIR__ . '/../../includes/header.php';
 ?>
 
-<h2 class="mb-4">Importar Contas (CSV)</h2>
+<h2 class="mb-4">Importar Cobranças (CSV)</h2>
 
 <?php if ($resultado !== null): ?>
     <div class="alert alert-<?= $resultado['ok'] > 0 ? 'success' : 'warning' ?>">
-        <strong><?= (int) $resultado['ok'] ?></strong> conta(s) importada(s) com sucesso.
+        <strong><?= (int) $resultado['ok'] ?></strong> cobrança(s) importada(s) com sucesso.
         <?php if ($resultado['erros'] !== []): ?>
             <strong><?= count($resultado['erros']) ?></strong> linha(s) com problema.
         <?php endif; ?>
@@ -109,10 +100,10 @@ require __DIR__ . '/../../includes/header.php';
             <button type="submit" class="btn btn-success">
                 <i class="bi bi-upload"></i> Importar
             </button>
-            <a href="<?= url('telefonia/contas/importar.php?modelo=1') ?>" class="btn btn-outline-secondary">
+            <a href="<?= url('telefonia/cobrancas/importar.php?modelo=1') ?>" class="btn btn-outline-secondary">
                 <i class="bi bi-download"></i> Baixar modelo
             </a>
-            <a href="<?= url('telefonia/contas/listar.php') ?>" class="btn btn-secondary">Voltar</a>
+            <a href="<?= url('telefonia/cobrancas/listar.php') ?>" class="btn btn-secondary">Voltar</a>
         </form>
     </div>
 </div>
@@ -120,13 +111,12 @@ require __DIR__ . '/../../includes/header.php';
 <div class="card border-info">
     <div class="card-header bg-info text-white">Formato esperado</div>
     <div class="card-body">
-        <p>Colunas (separadas por vírgula), com cabeçalho na primeira linha — mesmo modelo do CSV exportado:</p>
-        <code>Nome do Usuario, Telefone, Operadora, PEP, Projeto, Valor, "Conta Telefonia"</code>
+        <p>Colunas (separadas por vírgula), com cabeçalho na primeira linha:</p>
+        <code>Mes, Ano, Valor Total, Conta Telefonia</code>
         <ul class="mt-3 mb-0">
-            <li><strong>PEP</strong>: código do PEP já cadastrado em PEPs / Projetos.</li>
-            <li><strong>Projeto</strong>: apenas informativo (vem do cadastro do PEP); não precisa
-                estar correto para a importação funcionar.</li>
-            <li><strong>Valor</strong>: valor do consumo (ex.: 89,90).</li>
+            <li><strong>Mes</strong>: número de 1 a 12.</li>
+            <li><strong>Valor Total</strong>: valor do boleto (ex.: 350,00).</li>
+            <li><strong>Conta Telefonia</strong>: identificação da conta já usada em Telefonia / Contas.</li>
             <li>O separador de colunas pode ser vírgula ou ponto e vírgula (detectado automaticamente).</li>
         </ul>
     </div>

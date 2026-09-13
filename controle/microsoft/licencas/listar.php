@@ -18,9 +18,14 @@ $ehAdmin  = Auth::ehAdmin();
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h2 class="mb-0">Licenças</h2>
     <?php if ($ehAdmin): ?>
-        <a href="<?= url('microsoft/licencas/form.php') ?>" class="btn btn-primary">
-            <i class="bi bi-plus-lg"></i> Nova Licença
-        </a>
+        <div>
+            <a href="<?= url('microsoft/licencas/importar.php') ?>" class="btn btn-outline-primary">
+                <i class="bi bi-upload"></i> Importar CSV
+            </a>
+            <a href="<?= url('microsoft/licencas/form.php') ?>" class="btn btn-primary">
+                <i class="bi bi-plus-lg"></i> Nova Licença
+            </a>
+        </div>
     <?php endif; ?>
 </div>
 

@@ -12,12 +12,12 @@ use App\Models\Pep;
 require __DIR__ . '/../../includes/bootstrap.php';
 Auth::exigirAdmin();
 
-$cabecalho = ['Nome', 'Email', 'PEP', 'Licencas'];
+$cabecalho = ['Nome', 'Email', 'PEP', 'Projeto', 'Licencas', 'Valor Total'];
 
 // Download do modelo CSV
 if (isset($_GET['modelo'])) {
     Csv::download('modelo_contas_microsoft.csv', $cabecalho, [
-        ['João Exemplo', 'joao@empresa.com', 'PEP001', 'E3;Power BI'],
+        ['João Exemplo', 'joao@empresa.com', 'PEP001', 'Projeto Exemplo', 'E3;Power BI', '120,00'],
     ]);
 }
 
@@ -41,7 +41,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $nome      = $cols[0] ?? '';
             $email     = $cols[1] ?? '';
             $codPep    = $cols[2] ?? '';
-            $licStr    = $cols[3] ?? '';
+            // $cols[3] (Projeto) e $cols[5] (Valor Total) são informativos: vêm do PEP
+            // e da soma das licenças, respectivamente, e não são gravados diretamente.
+            $licStr    = $cols[4] ?? '';
 
             if ($nome === '' || $email === '' || $codPep === '') {
                 $resultado['erros'][] = "Linha {$numLinha}: Nome, Email e PEP são obrigatórios.";
@@ -129,12 +131,16 @@ require __DIR__ . '/../../includes/header.php';
 <div class="card border-info">
     <div class="card-header bg-info text-white">Formato esperado</div>
     <div class="card-body">
-        <p>Colunas (separadas por vírgula), com cabeçalho na primeira linha:</p>
-        <code>Nome, Email, PEP, Licencas</code>
+        <p>Colunas (separadas por vírgula), com cabeçalho na primeira linha — mesmo modelo do CSV exportado:</p>
+        <code>Nome, Email, PEP, Projeto, Licencas, "Valor Total"</code>
         <ul class="mt-3 mb-0">
             <li><strong>PEP</strong>: código do PEP já cadastrado em PEPs / Projetos.</li>
+            <li><strong>Projeto</strong>: apenas informativo (vem do cadastro do PEP); não precisa
+                estar correto para a importação funcionar.</li>
             <li><strong>Licencas</strong>: código ou descrição das licenças; para várias,
                 separe por <strong>ponto e vírgula</strong> (ex.: <code>E3;Power BI</code>).</li>
+            <li><strong>Valor Total</strong>: apenas informativo (calculado automaticamente pela
+                soma das licenças); o valor da coluna é ignorado na importação.</li>
             <li>O separador de colunas pode ser vírgula ou ponto e vírgula (detectado automaticamente).</li>
         </ul>
     </div>
