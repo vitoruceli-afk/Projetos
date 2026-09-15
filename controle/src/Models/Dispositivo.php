@@ -17,7 +17,10 @@ final class Dispositivo extends BaseModel
     protected static string $tabela = 'dispositivos';
     // Prefixadas com "d." porque listar() faz JOIN com tipos_dispositivos,
     // que também tem uma coluna "nome" — sem o prefixo, o WHERE fica ambíguo.
-    protected static array $colunasBusca = ['d.nome', 'd.descricao', 'd.numero_serie', 'd.imei', 'd.modelo', 'd.fabricante', 'd.responsavel'];
+    protected static array $colunasBusca = [
+        'd.nome', 'd.descricao', 'd.numero_serie', 'd.imei', 'd.modelo', 'd.fabricante', 'd.responsavel',
+        'd.processador', 'd.memoria', 'd.armazenamento', 'd.sistema_operacional', 'd.localizacao', 'd.area',
+    ];
 
     public static function listar(string $busca = '', ?int $tipo_id = null, ?int $pep_id = null, ?string $status = null, ?string $origem = null): array
     {
@@ -77,13 +80,20 @@ final class Dispositivo extends BaseModel
         string $origem = 'manual',
         ?int $id_glpi = null,
         ?array $dados_glpi = null,
-        ?string $imei = null
+        ?string $imei = null,
+        string $processador = '',
+        string $memoria = '',
+        string $armazenamento = '',
+        string $sistema_operacional = '',
+        string $area = '',
+        string $segunda_tela = ''
     ): int {
         $stmt = self::pdo()->prepare(
             'INSERT INTO dispositivos '
-            . '(tipo_id, nome, pep_id, numero_serie, imei, modelo, fabricante, data_aquisicao, status, '
-            . 'localizacao, responsavel, valor_aquisicao, descricao, observacoes, origem, id_glpi, dados_glpi) '
-            . 'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            . '(tipo_id, nome, pep_id, numero_serie, imei, modelo, fabricante, processador, memoria, '
+            . 'armazenamento, sistema_operacional, data_aquisicao, status, localizacao, area, segunda_tela, '
+            . 'responsavel, valor_aquisicao, descricao, observacoes, origem, id_glpi, dados_glpi) '
+            . 'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         $stmt->execute([
             $tipo_id,
@@ -93,9 +103,15 @@ final class Dispositivo extends BaseModel
             $imei !== null && $imei !== '' ? $imei : null,
             $modelo,
             $fabricante,
+            $processador,
+            $memoria,
+            $armazenamento,
+            $sistema_operacional,
             $data_aquisicao,
             $status,
             $localizacao,
+            $area,
+            $segunda_tela,
             $responsavel,
             $valor_aquisicao,
             $descricao,
@@ -122,13 +138,20 @@ final class Dispositivo extends BaseModel
         float $valor_aquisicao = 0,
         string $descricao = '',
         string $observacoes = '',
-        ?string $imei = null
+        ?string $imei = null,
+        string $processador = '',
+        string $memoria = '',
+        string $armazenamento = '',
+        string $sistema_operacional = '',
+        string $area = '',
+        string $segunda_tela = ''
     ): void {
         $stmt = self::pdo()->prepare(
             'UPDATE dispositivos SET '
             . 'tipo_id = ?, nome = ?, pep_id = ?, numero_serie = ?, imei = ?, modelo = ?, fabricante = ?, '
-            . 'data_aquisicao = ?, status = ?, localizacao = ?, responsavel = ?, valor_aquisicao = ?, '
-            . 'descricao = ?, observacoes = ? WHERE id = ?'
+            . 'processador = ?, memoria = ?, armazenamento = ?, sistema_operacional = ?, '
+            . 'data_aquisicao = ?, status = ?, localizacao = ?, area = ?, segunda_tela = ?, responsavel = ?, '
+            . 'valor_aquisicao = ?, descricao = ?, observacoes = ? WHERE id = ?'
         );
         $stmt->execute([
             $tipo_id,
@@ -138,9 +161,15 @@ final class Dispositivo extends BaseModel
             $imei !== null && $imei !== '' ? $imei : null,
             $modelo,
             $fabricante,
+            $processador,
+            $memoria,
+            $armazenamento,
+            $sistema_operacional,
             $data_aquisicao,
             $status,
             $localizacao,
+            $area,
+            $segunda_tela,
             $responsavel,
             $valor_aquisicao,
             $descricao,
@@ -220,6 +249,64 @@ final class Dispositivo extends BaseModel
         $stmt = self::pdo()->prepare($sql);
         $stmt->execute([$pep_id]);
         return $stmt->fetchAll();
+    }
+
+    public static function porNomeCI(string $nome): ?array
+    {
+        $stmt = self::pdo()->prepare('SELECT * FROM dispositivos WHERE LOWER(nome) = LOWER(?) LIMIT 1');
+        $stmt->execute([trim($nome)]);
+        $row = $stmt->fetch();
+        return $row ?: null;
+    }
+
+    /**
+     * Cria ou atualiza (por nome, sem diferenciar maiúsc./minúsc.) um dispositivo
+     * a partir de uma linha importada via CSV. Retorna o id e se foi criado agora.
+     *
+     * @return array{id:int, criado:bool}
+     */
+    public static function importarLinha(array $dados): array
+    {
+        $existente = self::porNomeCI($dados['nome']);
+
+        $campos = [
+            'tipo_id'             => $dados['tipo_id'],
+            'nome'                => $dados['nome'],
+            'pep_id'              => $dados['pep_id'],
+            'responsavel'         => $dados['responsavel'] ?? '',
+            'processador'         => $dados['processador'] ?? '',
+            'memoria'             => $dados['memoria'] ?? '',
+            'armazenamento'       => $dados['armazenamento'] ?? '',
+            'sistema_operacional' => $dados['sistema_operacional'] ?? '',
+            'localizacao'         => $dados['localizacao'] ?? '',
+            'area'                => $dados['area'] ?? '',
+            'segunda_tela'        => $dados['segunda_tela'] ?? '',
+        ];
+
+        if ($existente !== null) {
+            $sets = [];
+            $params = [];
+            foreach ($campos as $coluna => $valor) {
+                $sets[] = "$coluna = ?";
+                $params[] = $valor;
+            }
+            $params[] = $existente['id'];
+            $stmt = self::pdo()->prepare(
+                'UPDATE dispositivos SET ' . implode(', ', $sets) . ' WHERE id = ?'
+            );
+            $stmt->execute($params);
+            return ['id' => (int) $existente['id'], 'criado' => false];
+        }
+
+        $campos['status'] = 'ativo';
+        $campos['origem'] = 'csv';
+        $colunas = array_keys($campos);
+        $placeholders = implode(',', array_fill(0, count($colunas), '?'));
+        $stmt = self::pdo()->prepare(
+            'INSERT INTO dispositivos (' . implode(',', $colunas) . ') VALUES (' . $placeholders . ')'
+        );
+        $stmt->execute(array_values($campos));
+        return ['id' => (int) self::pdo()->lastInsertId(), 'criado' => true];
     }
 
     public static function porIdGlpi(int $id_glpi): ?array

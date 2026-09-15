@@ -119,6 +119,19 @@ final class Pep extends BaseModel
         return $row ?: null;
     }
 
+    /**
+     * Retorna o id do PEP com esse código, criando-o (com o projeto informado)
+     * caso ainda não exista. Usado pela importação de dispositivos via CSV.
+     */
+    public static function localizarOuCriar(string $pep, string $projeto = ''): int
+    {
+        $existente = self::porCodigo($pep);
+        if ($existente !== null) {
+            return (int) $existente['id'];
+        }
+        return self::criar($pep, $projeto);
+    }
+
     public static function pepEmUso(string $pep, ?int $ignorarId = null): bool
     {
         $sql = 'SELECT id FROM peps WHERE pep = ?';

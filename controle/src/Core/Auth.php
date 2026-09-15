@@ -47,7 +47,13 @@ final class Auth
             return self::autenticarLdap($login, $senha, $ldap);
         }
 
+        self::logLdap("autenticação LDAP está desabilitada (config_ldap.habilitado = 0) - login de '{$login}' recusado");
         return false;
+    }
+
+    private static function logLdap(string $mensagem): void
+    {
+        error_log('[LDAP] ' . $mensagem);
     }
 
     /*
@@ -106,6 +112,7 @@ final class Auth
     private static function autenticarLdap(string $login, string $senha, array $cfg): bool
     {
         if (!function_exists('ldap_connect')) {
+            self::logLdap("extensão php-ldap não está habilitada neste servidor (function_exists('ldap_connect') == false)");
             return false;
         }
 
@@ -116,6 +123,7 @@ final class Auth
         $conn = @ldap_connect($cfg['host'], (int) $cfg['porta']);
 
         if ($conn === false) {
+            self::logLdap("falha ao conectar em {$cfg['host']}:{$cfg['porta']}");
             return false;
         }
 
@@ -129,6 +137,7 @@ final class Auth
 
         // Bind com as credenciais do usuário
         if (!@ldap_bind($conn, $upn, $senha)) {
+            self::logLdap("bind falhou para '{$upn}' em {$cfg['host']}:{$cfg['porta']} - " . ldap_error($conn));
             @ldap_unbind($conn);
             return false;
         }
@@ -144,6 +153,7 @@ final class Auth
         );
 
         if ($busca === false) {
+            self::logLdap("busca falhou (filtro={$filtro}, base_dn={$cfg['base_dn']}) - " . ldap_error($conn));
             @ldap_unbind($conn);
             return false;
         }
@@ -152,6 +162,7 @@ final class Auth
         @ldap_unbind($conn);
 
         if (($entradas['count'] ?? 0) === 0) {
+            self::logLdap("bind OK para '{$upn}', mas nenhuma entrada encontrada com filtro={$filtro} sob base_dn={$cfg['base_dn']} (verifique base_dn/filtro_login)");
             return false;
         }
 
@@ -170,7 +181,7 @@ final class Auth
         $ehUsuario = self::pertenceAoGrupo($grupos, $cfg['grupo_usuario']);
 
         if (!$ehAdmin && !$ehUsuario) {
-            // Não pertence a nenhum grupo autorizado
+            self::logLdap("usuário '{$login}' autenticado no AD, mas não pertence a grupo_admin ({$cfg['grupo_admin']}) nem grupo_usuario ({$cfg['grupo_usuario']}). Grupos do usuário: " . implode(' | ', $grupos));
             return false;
         }
 

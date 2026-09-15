@@ -42,7 +42,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $data_aquisicao  = trim($_POST['data_aquisicao'] ?? '');
     $status          = $_POST['status'] ?? 'ativo';
     $localizacao     = trim($_POST['localizacao'] ?? '');
+    $area            = trim($_POST['area'] ?? '');
+    $segunda_tela    = trim($_POST['segunda_tela'] ?? '');
     $responsavel     = trim($_POST['responsavel'] ?? '');
+    $processador     = trim($_POST['processador'] ?? '');
+    $memoria         = trim($_POST['memoria'] ?? '');
+    $armazenamento   = trim($_POST['armazenamento'] ?? '');
+    $sistema_operacional = trim($_POST['sistema_operacional'] ?? '');
     $valor_aquisicao = (float) str_replace(',', '.', str_replace('.', '', $_POST['valor_aquisicao'] ?? '0'));
     $observacoes     = trim($_POST['observacoes'] ?? '');
 
@@ -95,7 +101,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $valor_aquisicao,
                     $descricao,
                     $observacoes,
-                    $imei
+                    $imei,
+                    processador: $processador,
+                    memoria: $memoria,
+                    armazenamento: $armazenamento,
+                    sistema_operacional: $sistema_operacional,
+                    area: $area,
+                    segunda_tela: $segunda_tela
                 );
                 Session::flash('success', 'Dispositivo atualizado com sucesso.');
             } else {
@@ -113,7 +125,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $valor_aquisicao,
                     $descricao,
                     $observacoes,
-                    imei: $imei
+                    imei: $imei,
+                    processador: $processador,
+                    memoria: $memoria,
+                    armazenamento: $armazenamento,
+                    sistema_operacional: $sistema_operacional,
+                    area: $area,
+                    segunda_tela: $segunda_tela
                 );
                 Session::flash('success', 'Dispositivo cadastrado com sucesso.');
             }
@@ -218,6 +236,28 @@ $selected = static fn(mixed $val, mixed $comp) => $val == $comp ? 'selected' : '
                         <small class="text-muted">Disque *#06# no aparelho para consultar.</small>
                     </div>
                 </div>
+                <div class="row">
+                    <div class="col-md-3 mb-3">
+                        <label class="form-label">Processador</label>
+                        <input type="text" name="processador" class="form-control" value="<?= $v('processador') ?>"
+                               placeholder="Ex: Intel i5-1135G7">
+                    </div>
+                    <div class="col-md-3 mb-3">
+                        <label class="form-label">Memória</label>
+                        <input type="text" name="memoria" class="form-control" value="<?= $v('memoria') ?>"
+                               placeholder="Ex: 8GB">
+                    </div>
+                    <div class="col-md-3 mb-3">
+                        <label class="form-label">Armazenamento</label>
+                        <input type="text" name="armazenamento" class="form-control" value="<?= $v('armazenamento') ?>"
+                               placeholder="Ex: 256GB SSD">
+                    </div>
+                    <div class="col-md-3 mb-3">
+                        <label class="form-label">Sistema Operacional</label>
+                        <input type="text" name="sistema_operacional" class="form-control" value="<?= $v('sistema_operacional') ?>"
+                               placeholder="Ex: Windows 11">
+                    </div>
+                </div>
             </div>
 
             <!-- Seção: Informações de Localização e Responsabilidade -->
@@ -238,15 +278,27 @@ $selected = static fn(mixed $val, mixed $comp) => $val == $comp ? 'selected' : '
                         </select>
                     </div>
                     <div class="col-md-6 mb-3">
-                        <label class="form-label">Localização Física</label>
+                        <label class="form-label">Localização Física / Projeto</label>
                         <input type="text" name="localizacao" class="form-control" value="<?= $v('localizacao') ?>"
                                placeholder="Ex: Sala 101, Mesa 5">
                     </div>
                 </div>
-                <div class="mb-3">
-                    <label class="form-label">Responsável</label>
-                    <input type="text" name="responsavel" class="form-control" value="<?= $v('responsavel') ?>"
-                           placeholder="Nome da pessoa responsável">
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <label class="form-label">Responsável / Usuário</label>
+                        <input type="text" name="responsavel" class="form-control" value="<?= $v('responsavel') ?>"
+                               placeholder="Nome da pessoa responsável">
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <label class="form-label">Área</label>
+                        <input type="text" name="area" class="form-control" value="<?= $v('area') ?>"
+                               placeholder="Ex: TI, Financeiro">
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <label class="form-label">2ª Tela</label>
+                        <input type="text" name="segunda_tela" class="form-control" value="<?= $v('segunda_tela') ?>"
+                               placeholder="Ex: Sim / Não ou modelo do monitor">
+                    </div>
                 </div>
             </div>
 

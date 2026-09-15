@@ -44,6 +44,9 @@ $badgeStatus = static fn(string $s) => match($s) {
     </div>
     <?php if ($ehAdmin): ?>
         <div>
+            <a href="<?= url('dispositivos/importar.php') ?>" class="btn btn-outline-success">
+                <i class="bi bi-filetype-csv"></i> Importar CSV
+            </a>
             <a href="<?= url('dispositivos/sincronizar_glpi.php') ?>" class="btn btn-outline-info">
                 <i class="bi bi-arrow-repeat"></i> Sincronizar GLPI
             </a>
@@ -152,11 +155,9 @@ $badgeStatus = static fn(string $s) => match($s) {
                     <th>Dispositivo</th>
                     <th>Tipo</th>
                     <th>PEP</th>
-                    <th>Modelo/Série</th>
                     <th>Status</th>
-                    <th>Responsável</th>
-                    <th>Valor</th>
                     <th>Origem</th>
+                    <th width="100">Detalhes</th>
                     <?php if ($ehAdmin): ?><th width="100">Ações</th><?php endif; ?>
                 </tr>
             </thead>
@@ -188,34 +189,37 @@ $badgeStatus = static fn(string $s) => match($s) {
                             <span class="text-muted">—</span>
                         <?php endif; ?>
                     </td>
-                    <td>
-                        <?php if ($d['modelo']): ?>
-                            <small><?= e($d['modelo']) ?></small><br>
-                        <?php endif; ?>
-                        <?php if ($d['numero_serie']): ?>
-                            <code style="font-size: 0.8rem;"><?= e($d['numero_serie']) ?></code><br>
-                        <?php elseif (!$d['imei']): ?>
-                            <span class="text-muted">—</span>
-                        <?php endif; ?>
-                        <?php if ($d['imei']): ?>
-                            <small class="text-muted">IMEI: <?= e($d['imei']) ?></small>
-                        <?php endif; ?>
-                    </td>
                     <td><?= $badgeStatus($d['status']) ?></td>
-                    <td>
-                        <?php if ($d['responsavel']): ?>
-                            <?= e($d['responsavel']) ?>
-                        <?php else: ?>
-                            <span class="text-muted">—</span>
-                        <?php endif; ?>
-                    </td>
-                    <td><?= $money((float)($d['valor_aquisicao'] ?? 0)) ?></td>
                     <td>
                         <?php if ($d['origem'] === 'glpi'): ?>
                             <span class="badge bg-info"><i class="bi bi-cloud"></i> GLPI</span>
+                        <?php elseif ($d['origem'] === 'csv'): ?>
+                            <span class="badge bg-primary"><i class="bi bi-filetype-csv"></i> CSV</span>
                         <?php else: ?>
                             <span class="badge bg-secondary"><i class="bi bi-keyboard"></i> Manual</span>
                         <?php endif; ?>
+                    </td>
+                    <td>
+                        <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal"
+                                data-bs-target="#modalDetalhesDispositivo"
+                                data-nome="<?= e($d['nome']) ?>"
+                                data-responsavel="<?= e($d['responsavel'] ?: '—') ?>"
+                                data-processador="<?= e($d['processador'] ?: '—') ?>"
+                                data-memoria="<?= e($d['memoria'] ?: '—') ?>"
+                                data-armazenamento="<?= e($d['armazenamento'] ?: '—') ?>"
+                                data-so="<?= e($d['sistema_operacional'] ?: '—') ?>"
+                                data-modelo="<?= e($d['modelo'] ?: '—') ?>"
+                                data-fabricante="<?= e($d['fabricante'] ?: '—') ?>"
+                                data-numero-serie="<?= e($d['numero_serie'] ?: '—') ?>"
+                                data-imei="<?= e($d['imei'] ?: '—') ?>"
+                                data-localizacao="<?= e($d['localizacao'] ?: '—') ?>"
+                                data-area="<?= e($d['area'] ?: '—') ?>"
+                                data-segunda-tela="<?= e($d['segunda_tela'] ?: '—') ?>"
+                                data-valor="<?= e($money((float)($d['valor_aquisicao'] ?? 0))) ?>"
+                                data-descricao="<?= e($d['descricao'] ?: '—') ?>"
+                                data-observacoes="<?= e($d['observacoes'] ?: '—') ?>">
+                            <i class="bi bi-eye"></i> Ver
+                        </button>
                     </td>
                     <?php if ($ehAdmin): ?>
                         <td>
@@ -233,7 +237,7 @@ $badgeStatus = static fn(string $s) => match($s) {
                 </tr>
             <?php endforeach; ?>
             <?php if ($dispositivos === []): ?>
-                <tr><td colspan="<?= $ehAdmin ? 9 : 8 ?>" class="text-center text-muted py-4">
+                <tr><td colspan="<?= $ehAdmin ? 8 : 6 ?>" class="text-center text-muted py-4">
                     <i class="bi bi-inbox" style="font-size: 2rem; opacity: 0.5;"></i><br>
                     Nenhum dispositivo encontrado.</td></tr>
             <?php endif; ?>
@@ -241,6 +245,61 @@ $badgeStatus = static fn(string $s) => match($s) {
         </table>
     </div>
 </div>
+
+<!-- MODAL DE DETALHES -->
+<div class="modal fade" id="modalDetalhesDispositivo" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="mdNome">Detalhes do dispositivo</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <dl class="row mb-0">
+                    <dt class="col-sm-5">Usuário</dt><dd class="col-sm-7" id="mdResponsavel"></dd>
+                    <dt class="col-sm-5">Processador</dt><dd class="col-sm-7" id="mdProcessador"></dd>
+                    <dt class="col-sm-5">Memória</dt><dd class="col-sm-7" id="mdMemoria"></dd>
+                    <dt class="col-sm-5">Armazenamento</dt><dd class="col-sm-7" id="mdArmazenamento"></dd>
+                    <dt class="col-sm-5">Sistema Operacional</dt><dd class="col-sm-7" id="mdSo"></dd>
+                    <dt class="col-sm-5">Modelo</dt><dd class="col-sm-7" id="mdModelo"></dd>
+                    <dt class="col-sm-5">Fabricante</dt><dd class="col-sm-7" id="mdFabricante"></dd>
+                    <dt class="col-sm-5">Número de Série</dt><dd class="col-sm-7" id="mdNumeroSerie"></dd>
+                    <dt class="col-sm-5">IMEI</dt><dd class="col-sm-7" id="mdImei"></dd>
+                    <dt class="col-sm-5">Localização/Projeto</dt><dd class="col-sm-7" id="mdLocalizacao"></dd>
+                    <dt class="col-sm-5">Área</dt><dd class="col-sm-7" id="mdArea"></dd>
+                    <dt class="col-sm-5">2ª Tela</dt><dd class="col-sm-7" id="mdSegundaTela"></dd>
+                    <dt class="col-sm-5">Valor de Aquisição</dt><dd class="col-sm-7" id="mdValor"></dd>
+                    <dt class="col-sm-5">Descrição</dt><dd class="col-sm-7" id="mdDescricao"></dd>
+                    <dt class="col-sm-5">Observações</dt><dd class="col-sm-7" id="mdObservacoes"></dd>
+                </dl>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+(function () {
+    const modal = document.getElementById('modalDetalhesDispositivo');
+    const campos = {
+        nome: 'mdNome', responsavel: 'mdResponsavel', processador: 'mdProcessador',
+        memoria: 'mdMemoria', armazenamento: 'mdArmazenamento', so: 'mdSo',
+        modelo: 'mdModelo', fabricante: 'mdFabricante', numeroSerie: 'mdNumeroSerie',
+        imei: 'mdImei', localizacao: 'mdLocalizacao', area: 'mdArea',
+        segundaTela: 'mdSegundaTela', valor: 'mdValor', descricao: 'mdDescricao',
+        observacoes: 'mdObservacoes',
+    };
+    modal.addEventListener('show.bs.modal', function (event) {
+        const btn = event.relatedTarget;
+        for (const [chave, idElemento] of Object.entries(campos)) {
+            document.getElementById(idElemento).textContent = btn.dataset[chave] || '—';
+        }
+    });
+})();
+</script>
+
 <?php if ($ehAdmin): ?>
 </form>
 
