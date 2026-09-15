@@ -178,15 +178,34 @@ final class Dispositivo extends BaseModel
         ]);
     }
 
-    public static function atualizarSincronizacao(int $id, ?array $dados_glpi = null): void
-    {
-        $stmt = self::pdo()->prepare(
-            'UPDATE dispositivos SET dados_glpi = ?, sincronizado_em = NOW() WHERE id = ?'
-        );
-        $stmt->execute([
-            $dados_glpi ? json_encode($dados_glpi) : null,
-            $id
-        ]);
+    public static function atualizarSincronizacao(
+        int $id,
+        ?array $dados_glpi = null,
+        ?string $processador = null,
+        ?string $memoria = null,
+        ?string $armazenamento = null,
+        ?string $sistema_operacional = null
+    ): void {
+        $sets = ['dados_glpi = ?', 'sincronizado_em = NOW()'];
+        $params = [$dados_glpi ? json_encode($dados_glpi) : null];
+
+        // Só sobrescreve especificação que veio preenchida do GLPI, para não
+        // apagar um valor já coletado numa sincronização anterior.
+        foreach ([
+            'processador'         => $processador,
+            'memoria'             => $memoria,
+            'armazenamento'       => $armazenamento,
+            'sistema_operacional' => $sistema_operacional,
+        ] as $coluna => $valor) {
+            if ($valor !== null && $valor !== '') {
+                $sets[] = "$coluna = ?";
+                $params[] = $valor;
+            }
+        }
+
+        $params[] = $id;
+        $stmt = self::pdo()->prepare('UPDATE dispositivos SET ' . implode(', ', $sets) . ' WHERE id = ?');
+        $stmt->execute($params);
     }
 
     public static function vincularPep(int $id, ?int $pep_id): void

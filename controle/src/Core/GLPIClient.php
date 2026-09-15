@@ -309,6 +309,96 @@ final class GLPIClient
     }
 
     /**
+     * Faz uma requisição GET crua a um endpoint arbitrário da API (ex.:
+     * sub-itens de um computador, como "/Computer/123/Item_DeviceProcessor").
+     */
+    public function obterBruto(string $endpoint): array
+    {
+        if (!$this->conectado && !$this->testarConexao()) {
+            throw new \RuntimeException('Não conectado ao GLPI: ' . $this->ultima_erro);
+        }
+        return $this->request('GET', $endpoint);
+    }
+
+    /**
+     * Busca processador, memória, armazenamento e sistema operacional de um
+     * computador. Faz 2 chamadas extras por computador (o GLPI não traz tudo
+     * isso na listagem nem no getItem sem parâmetros):
+     *   - GET /Computer/{id}?with_devices=true  -> processador/memória/discos
+     *   - GET /Computer/{id}/Item_OperatingSystem -> sistema operacional
+     * Falhas em qualquer uma delas não interrompem a sincronização — o
+     * computador é importado normalmente, só sem aquele dado específico.
+     *
+     * @return array{processador:string, memoria:string, armazenamento:string, sistema_operacional:string}
+     */
+    public function obterEspecificacoesComputador(int $id): array
+    {
+        $specs = [
+            'processador' => '',
+            'memoria' => '',
+            'armazenamento' => '',
+            'sistema_operacional' => '',
+        ];
+
+        try {
+            $detalhe = $this->request('GET', "/Computer/$id?with_devices=true&expand_dropdowns=true");
+            $devices = $detalhe['_devices'] ?? [];
+
+            if (!empty($devices['Item_DeviceProcessor'])) {
+                $nomes = array_unique(array_filter(array_column($devices['Item_DeviceProcessor'], 'deviceprocessors_id')));
+                $specs['processador'] = implode(' + ', $nomes);
+            }
+
+            if (!empty($devices['Item_DeviceMemory'])) {
+                $totalMb = (float) array_sum(array_column($devices['Item_DeviceMemory'], 'size'));
+                $qtd = count($devices['Item_DeviceMemory']);
+                $tamanho = self::formatarTamanho($totalMb);
+                $specs['memoria'] = $tamanho !== '' ? $tamanho . ($qtd > 1 ? " ({$qtd}x)" : '') : '';
+            }
+
+            if (!empty($devices['Item_DeviceHardDrive'])) {
+                $tamanhos = array_filter(array_map(
+                    static fn($d) => self::formatarTamanho((float) ($d['capacity'] ?? 0)),
+                    $devices['Item_DeviceHardDrive']
+                ));
+                $specs['armazenamento'] = implode(' + ', $tamanhos);
+            }
+        } catch (\Throwable) {
+            // segue sem specs de hardware — não interrompe a sincronização
+        }
+
+        try {
+            $os = $this->request('GET', "/Computer/$id/Item_OperatingSystem?expand_dropdowns=true");
+            if (is_array($os) && isset($os[0]['operatingsystems_id']) && $os[0]['operatingsystems_id'] !== '' && $os[0]['operatingsystems_id'] !== 0) {
+                $nome = (string) $os[0]['operatingsystems_id'];
+                $versao = (string) ($os[0]['operatingsystemversions_id'] ?? '');
+                $specs['sistema_operacional'] = trim($nome . ($versao !== '' && $versao !== '0' ? " ($versao)" : ''));
+            }
+        } catch (\Throwable) {
+            // segue sem SO
+        }
+
+        return $specs;
+    }
+
+    /**
+     * Converte um tamanho em MB (como devolvido pelo GLPI para memória e
+     * discos) para uma string amigável em GB.
+     */
+    private static function formatarTamanho(float $mb): string
+    {
+        if ($mb <= 0) {
+            return '';
+        }
+        $gb = $mb / 1024;
+        if ($gb >= 1024) {
+            $tb = $gb / 1024;
+            return (fmod($tb, 1.0) === 0.0 ? (string) (int) $tb : number_format($tb, 1, ',', '')) . 'TB';
+        }
+        return (fmod($gb, 1.0) === 0.0 ? (string) (int) $gb : number_format($gb, 1, ',', '')) . 'GB';
+    }
+
+    /**
      * Mapeia um itemtype do GLPI para o nome do nosso tipo local
      * (deve corresponder a um registro em tipos_dispositivos).
      */

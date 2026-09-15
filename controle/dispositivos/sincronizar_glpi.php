@@ -104,13 +104,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             // Cada entrada mapeia: rótulo para mensagens de erro, tipo local
             // (tabela tipos_dispositivos), e o método do GLPIClient que traz os itens.
             $grupos_importacao = [
-                ['label' => 'Computador', 'tipo' => 'Computador', 'obter' => 'obterComputadores'],
-                ['label' => 'Monitor', 'tipo' => 'Monitor', 'obter' => 'obterMonitores'],
-                ['label' => 'Impressora', 'tipo' => 'Impressora', 'obter' => 'obterImpressoras'],
-                ['label' => 'Equipamento de rede', 'tipo' => 'Roteador/Switch', 'obter' => 'obterDispositivosRede'],
-                ['label' => 'Periférico', 'tipo' => 'Periféricos', 'obter' => 'obterPerifericos'],
-                ['label' => 'Celular', 'tipo' => 'Celular/Smartphone', 'obter' => 'obterCelulares'],
+                ['label' => 'Computador', 'tipo' => 'Computador', 'obter' => 'obterComputadores', 'specs' => true],
+                ['label' => 'Monitor', 'tipo' => 'Monitor', 'obter' => 'obterMonitores', 'specs' => false],
+                ['label' => 'Impressora', 'tipo' => 'Impressora', 'obter' => 'obterImpressoras', 'specs' => false],
+                ['label' => 'Equipamento de rede', 'tipo' => 'Roteador/Switch', 'obter' => 'obterDispositivosRede', 'specs' => false],
+                ['label' => 'Periférico', 'tipo' => 'Periféricos', 'obter' => 'obterPerifericos', 'specs' => false],
+                ['label' => 'Celular', 'tipo' => 'Celular/Smartphone', 'obter' => 'obterCelulares', 'specs' => false],
             ];
+
+            $dispositivos_atualizados = 0;
 
             foreach ($grupos_importacao as $grupo) {
                 $tipo_local = $tipo_map[$grupo['tipo']] ?? null;
@@ -122,7 +124,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 $itens = $glpi->{$grupo['obter']}();
                 foreach ($itens as $item) {
                     try {
-                        if (Dispositivo::porIdGlpi((int) $item['id']) === null) {
+                        // Processador, memória, armazenamento e SO exigem 2 chamadas
+                        // extras à API — só valem a pena para computadores.
+                        $specs = $grupo['specs']
+                            ? $glpi->obterEspecificacoesComputador((int) $item['id'])
+                            : ['processador' => '', 'memoria' => '', 'armazenamento' => '', 'sistema_operacional' => ''];
+
+                        $existente = Dispositivo::porIdGlpi((int) $item['id']);
+
+                        if ($existente === null) {
                             Dispositivo::criar(
                                 $tipo_local,
                                 $item['name'] !== '' ? $item['name'] : ($grupo['label'] . ' ' . $item['id']),
@@ -139,9 +149,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                                 '',
                                 'glpi',
                                 (int) $item['id'],
-                                $item
+                                $item,
+                                processador: $specs['processador'],
+                                memoria: $specs['memoria'],
+                                armazenamento: $specs['armazenamento'],
+                                sistema_operacional: $specs['sistema_operacional']
                             );
                             $dispositivos_importados++;
+                        } elseif ($grupo['specs']) {
+                            // Já importado antes: só atualiza specs (não mexe em
+                            // campos editados manualmente, como PEP/responsável/área).
+                            Dispositivo::atualizarSincronizacao(
+                                (int) $existente['id'],
+                                $item,
+                                $specs['processador'],
+                                $specs['memoria'],
+                                $specs['armazenamento'],
+                                $specs['sistema_operacional']
+                            );
+                            $dispositivos_atualizados++;
                         }
                     } catch (\Throwable $e) {
                         $erros_import[] = $grupo['label'] . ' ' . ($item['name'] ?: $item['id']) . ': ' . $e->getMessage();
@@ -152,7 +178,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $glpi->encerrarSessao();
 
             $resultado = [
-                'sucesso' => "$dispositivos_importados dispositivo(s) importado(s) com sucesso!",
+                'sucesso' => "$dispositivos_importados dispositivo(s) importado(s), $dispositivos_atualizados atualizado(s) (specs de hardware) com sucesso!",
                 'avisos' => $erros_import
             ];
         } catch (\Throwable $e) {
