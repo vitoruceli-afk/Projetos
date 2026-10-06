@@ -1,10 +1,14 @@
 <?php
 // Orquestra a instalação remota do MSI (ver Instaladores\msi-build) numa máquina da rede, via
 // WMI/DCOM (não depende de WinRM, que não está habilitado em nenhuma máquina do domínio hoje).
-// O trabalho pesado (copiar o MSI, autenticar, rodar o msiexec remoto, esperar terminar) roda em
-// remote_install.ps1, chamado por remote_install_runner.php num processo PHP à parte — instalar
-// pode levar mais de um minuto (arquivo de 85 MB + instalação silenciosa), tempo incompatível com
-// uma requisição HTTP síncrona.
+// O trabalho pesado (copiar o MSI, autenticar, rodar o msiexec remoto, esperar terminar) roda num
+// script à parte, chamado por remote_install_runner.php num processo PHP à parte — instalar pode
+// levar mais de um minuto (arquivo de 85 MB + instalação silenciosa), tempo incompatível com uma
+// requisição HTTP síncrona. Dois scripts fazem o MESMO trabalho (mesmo contrato stdin/stdout JSON,
+// ver cabeçalho de qualquer um deles), escolhidos por PHP_OS_FAMILY: remote_install.ps1 (Windows,
+// usa CIM/WMI nativo do PowerShell) ou remote_install.py (Linux, usa impacket pra fazer SMB admin$
+// + WMI/DCOM sem depender de nada nativo do Windows — pedido explícito pra Instalação Remota
+// funcionar também a partir do servidor de homologação em Ubuntu).
 
 function getInstalacaoConfig(PDO $db) {
     return $db->query("SELECT * FROM instalacao_remota_config ORDER BY id ASC LIMIT 1")->fetch();
@@ -21,13 +25,20 @@ function dispararInstalacaoRemota(PDO $db, array $maquina, $acao = 'instalar') {
     $stmt->execute([':m' => $maquina['id'], ':a' => $acao, ':i' => date('Y-m-d H:i:s')]);
     $instalacaoId = (int)$db->lastInsertId();
 
-    $phpWin = 'C:\\xampp\\php\\php-win.exe';
-    $runner = __DIR__ . '\\remote_install_runner.php';
-    $cmd = 'start "" /B ' . escapeshellarg($phpWin) . ' ' . escapeshellarg($runner) . ' ' . (int)$instalacaoId . ' > NUL 2>&1';
-
-    $proc = popen('start "" /B cmd /c ' . escapeshellarg($cmd), 'r');
-    if ($proc !== false) {
-        pclose($proc);
+    if (PHP_OS_FAMILY === 'Windows') {
+        $phpWin = 'C:\\xampp\\php\\php-win.exe';
+        $runner = __DIR__ . '\\remote_install_runner.php';
+        $cmd = 'start "" /B ' . escapeshellarg($phpWin) . ' ' . escapeshellarg($runner) . ' ' . (int)$instalacaoId . ' > NUL 2>&1';
+        $proc = popen('start "" /B cmd /c ' . escapeshellarg($cmd), 'r');
+        if ($proc !== false) {
+            pclose($proc);
+        }
+    } else {
+        // "&" ao final (shell POSIX) é o equivalente do "start /B" do Windows acima - sobrevive ao
+        // fim desta requisição. /dev/null descarta a saída (sem log aqui; o resultado de verdade
+        // vai pra instalacoes_remotas.log via finalizarInstalacaoRemota()).
+        $runner = __DIR__ . '/remote_install_runner.php';
+        exec('php ' . escapeshellarg($runner) . ' ' . (int)$instalacaoId . ' > /dev/null 2>&1 &');
     }
 
     return $instalacaoId;
@@ -64,8 +75,13 @@ function executarInstalacaoRemota(PDO $db, $instalacaoId) {
         $payload['serverIp'] = AW_SERVIDOR_IP;
     }
 
-    $script = __DIR__ . ($desinstalando ? '\\remote_uninstall.ps1' : '\\remote_install.ps1');
-    $cmd = 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' . escapeshellarg($script);
+    if (PHP_OS_FAMILY === 'Windows') {
+        $script = __DIR__ . ($desinstalando ? '\\remote_uninstall.ps1' : '\\remote_install.ps1');
+        $cmd = 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' . escapeshellarg($script);
+    } else {
+        $script = __DIR__ . ($desinstalando ? '/remote_uninstall.py' : '/remote_install.py');
+        $cmd = escapeshellarg(INSTALL_PYTHON_BIN) . ' ' . escapeshellarg($script);
+    }
 
     $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
     $proc = proc_open($cmd, $descriptors, $pipes);

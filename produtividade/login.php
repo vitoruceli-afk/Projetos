@@ -19,13 +19,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = "Usuário ou senha incorretos.";
         } elseif (!$user['enabled']) {
             $error = "Esta conta está desabilitada. Contate um administrador.";
-        } elseif (password_verify($password, $user['password_hash'])) {
-            $_SESSION['user_logged_in'] = $user['username'];
-            $_SESSION['last_activity'] = time();
-            header("Location: index.php");
-            exit;
         } else {
-            $error = "Usuário ou senha incorretos.";
+            // Conta importada do AD (ver Integração > Active Directory, local_users.origem='ad'):
+            // tenta primeiro a senha real do domínio via bind LDAP — a mesma que o usuário já usa
+            // pra logar no Windows, bem mais natural que a senha aleatória local gerada na
+            // importação. Se o bind falhar (senha errada, DC fora do ar, usuário local sem ad_dn
+            // nenhum...), cai pra senha local como reserva, em vez de bloquear o acesso.
+            $autenticado = false;
+            if (($user['origem'] ?? 'local') === 'ad' && !empty($user['ad_dn'])) {
+                $autenticado = adAutenticarUsuario(getAdConfig($db), $user['ad_dn'], $password);
+            }
+            if (!$autenticado) {
+                $autenticado = password_verify($password, $user['password_hash']);
+            }
+
+            if ($autenticado) {
+                $_SESSION['user_logged_in'] = $user['username'];
+                $_SESSION['last_activity'] = time();
+                header("Location: index.php");
+                exit;
+            } else {
+                $error = "Usuário ou senha incorretos.";
+            }
         }
     } else {
         $error = "Preencha usuário e senha.";

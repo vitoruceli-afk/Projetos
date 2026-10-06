@@ -514,6 +514,28 @@ tr.table-warning > * { --bs-table-accent-bg: transparent; background: transparen
 .hex-tile-ativa { transform: scale(1.12); box-shadow: 0 0 0 3px rgba(31,36,48,0.85); z-index: 2; }
 .hex-tile-ativa:hover { transform: scale(1.16); }
 
+/* ---- linha do tempo (Máquinas/Usuários) ---- */
+.timeline-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.timeline-wrap { overflow-x: auto; padding-bottom: 2px; }
+.timeline-ticks { position: relative; height: 18px; margin-left: 150px; min-width: 640px; font-size: 11px; color: var(--text-400); }
+.timeline-ticks span { position: absolute; transform: translateX(-50%); }
+.timeline-body { position: relative; user-select: none; }
+.timeline-row { display: flex; align-items: center; margin-top: 6px; }
+.timeline-label { flex: 0 0 150px; width: 150px; font-size: 12.5px; font-weight: 600; color: var(--text-600); padding-right: 10px; }
+.timeline-track { position: relative; flex: 1 1 auto; min-width: 640px; height: 26px; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; overflow: hidden; cursor: crosshair; }
+.timeline-seg { position: absolute; top: 1px; bottom: 1px; border-radius: 2px; }
+.timeline-seg:hover { outline: 1px solid rgba(28, 27, 46, 0.45); z-index: 1; }
+.timeline-empty { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); font-size: 11px; color: var(--text-400); }
+/* Caixa desenhada durante o arrasto de seleção (zoom) — por cima de tudo (z-index), mas sem
+   pointer-events pra nunca atrapalhar o mousemove/mouseup que a controla nem o hover dos blocos. */
+.timeline-selection-box { position: absolute; top: 0; bottom: 0; background: rgba(249, 150, 40, 0.22); border-left: 1px solid rgba(197, 111, 12, 0.65); border-right: 1px solid rgba(197, 111, 12, 0.65); pointer-events: none; z-index: 3; }
+.timeline-legendas { display: flex; flex-direction: column; gap: 6px; }
+.timeline-legend { display: flex; align-items: flex-start; }
+.timeline-legend-titulo { flex: 0 0 150px; width: 150px; font-size: 11px; font-weight: 600; color: var(--text-400); }
+.timeline-legend-itens { flex: 1 1 auto; display: flex; flex-wrap: wrap; gap: 4px 12px; min-width: 640px; }
+.timeline-legend-item { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-600); }
+.timeline-legend-dot { width: 9px; height: 9px; border-radius: 2px; flex: 0 0 auto; }
+
 /* ---- login ---- */
 .login-stage {
   min-height: 100vh;

@@ -68,17 +68,18 @@ function awTestarConexao($maquina) {
     ];
 }
 
-// Classifica o tipo interno (window/afk/web/usuario/other) a partir do "type" que o aw-server
-// devolve para cada bucket (currentwindow, afkstatus, web.tab.current, ...). "currentuser" é o
-// bucket do nosso próprio agente (aw-watcher-currentuser, ver Agentes/) — não é um watcher oficial
-// do ActivityWatch, é um "custom watcher" que fala com a mesma API pública, sem modificar nada da
-// instalação existente.
+// Classifica o tipo interno (window/afk/web/usuario/sessao/other) a partir do "type" que o
+// aw-server devolve para cada bucket (currentwindow, afkstatus, web.tab.current, ...). "currentuser"
+// e "sessionevent" são buckets dos nossos próprios agentes (aw-watcher-currentuser e
+// aw-watcher-sessionevents, ver Agentes/) — não são watchers oficiais do ActivityWatch, são "custom
+// watchers" que falam com a mesma API pública, sem modificar nada da instalação existente.
 function awTipoBucket($tipoAw) {
     $tipoAw = (string)$tipoAw;
     if ($tipoAw === 'currentwindow') return 'window';
     if ($tipoAw === 'afkstatus') return 'afk';
     if (strpos($tipoAw, 'web.tab') === 0) return 'web';
     if ($tipoAw === 'currentuser') return 'usuario';
+    if ($tipoAw === 'sessionevent') return 'sessao';
     return 'other';
 }
 
@@ -197,9 +198,19 @@ function sincronizarMaquina(PDO $db, array $maquina, $origem = 'manual') {
            ]);
     }
 
-    $upsert = $db->prepare("INSERT INTO eventos (bucket_id, maquina_id, tipo, ts, duracao, app, titulo, url, status, dados, categoria_id)
-                             VALUES (:bucket_id, :maquina_id, :tipo, :ts, :duracao, :app, :titulo, :url, :status, :dados, :categoria_id)
-                             ON DUPLICATE KEY UPDATE duracao = VALUES(duracao), dados = VALUES(dados), categoria_id = VALUES(categoria_id)");
+    // usuario_detectado entra aqui também (além da correlação por heartbeat feita depois, em
+    // atualizarUsuarioDetectadoEventos()) porque eventos tipo 'sessao' (login/lock/unlock, ver
+    // Agentes/aw-watcher-sessionevents) já trazem o usuário na PRÓPRIA linha (data.user) — não
+    // precisam de correlação nenhuma com o bucket 'usuario'. Isso importa de verdade: correlação por
+    // heartbeat falha se houver qualquer lacuna no bucket 'usuario' naquele intervalo (ex: máquina
+    // ociosa a noite toda, sem heartbeat nenhum), deixando o evento de sessão pra sempre sem
+    // usuario_detectado mesmo sabendo exatamente quem foi, só por não ter cruzado com outro bucket.
+    // COALESCE(VALUES(...), usuario_detectado) no UPDATE preserva o valor já calculado por
+    // correlação em eventos window/web/afk (onde :usuario_detectado vem NULL) ao resincronizar.
+    $upsert = $db->prepare("INSERT INTO eventos (bucket_id, maquina_id, tipo, ts, duracao, app, titulo, url, status, dados, categoria_id, usuario_detectado)
+                             VALUES (:bucket_id, :maquina_id, :tipo, :ts, :duracao, :app, :titulo, :url, :status, :dados, :categoria_id, :usuario_detectado)
+                             ON DUPLICATE KEY UPDATE duracao = VALUES(duracao), dados = VALUES(dados), categoria_id = VALUES(categoria_id),
+                                 usuario_detectado = COALESCE(VALUES(usuario_detectado), usuario_detectado)");
 
     $totalNovos = 0;
     $avisos = [];
@@ -247,11 +258,22 @@ function sincronizarMaquina(PDO $db, array $maquina, $origem = 'manual') {
             $app = $data['app'] ?? null;
             $titulo = $data['title'] ?? null;
             $url = $data['url'] ?? null;
-            $status = $data['status'] ?? null;
+            // 'evento' é o campo que o aw-watcher-sessionevents usa (login/lock/unlock, ver
+            // Agentes/aw-watcher-sessionevents) — cai na mesma coluna 'status' já usada pelo afk
+            // ('not-afk'/'afk'), evita precisar de uma coluna nova só pra isso.
+            $status = $data['status'] ?? $data['evento'] ?? null;
 
             $categoriaId = ($bucket['tipo'] === 'window' || $bucket['tipo'] === 'web')
                 ? classificarEvento($db, $app, $titulo, $url)
                 : null;
+
+            // Só 'sessao' se autodeclara aqui — window/web/afk continuam dependendo inteiramente
+            // da correlação por heartbeat em atualizarUsuarioDetectadoEventos() (ver comentário
+            // acima, no prepare do $upsert).
+            $usuarioAutodeclarado = null;
+            if ($bucket['tipo'] === 'sessao' && !empty($data['user'])) {
+                $usuarioAutodeclarado = mb_substr((string)$data['user'], 0, 150);
+            }
 
             $upsert->execute([
                 ':bucket_id' => $bucket['id'],
@@ -265,6 +287,7 @@ function sincronizarMaquina(PDO $db, array $maquina, $origem = 'manual') {
                 ':status' => $status,
                 ':dados' => json_encode($data, JSON_UNESCAPED_UNICODE),
                 ':categoria_id' => $categoriaId,
+                ':usuario_detectado' => $usuarioAutodeclarado,
             ]);
             $totalNovos++;
         }
@@ -279,6 +302,7 @@ function sincronizarMaquina(PDO $db, array $maquina, $origem = 'manual') {
     }
 
     atualizarUsuarioResponsavelDetectado($db, $maquina['id']);
+    atualizarUsuarioDetectadoEventos($db, $maquina['id']);
 
     if (!empty($avisos)) {
         $msg = implode('; ', $avisos);
@@ -315,5 +339,57 @@ function atualizarUsuarioResponsavelDetectado(PDO $db, $maquinaId) {
                ':ip' => $linha['ip'] !== null ? mb_substr($linha['ip'], 0, 45) : null,
                ':id' => $maquinaId,
            ]);
+    }
+}
+
+// Preenche eventos.usuario_detectado (window/web/afk/sessao) com o usuário do Windows que estava logado na
+// máquina no momento de cada evento, a partir do mesmo bucket "aw-watcher-currentuser_<host>" usado
+// por atualizarUsuarioResponsavelDetectado() acima — mas evento a evento, não só "o último visto",
+// pra sustentar a aba Usuários e a quebra por usuário dentro da Visão Máquina do Dashboard. Cada
+// linha do bucket 'usuario' já é um heartbeat fundido pelo aw-server (pulsetime=600s, ver
+// aw-watcher-currentuser.ps1) num único evento contínuo enquanto o mesmo usuário fica logado; uma
+// "sessão" aqui é o intervalo [ts, ts_fim) desse evento, onde ts_fim é 600s depois do fim reportado
+// (cobre o atraso até o próximo heartbeat agendado) ou o início do heartbeat seguinte, o que vier
+// primeiro.
+//
+// $limiteEventos limita quantos dos ÚLTIMOS eventos 'usuario' desta máquina são reprocessados: como
+// o registro de uma sessão em andamento tem sua duração (e portanto seu ts_fim) crescendo a cada
+// heartbeat SEM criar uma linha nova, o valor padrão (10) é suficiente pra manter a sessão atual e
+// pegar eventuais trocas de usuário recentes a cada sincronização, sem reprocessar o histórico
+// inteiro sempre - reprocessamento em massa (ex: após adicionar esta coluna) usa um limite bem
+// maior, só uma vez.
+function atualizarUsuarioDetectadoEventos(PDO $db, $maquinaId, $limiteEventos = 10) {
+    $stmt = $db->prepare("SELECT ts, duracao, JSON_UNQUOTE(JSON_EXTRACT(dados, '$.user')) AS usuario
+                           FROM (
+                               SELECT ts, duracao, dados FROM eventos
+                               WHERE maquina_id = :m AND tipo = 'usuario'
+                               ORDER BY ts DESC LIMIT " . (int)$limiteEventos . "
+                           ) ultimos
+                           ORDER BY ts ASC");
+    $stmt->execute([':m' => $maquinaId]);
+    $linhas = $stmt->fetchAll();
+    $n = count($linhas);
+    if ($n === 0) return;
+
+    $update = $db->prepare("UPDATE eventos SET usuario_detectado = :u
+                             WHERE maquina_id = :m AND tipo IN ('window', 'web', 'afk', 'sessao')
+                               AND ts >= :ini AND ts < :fim");
+    for ($i = 0; $i < $n; $i++) {
+        $usuario = $linhas[$i]['usuario'];
+        if ($usuario === null || $usuario === '') continue;
+
+        $tsInicio = new DateTime($linhas[$i]['ts'], new DateTimeZone('UTC'));
+        $tsFim = (clone $tsInicio)->modify('+' . (ceil((float)$linhas[$i]['duracao']) + 600) . ' seconds');
+        if ($i + 1 < $n) {
+            $proximoTs = new DateTime($linhas[$i + 1]['ts'], new DateTimeZone('UTC'));
+            if ($proximoTs < $tsFim) $tsFim = $proximoTs;
+        }
+
+        $update->execute([
+            ':u' => mb_substr($usuario, 0, 150),
+            ':m' => $maquinaId,
+            ':ini' => $tsInicio->format('Y-m-d H:i:s.v'),
+            ':fim' => $tsFim->format('Y-m-d H:i:s.v'),
+        ]);
     }
 }

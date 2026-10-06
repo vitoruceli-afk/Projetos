@@ -17,7 +17,7 @@
   <Product Id="*"
            Name="ActivityWatch (Produtividade FAESA)"
            Language="1046"
-           Version="0.13.2.7"
+           Version="0.13.2.8"
            Manufacturer="FAESA - Nucleo de Tecnologia da Informacao"
            UpgradeCode="9F1B7C2A-4E3D-4B8A-9C6E-7A2F5D1B0E44">
 
@@ -71,6 +71,34 @@
             <File Id="AgenteUsuarioTaskXml" Name="task-aw-watcher-currentuser.xml" Source="..\..\Agentes\aw-watcher-currentuser\task-aw-watcher-currentuser.xml" KeyPath="yes" />
           </Component>
 
+          <!-- Segundo agente proprio (tambem nao e um watcher oficial do ActivityWatch): reporta
+               eventos PONTUAIS de login/bloqueio/desbloqueio de tela (distinto do heartbeat continuo
+               do aw-watcher-currentuser acima) - pedido explicito pra estatisticas de uso do
+               dispositivo mais fieis que o AFK sozinho (que so enxerga tempo sem teclado/mouse, nao
+               sabe se a tela estava DE FATO bloqueada). Ver Agentes\aw-watcher-sessionevents\. -->
+          <Component Id="CompAgenteSessaoScript" Guid="9A1B2C3D-4E5F-4061-8A7B-1C2D3E4F5061">
+            <File Id="AgenteSessaoScript" Name="aw-watcher-sessionevents.ps1" Source="..\..\Agentes\aw-watcher-sessionevents\aw-watcher-sessionevents.ps1" KeyPath="yes" />
+          </Component>
+
+          <Component Id="CompAgenteSessaoRunHidden" Guid="1B2C3D4E-5F60-4172-9B8C-2D3E4F506172">
+            <File Id="AgenteSessaoRunHidden" Name="run-hidden-sessionevents.vbs" Source="..\..\Agentes\aw-watcher-sessionevents\run-hidden-sessionevents.vbs" KeyPath="yes" />
+          </Component>
+
+          <!-- Uma Tarefa Agendada por gatilho (login/lock/unlock) - o Agendador de Tarefas nao
+               permite que gatilhos diferentes dentro de UMA MESMA tarefa passem argumentos
+               diferentes pra mesma acao, entao sao 3 tarefas pequenas em vez de uma so. -->
+          <Component Id="CompAgenteSessaoTaskLoginXml" Guid="2C3D4E5F-6071-4283-AC9D-3E4F50617283">
+            <File Id="AgenteSessaoTaskLoginXml" Name="task-aw-watcher-sessionevents-login.xml" Source="..\..\Agentes\aw-watcher-sessionevents\task-aw-watcher-sessionevents-login.xml" KeyPath="yes" />
+          </Component>
+
+          <Component Id="CompAgenteSessaoTaskLockXml" Guid="3D4E5F60-7182-4394-BDAE-4F5061728394">
+            <File Id="AgenteSessaoTaskLockXml" Name="task-aw-watcher-sessionevents-lock.xml" Source="..\..\Agentes\aw-watcher-sessionevents\task-aw-watcher-sessionevents-lock.xml" KeyPath="yes" />
+          </Component>
+
+          <Component Id="CompAgenteSessaoTaskUnlockXml" Guid="4E5F6071-8293-44A5-CEBF-5061728394A5">
+            <File Id="AgenteSessaoTaskUnlockXml" Name="task-aw-watcher-sessionevents-unlock.xml" Source="..\..\Agentes\aw-watcher-sessionevents\task-aw-watcher-sessionevents-unlock.xml" KeyPath="yes" />
+          </Component>
+
           <!-- Tarefa agendada sob demanda (sem gatilho proprio) so para religar o ActivityWatch na
                sessao do usuario logado logo apos um "Atualizar" - ver CustomActions
                RegistrarTarefaReligar/ReligarActivityWatch abaixo. -->
@@ -120,6 +148,11 @@
       <ComponentRef Id="CompAgenteUsuarioScript" />
       <ComponentRef Id="CompAgenteUsuarioRunHidden" />
       <ComponentRef Id="CompAgenteUsuarioTaskXml" />
+      <ComponentRef Id="CompAgenteSessaoScript" />
+      <ComponentRef Id="CompAgenteSessaoRunHidden" />
+      <ComponentRef Id="CompAgenteSessaoTaskLoginXml" />
+      <ComponentRef Id="CompAgenteSessaoTaskLockXml" />
+      <ComponentRef Id="CompAgenteSessaoTaskUnlockXml" />
       <ComponentRef Id="CompTaskReligarXml" />
       <ComponentRef Id="CompRunKey" />
       <ComponentRef Id="CompFirewall" />
@@ -191,6 +224,50 @@
                   Execute="deferred"
                   Return="ignore" />
 
+    <!-- Mesmo mecanismo de RegistrarTarefaAgente acima, uma vez pra cada uma das 3 tarefas do
+         aw-watcher-sessionevents (login/lock/unlock - ver comentario no Component correspondente).
+         Nao ha "Religar" equivalente pra essas: diferente do heartbeat continuo do
+         AW_WatcherUsuarioLogado (vale a pena forcar um refresh logo apos instalar/atualizar),
+         login/lock/unlock sao fatos pontuais - forcar um "login" sintetico no momento da instalacao
+         registraria um evento que nao aconteceu de verdade. Passa a capturar a partir do proximo
+         gatilho real (proximo logon/bloqueio/desbloqueio), sem backfill nenhum. -->
+    <CustomAction Id="RegistrarTarefaSessaoLogin"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[SystemFolder]schtasks.exe&quot; /create /tn &quot;AW_SessaoLogin&quot; /xml &quot;[INSTALLFOLDER]task-aw-watcher-sessionevents-login.xml&quot; /f"
+                  Execute="deferred"
+                  Return="ignore" />
+
+    <CustomAction Id="RegistrarTarefaSessaoLock"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[SystemFolder]schtasks.exe&quot; /create /tn &quot;AW_SessaoLock&quot; /xml &quot;[INSTALLFOLDER]task-aw-watcher-sessionevents-lock.xml&quot; /f"
+                  Execute="deferred"
+                  Return="ignore" />
+
+    <CustomAction Id="RegistrarTarefaSessaoUnlock"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[SystemFolder]schtasks.exe&quot; /create /tn &quot;AW_SessaoUnlock&quot; /xml &quot;[INSTALLFOLDER]task-aw-watcher-sessionevents-unlock.xml&quot; /f"
+                  Execute="deferred"
+                  Return="ignore" />
+
+    <!-- Contraparte no uninstall das 3 acima, mesmo motivo de RemoverTarefaAgente. -->
+    <CustomAction Id="RemoverTarefaSessaoLogin"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[SystemFolder]schtasks.exe&quot; /delete /tn &quot;AW_SessaoLogin&quot; /f"
+                  Execute="deferred"
+                  Return="ignore" />
+
+    <CustomAction Id="RemoverTarefaSessaoLock"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[SystemFolder]schtasks.exe&quot; /delete /tn &quot;AW_SessaoLock&quot; /f"
+                  Execute="deferred"
+                  Return="ignore" />
+
+    <CustomAction Id="RemoverTarefaSessaoUnlock"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[SystemFolder]schtasks.exe&quot; /delete /tn &quot;AW_SessaoUnlock&quot; /f"
+                  Execute="deferred"
+                  Return="ignore" />
+
     <!-- Registra uma tarefa SOB DEMANDA (sem gatilho proprio - so pode ser disparada por
          ReligarActivityWatch, abaixo, ou manualmente) cuja acao e so rodar o aw-launcher.vbs ja
          existente. Existe so para dar a ReligarActivityWatch um jeito de entregar isso na sessao
@@ -242,10 +319,16 @@
       <Custom Action="PararActivityWatch" Before="InstallActivityWatch">NOT Installed</Custom>
       <Custom Action="InstallActivityWatch" After="InstallFiles">NOT Installed</Custom>
       <Custom Action="RegistrarTarefaAgente" After="InstallActivityWatch">NOT Installed</Custom>
-      <Custom Action="RegistrarTarefaReligar" After="RegistrarTarefaAgente">NOT Installed</Custom>
+      <Custom Action="RegistrarTarefaSessaoLogin" After="RegistrarTarefaAgente">NOT Installed</Custom>
+      <Custom Action="RegistrarTarefaSessaoLock" After="RegistrarTarefaSessaoLogin">NOT Installed</Custom>
+      <Custom Action="RegistrarTarefaSessaoUnlock" After="RegistrarTarefaSessaoLock">NOT Installed</Custom>
+      <Custom Action="RegistrarTarefaReligar" After="RegistrarTarefaSessaoUnlock">NOT Installed</Custom>
       <Custom Action="ReligarActivityWatch" After="RegistrarTarefaReligar">NOT Installed</Custom>
       <Custom Action="ReligarAgenteUsuario" After="ReligarActivityWatch">NOT Installed</Custom>
       <Custom Action="RemoverTarefaReligar" Before="RemoverTarefaAgente">REMOVE="ALL"</Custom>
+      <Custom Action="RemoverTarefaSessaoUnlock" Before="RemoverTarefaReligar">REMOVE="ALL"</Custom>
+      <Custom Action="RemoverTarefaSessaoLock" Before="RemoverTarefaSessaoUnlock">REMOVE="ALL"</Custom>
+      <Custom Action="RemoverTarefaSessaoLogin" Before="RemoverTarefaSessaoLock">REMOVE="ALL"</Custom>
       <Custom Action="RemoverTarefaAgente" Before="UninstallActivityWatch">REMOVE="ALL"</Custom>
       <Custom Action="UninstallActivityWatch" Before="RemoveFiles">REMOVE="ALL"</Custom>
     </InstallExecuteSequence>

@@ -1,0 +1,13 @@
+{
+  "name": "tradutor-imagens-extensao",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Extensão Chrome (MV3) para OCR local e tradução de textos em imagens para pt-BR.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/unit.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

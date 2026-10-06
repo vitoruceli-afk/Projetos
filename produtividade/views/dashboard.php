@@ -35,7 +35,7 @@ if ($periodo === 'hoje' || $periodo === '7d') $tendenciaDiasForcado = 7;
 elseif ($periodo === '30d') $tendenciaDiasForcado = 30;
 
 $visao = $_GET['visao'] ?? 'geral';
-if (!in_array($visao, ['geral', 'setor', 'maquinas_setor', 'maquina'], true)) $visao = 'geral';
+if (!in_array($visao, ['geral', 'setor', 'maquinas_setor', 'maquina', 'usuarios', 'usuario_detalhe'], true)) $visao = 'geral';
 
 // setor_efetivo: nome ATUAL da OU vinculada (Integração > Active Directory), se houver, senão o
 // texto livre gravado na máquina — nunca usar m.setor puro, ele só existe como fallback congelado.
@@ -171,11 +171,637 @@ function renderCardInfoMaquina($maquinaAtual, $mostrarVoltar = true) {
     <?php
 }
 
+// Quem usou esta máquina no período (aba Usuários "explodida" para dentro da Visão Máquina e da
+// Visão Máquinas por Setor) — quebra o mesmo tempo monitorado/produtivo do painel abaixo por
+// usuário do Windows detectado pelo aw-watcher-currentuser, em vez de só pelo "Usuário Responsável"
+// estático do cadastro (que é só o último detectado, não reflete máquinas usadas por turnos/
+// pessoas diferentes). eventos.usuario_detectado já vem pré-calculado da sincronização (ver
+// atualizarUsuarioDetectadoEventos() em aw_client.php) — ver comentário em renderPainelProdutividade
+// sobre por que isso é pré-calculado em vez de cruzado em tempo de consulta.
+function renderTabelaUsuariosMaquina(PDO $db, $inicioUtc, $fimUtc, $maquinaId) {
+    $filtroHorario = filtroHorarioComercialSql();
+    $filtroNaoBloqueado = filtroNaoBloqueadoSql();
+    $stmt = $db->prepare("SELECT e.usuario_detectado AS usuario,
+               SUM(e.duracao) AS total,
+               SUM(CASE WHEN c.pontuacao = 1 THEN e.duracao ELSE 0 END) AS produtivo
+        FROM eventos e
+        LEFT JOIN categorias c ON c.id = e.categoria_id
+        WHERE e.maquina_id = :maquina_id AND e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim
+              AND e.usuario_detectado IS NOT NULL AND e.usuario_detectado <> '' {$filtroHorario} {$filtroNaoBloqueado}
+        GROUP BY e.usuario_detectado
+        ORDER BY total DESC");
+    $stmt->execute([':maquina_id' => $maquinaId, ':ini' => $inicioUtc, ':fim' => $fimUtc]);
+    $porUsuario = $stmt->fetchAll();
+    ?>
+    <div class="card mb-3">
+        <div class="card-header">Usuários desta Máquina no Período</div>
+        <div class="table-responsive">
+            <table class="table table-sm table-bordered bg-white align-middle mb-0">
+                <thead class="table-light"><tr><th>Usuário</th><th>Tempo Monitorado</th><th>Produtivo</th><th>% Produtivo</th><th></th></tr></thead>
+                <tbody>
+                    <?php foreach ($porUsuario as $u): $pct = $u['total'] > 0 ? round($u['produtivo'] / $u['total'] * 100) : 0; ?>
+                    <tr>
+                        <td><?= htmlspecialchars($u['usuario']) ?></td>
+                        <td><?= formatarDuracao($u['total'] ?: 0) ?></td>
+                        <td class="online-c"><?= formatarDuracao($u['produtivo'] ?: 0) ?></td>
+                        <td><?= $u['total'] > 0 ? $pct . '%' : '—' ?></td>
+                        <td><a class="btn btn-sm btn-outline-primary" href="<?= qs(['visao' => 'usuario_detalhe', 'maquina_id' => null, 'setor' => null, 'usuario' => $u['usuario']]) ?>">Ver usuário</a></td>
+                    </tr>
+                    <?php endforeach; ?>
+                    <?php if (empty($porUsuario)): ?><tr><td colspan="5" class="text-center text-muted py-2">Nenhum usuário detectado nesta máquina no período (o agente aw-watcher-currentuser pode não estar instalado nela).</td></tr><?php endif; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <?php
+}
+
+// Cor determinística a partir de um texto (nome de app, domínio...) — mesmo texto sempre cai na
+// mesma cor, sem precisar de uma tabela de cores cadastrada (ao contrário das categorias, que têm
+// cor própria escolhida pelo admin). Usado nas raias "Aplicações"/"Documentos" da Linha do Tempo,
+// onde cada app/site distinto precisa ser visualmente diferenciável dos vizinhos.
+function corPorTexto($texto) {
+    if ($texto === null || $texto === '') return '#c7c5da';
+    $matiz = crc32($texto) % 360;
+    return "hsl({$matiz}, 55%, 52%)";
+}
+
+// Nome "amigável" de um executável pra exibição (ex: "EXCEL.EXE" -> "Excel") — puramente cosmético,
+// não afeta a categorização em nada (classificarEvento() continua comparando contra o nome REAL do
+// processo, não este). Comparação sem ".exe"/case de propósito, pra casar "EXCEL.EXE", "Excel.exe"
+// e "excel" com a mesma entrada. Executável sem entrada aqui continua aparecendo com o nome original
+// reportado pelo Windows — a lista não precisa ser exaustiva, só cobre os mais comuns vistos nas
+// máquinas monitoradas (mesmos apps já referenciados nas regras padrão de Categorias, ver getDB()).
+function nomeAmigavelApp($exe) {
+    static $mapa = null;
+    if ($mapa === null) {
+        $mapa = [
+            // Microsoft Office
+            'winword' => 'Word', 'excel' => 'Excel', 'powerpnt' => 'PowerPoint',
+            'outlook' => 'Outlook', 'olk' => 'Outlook', 'onenote' => 'OneNote',
+            'msaccess' => 'Access', 'mspub' => 'Publisher', 'teams' => 'Microsoft Teams',
+            'ms-teams' => 'Microsoft Teams',
+            'wa' => 'Senior (Gestão de Pessoas)',
+            // Power BI
+            'pbidesktop' => 'Power BI Desktop',
+            // Navegadores
+            'chrome' => 'Google Chrome', 'msedge' => 'Microsoft Edge',
+            'firefox' => 'Mozilla Firefox', 'brave' => 'Brave',
+            // Sistema/Windows
+            'explorer' => 'Explorador de Arquivos', 'notepad' => 'Bloco de Notas',
+            'notepad++' => 'Notepad++', 'taskmgr' => 'Gerenciador de Tarefas',
+            'mmc' => 'Console de Gerenciamento (MMC)', 'lockapp' => 'Tela de Bloqueio',
+            'cmd' => 'Prompt de Comando', 'powershell' => 'PowerShell',
+            // Comunicação/entretenimento
+            'whatsapp.root' => 'WhatsApp', 'spotify' => 'Spotify', 'steam' => 'Steam',
+            // Suporte/TI
+            'mstsc' => 'Conexão de Área de Trabalho Remota', 'putty' => 'PuTTY',
+            'winbox64' => 'WinBox (Mikrotik)', 'vncviewer' => 'VNC Viewer',
+            'winvnc' => 'Ultra VNC',
+            'anydesk' => 'AnyDesk', 'webphone' => 'WebPhone',
+            // Desenvolvimento
+            'code' => 'Visual Studio Code', 'phpstorm64' => 'PhpStorm', 'phpstorm' => 'PhpStorm',
+            'idea64' => 'IntelliJ IDEA', 'idea' => 'IntelliJ IDEA',
+            'datagrip64' => 'DataGrip', 'datagrip' => 'DataGrip',
+            'sublime_text' => 'Sublime Text', 'mysqlworkbench' => 'MySQL Workbench',
+            'devenv' => 'Visual Studio',
+        ];
+    }
+    $chave = strtolower(preg_replace('/\.exe$/i', '', trim((string)$exe)));
+    return $mapa[$chave] ?? $exe;
+}
+
+// Mapa id => {nome, cor} de todas as categorias — usado pelas raias Aplicações/Documentos da Linha
+// do Tempo pra colorir cada bloco pela CATEGORIA do evento (mesma cor cadastrada em Categorias, já
+// usada no resto do dashboard), em vez de uma cor por app/título distinto (pedido explícito do
+// usuário — antes usava corPorTexto() acima, uma cor "aleatória" por item, sem relação com
+// produtivo/neutro/improdutivo). '#c7c5da' é o cinza padrão pra "Sem categoria", mesmo valor usado
+// em renderPainelProdutividade.
+function categoriasPorId(PDO $db) {
+    $mapa = [];
+    foreach ($db->query('SELECT id, nome, cor FROM categorias') as $row) {
+        $mapa[(int)$row['id']] = ['nome' => $row['nome'], 'cor' => $row['cor'] ?: '#c7c5da'];
+    }
+    return $mapa;
+}
+
+// Fragmento WHERE + params pro filtro de máquina/usuário compartilhado pelas consultas da Linha do
+// Tempo abaixo (evento cru, contagem e bins) — só um lugar pra manter os dois em sincronia.
+function filtroMaquinaUsuarioSql($maquinaId, $usuarioFiltro, array &$params) {
+    $sql = '';
+    if ($maquinaId !== null) { $sql .= ' AND maquina_id = :maquina_id'; $params[':maquina_id'] = $maquinaId; }
+    if ($usuarioFiltro !== null && $usuarioFiltro !== '') { $sql .= ' AND usuario_detectado = :usuario'; $params[':usuario'] = $usuarioFiltro; }
+    return $sql;
+}
+
+// Busca os eventos de um tipo (afk/window/web) do período, restrito a uma máquina e/ou a um
+// usuário detectado — as três raias da Linha do Tempo abaixo usam esta mesma função, só trocando o
+// tipo e o mapeamento rótulo/cor.
+function eventosDoPeriodo(PDO $db, $tipo, $periodoIniUtc, $periodoFimUtc, $maquinaId, $usuarioFiltro) {
+    $params = [':tipo' => $tipo, ':ini' => $periodoIniUtc, ':fim' => $periodoFimUtc];
+    $filtro = filtroMaquinaUsuarioSql($maquinaId, $usuarioFiltro, $params);
+    $stmt = $db->prepare("SELECT ts, duracao, app, titulo, url, status, categoria_id FROM eventos WHERE tipo = :tipo AND ts BETWEEN :ini AND :fim {$filtro} ORDER BY ts ASC");
+    $stmt->execute($params);
+    return $stmt->fetchAll();
+}
+
+// Só conta quantos eventos um tipo teria no período (sem trazer as linhas) — usado pra decidir,
+// ANTES de buscar qualquer coisa, se o período tem eventos de menos pra renderizar um por um (ver
+// segmentosLinhaDoTempo) ou de mais, precisando agregar em baldes (ver binsLinhaDoTempo abaixo).
+function contarEventosPeriodo(PDO $db, $tipoSql, $filtroExtra, array $params) {
+    $stmt = $db->prepare("SELECT COUNT(*) FROM eventos WHERE {$tipoSql} AND ts BETWEEN :ini AND :fim {$filtroExtra}");
+    $stmt->execute($params);
+    return (int)$stmt->fetchColumn();
+}
+
+// Funde eventos CONSECUTIVOS com o mesmo rótulo (mesmo app, mesmo título...) num único segmento —
+// reduz o ruído de trocas rápidas entre as MESMAS janelas (Alt+Tab, notificação, etc.) quando o
+// período ainda vai ser renderizado evento a evento (ver decisão em renderLinhaDoTempo: períodos
+// muito grandes usam binsLinhaDoTempo() abaixo em vez disso, já que a maioria dos eventos numa
+// máquina ativa em 7-30 dias são títulos genuinamente diferentes, não repetições — o merge sozinho
+// não dá conta desse caso). Só funde quando o intervalo até o próximo evento do mesmo rótulo é
+// curto (≤ $gapMaxSeg); uma pausa maior é tratada como uma sessão de uso realmente separada.
+function mesclarEventosConsecutivos(array $linhas, callable $rotuloFn, $gapMaxSeg = 300) {
+    usort($linhas, fn($a, $b) => $a['ts'] <=> $b['ts']);
+    $out = [];
+    $atual = null; $atualRotulo = null; $atualIniEpoch = null; $atualFimEpoch = null;
+    foreach ($linhas as $l) {
+        $rotulo = $rotuloFn($l);
+        $iniEpoch = (new DateTime($l['ts'], new DateTimeZone('UTC')))->getTimestamp();
+        $fimEpoch = $iniEpoch + (float)$l['duracao'];
+        if ($atual !== null && $rotulo === $atualRotulo && ($iniEpoch - $atualFimEpoch) <= $gapMaxSeg) {
+            if ($fimEpoch > $atualFimEpoch) $atualFimEpoch = $fimEpoch;
+            $atual['duracao'] = $atualFimEpoch - $atualIniEpoch;
+        } else {
+            if ($atual !== null) $out[] = $atual;
+            $atual = $l;
+            $atualRotulo = $rotulo;
+            $atualIniEpoch = $iniEpoch;
+            $atualFimEpoch = $fimEpoch;
+        }
+    }
+    if ($atual !== null) $out[] = $atual;
+    return $out;
+}
+
+// Visão agregada em "baldes" de tempo fixo — usada no lugar dos segmentos por evento quando o
+// período tem eventos demais pra renderizar um por um (ex: uma máquina muito ativa passa de 14 mil
+// trocas de janela em 30 dias — testado direto: virou 22 mil <div>s e ~6MB de HTML numa página só,
+// mesmo já com mesclarEventosConsecutivos(), porque a maioria são títulos genuinamente diferentes,
+// não repetições). Cada balde vira UM segmento colorido pelo rótulo que mais ocupou aquele
+// intervalo (o "dominante"); a contagem de baldes é fixa ($numBins), então o tamanho da página não
+// cresce junto com o volume de dados. $rotuloSql já entra pronto (COALESCE/NULLIF montado pelo
+// chamador) porque cada raia agrupa por uma coluna diferente (app x título).
+function binsLinhaDoTempo(PDO $db, $tipoSql, $rotuloSql, $filtroExtra, array $params,
+                           $periodoIniUtc, $faixaTotalMin, callable $corFn, $numBins = 300) {
+    $binWidthMin = max(1, $faixaTotalMin / $numBins);
+    $params[':p_ini'] = $periodoIniUtc;
+    $params[':bin_largura'] = $binWidthMin;
+    // LEFT JOIN categorias sempre presente (mesmo pras raias que não usam — afk/sessão não têm
+    // categoria_id, o join só fica vazio/ignorado pra elas) pra $rotuloSql poder referenciar
+    // c.nome/c.cor quando for o caso (Aplicações/Documentos, coloridas por categoria).
+    $stmt = $db->prepare("SELECT
+            FLOOR(TIMESTAMPDIFF(SECOND, :p_ini, eventos.ts) / 60 / :bin_largura) AS bin,
+            {$rotuloSql} AS rotulo,
+            SUM(eventos.duracao) AS total
+        FROM eventos
+        LEFT JOIN categorias c ON c.id = eventos.categoria_id
+        WHERE {$tipoSql} AND eventos.ts BETWEEN :ini AND :fim {$filtroExtra}
+        GROUP BY bin, rotulo");
+    $stmt->execute($params);
+
+    $porBin = [];
+    foreach ($stmt->fetchAll() as $row) {
+        $porBin[(int)$row['bin']][] = ['rotulo' => $row['rotulo'], 'total' => (float)$row['total']];
+    }
+
+    $out = [];
+    foreach ($porBin as $bin => $itens) {
+        usort($itens, fn($a, $b) => $b['total'] <=> $a['total']);
+        $dominante = $itens[0];
+        $somaBin = array_sum(array_column($itens, 'total'));
+        $outros = count($itens) - 1;
+        $minIni = max(0, min($faixaTotalMin, $bin * $binWidthMin));
+        $minFim = max($minIni, min($faixaTotalMin, ($bin + 1) * $binWidthMin));
+        $out[] = [
+            'minIni' => round($minIni, 3),
+            'minFim' => round($minFim, 3),
+            'left' => round($minIni / $faixaTotalMin * 100, 3),
+            'width' => max(round(($minFim - $minIni) / $faixaTotalMin * 100, 3), 0.15),
+            'cor' => $corFn($dominante['rotulo']),
+            'rotulo' => $dominante['rotulo'],
+            'titulo' => $dominante['rotulo'] . ($outros > 0 ? ' (predominante, +' . $outros . ' outro(s) no intervalo)' : '') . ' — ' . formatarDuracao($somaBin),
+        ];
+    }
+    return $out;
+}
+
+// Converte uma lista de eventos (já filtrada por tipo/período) em segmentos posicionáveis na Linha
+// do Tempo: left/width em % do PERÍODO INTEIRO selecionado (não só um dia — pode ser 7/30 dias ou um
+// intervalo personalizado), prontos pra virar `style` de um <div> absoluto; data-ini/data-fim (em
+// minutos desde o início do período) também vão junto pra o JS conseguir recalcular a posição ao dar
+// zoom num trecho, sem precisar buscar os dados de novo. $rotuloFn decide o AGRUPAMENTO (cor +
+// legenda — ex: o domínio, não a página inteira, senão cada URL distinta viraria uma cor/legenda
+// própria); $detalheFn (opcional) decide o texto do tooltip de CADA bloco, que pode ser mais
+// específico que o rótulo — cai no próprio rótulo quando omitido.
+function segmentosLinhaDoTempo(array $linhas, DateTime $periodoIniLocal, $faixaTotalMin, DateTimeZone $tz, callable $rotuloFn, callable $corFn, callable $detalheFn = null) {
+    $multiDia = $faixaTotalMin > 1440;
+    $out = [];
+    foreach ($linhas as $l) {
+        $tsLocal = (new DateTime($l['ts'], new DateTimeZone('UTC')))->setTimezone($tz);
+        $minInicio = max(0, min($faixaTotalMin, ($tsLocal->getTimestamp() - $periodoIniLocal->getTimestamp()) / 60));
+        $minFim = max($minInicio, min($faixaTotalMin, $minInicio + (float)$l['duracao'] / 60));
+        $rotulo = $rotuloFn($l);
+        $detalhe = $detalheFn !== null ? $detalheFn($l) : $rotulo;
+        $momento = $multiDia ? $tsLocal->format('d/m H:i') : $tsLocal->format('H:i');
+        $out[] = [
+            'minIni' => round($minInicio, 3),
+            'minFim' => round($minFim, 3),
+            'left' => round($minInicio / $faixaTotalMin * 100, 3),
+            'width' => max(round(($minFim - $minInicio) / $faixaTotalMin * 100, 3), 0.15),
+            'cor' => $corFn($l),
+            'rotulo' => $rotulo,
+            // detalhe/momento ficam à parte (não só já embutidos no título) pra
+            // estenderAteProximoOuAgora() conseguir remontar o tooltip com a duração nova depois de
+            // esticar o segmento, sem precisar re-parsear a string.
+            'detalhe' => $detalhe,
+            'momento' => $momento,
+            'titulo' => $detalhe . ' — ' . $momento . ' (' . formatarDuracao((float)$l['duracao']) . ')',
+        ];
+    }
+    return $out;
+}
+
+// Estende cada segmento até o início do próximo (ou até agora/fim do período, se for o último) —
+// pedido explícito pra eliminar espaços vazios nas raias Uso do Dispositivo e Sessão: um evento
+// pontual como "Login" ou um estado como "Ativo" deve continuar valendo até a próxima mudança de
+// estado, não só durar o instante/duração exata que o evento relatou. $agoraMin já vem limitado ao
+// fim do período (ver chamada) — olhando pro futuro só faz sentido quando o período inclui "agora"
+// (ex: período "Hoje"); num período todo no passado, o último segmento estica só até o fim do
+// período mesmo. Só usado nessas duas raias de propósito — em Aplicações/Documentos um espaço vazio
+// é informação real (nenhuma janela em foco), não uma lacuna de monitoramento.
+function estenderAteProximoOuAgora(array $segmentos, $faixaTotalMin, $agoraMin) {
+    $n = count($segmentos);
+    $limite = max(0, min($faixaTotalMin, $agoraMin));
+    for ($i = 0; $i < $n; $i++) {
+        $novoFim = ($i + 1 < $n) ? $segmentos[$i + 1]['minIni'] : $limite;
+        if ($novoFim > $segmentos[$i]['minFim']) {
+            $segmentos[$i]['minFim'] = $novoFim;
+            $segmentos[$i]['width'] = max(round(($novoFim - $segmentos[$i]['minIni']) / $faixaTotalMin * 100, 3), 0.15);
+            $duracaoSegundos = max(0, ($novoFim - $segmentos[$i]['minIni']) * 60);
+            $segmentos[$i]['titulo'] = $segmentos[$i]['detalhe'] . ' — ' . $segmentos[$i]['momento'] . ' (' . formatarDuracao($duracaoSegundos) . ')';
+        }
+    }
+    return $segmentos;
+}
+
+// Legenda de uma raia: um item por rótulo distinto (app/domínio), cor igual à dos blocos que ele
+// representa, ordenado pelo tempo total ocupado (soma da largura dos segmentos) — pra quem usou o
+// app/site por mais tempo aparecer primeiro. $limite corta a lista (dias muito variados podem ter
+// dezenas de apps/sites distintos, o que viraria uma parede de legenda) e o restante vira só uma
+// contagem "+N outros".
+function legendaLinhaDoTempo(array $segs, $limite = 18) {
+    $porRotulo = [];
+    foreach ($segs as $s) {
+        if (!isset($porRotulo[$s['rotulo']])) $porRotulo[$s['rotulo']] = ['cor' => $s['cor'], 'total' => 0.0];
+        $porRotulo[$s['rotulo']]['total'] += $s['width'];
+    }
+    uasort($porRotulo, fn($a, $b) => $b['total'] <=> $a['total']);
+    $restantes = max(0, count($porRotulo) - $limite);
+    return ['itens' => array_slice($porRotulo, 0, $limite, true), 'restantes' => $restantes];
+}
+
+// Linha do Tempo estilo "Rize"/RescueTime: 3 raias (Uso do Dispositivo, Aplicações, Documentos)
+// mostrando blocos coloridos ao longo do PERÍODO SELECIONADO no topo do Dashboard (Hoje/7 dias/30
+// dias/personalizado — o mesmo $inicioLocal/$fimLocal usado pelos KPIs) — antes ficava presa a UM
+// dia com navegação própria (setas ← →), só que aí trocar o período no topo não mudava nada aqui,
+// o que confundiu quem esperava ver o período inteiro refletido na linha do tempo. Pra continuar
+// legível/rápida mesmo num período de 30 dias, o usuário pode arrastar sobre a linha do tempo pra
+// "explodir" um trecho específico com mais detalhe (ver script no fim da função) em vez de depender
+// só do zoom fixo de um dia. "Aplicações" e "Documentos" descrevem a MESMA atividade (eventos tipo
+// 'window', foco de janela) por dois ângulos diferentes: "Aplicações" agrupa pelo app (e.app — ex:
+// "chrome.exe"); "Documentos" agrupa pelo título da janela (e.titulo — ex: "Relatório.docx - Word",
+// "Caixa de Entrada - Gmail — Google Chrome"), que é o que de fato diz qual documento/página estava
+// aberta ali. Eventos tipo 'web' (abas do navegador, só existem com a extensão do ActivityWatch
+// instalada — nenhuma máquina tem isso hoje) entram também em "Documentos", com o título da aba no
+// lugar do título da janela e a URL completa no tooltip, quando existirem. $maquinaId e
+// $usuarioFiltro: pelo menos um dos dois deve vir preenchido (a Visão Máquina passa só maquinaId; a
+// Visão Usuário passa só usuarioFiltro, já que uma pessoa pode ter usado mais de uma máquina).
+function renderLinhaDoTempo(PDO $db, DateTime $periodoIniLocal, DateTime $periodoFimLocal, $maquinaId = null, $usuarioFiltro = null) {
+    $tz = new DateTimeZone('America/Sao_Paulo');
+    $periodoIniUtc = (clone $periodoIniLocal)->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+    $periodoFimUtc = (clone $periodoFimLocal)->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+    $faixaTotalMin = ($periodoFimLocal->getTimestamp() - $periodoIniLocal->getTimestamp()) / 60;
+    // Minuto "agora" dentro da escala do período — usado só por estenderAteProximoOuAgora() pra
+    // saber até onde esticar o último segmento de Uso do Dispositivo/Sessão. Num período todo no
+    // passado isso dá um valor maior que $faixaTotalMin, e a própria função já limita ao fim do
+    // período nesse caso (ver comentário nela).
+    $agoraMin = ((new DateTime('now', $tz))->getTimestamp() - $periodoIniLocal->getTimestamp()) / 60;
+
+    // Acima deste número de eventos no período, troca de segmento-por-evento pra bins agregados
+    // (ver binsLinhaDoTempo) — testado direto: uma máquina muito ativa em 30 dias chega a 14 mil
+    // eventos só de janela, o que virou 22 mil <div>s / ~6MB de HTML sem esse corte (mesmo já com
+    // mesclarEventosConsecutivos). Um dia só normalmente fica bem abaixo disso.
+    $LIMITE_EVENTOS_DETALHADOS = 1500;
+    // Vira true se QUALQUER raia cair no modo agregado — usado só pra avisar o usuário no texto da
+    // barra de ferramentas (ver abaixo) que o zoom por arrasto aqui amplia os blocos já calculados,
+    // não busca detalhe evento-a-evento novo (isso exigiria ida ao servidor a cada arrasto, o que
+    // esta implementação propositalmente evita pra manter a interação instantânea).
+    $usouAgregado = false;
+
+    // ---- Uso do Dispositivo (afk) ----
+    $paramsAfk = [':ini' => $periodoIniUtc, ':fim' => $periodoFimUtc];
+    $filtroAfk = filtroMaquinaUsuarioSql($maquinaId, $usuarioFiltro, $paramsAfk);
+    $afkRotulo = fn($l) => $l['status'] === 'not-afk' ? 'Ativo' : 'Ausente';
+    if (contarEventosPeriodo($db, "tipo = 'afk'", $filtroAfk, $paramsAfk) > $LIMITE_EVENTOS_DETALHADOS) {
+        $segAfk = binsLinhaDoTempo($db, "tipo = 'afk'", "IF(status = 'not-afk', 'Ativo', 'Ausente')", $filtroAfk, $paramsAfk,
+            $periodoIniUtc, $faixaTotalMin, fn($r) => $r === 'Ativo' ? '#178ec8' : '#dfe2ec');
+        $usouAgregado = true;
+    } else {
+        $afk = mesclarEventosConsecutivos(
+            eventosDoPeriodo($db, 'afk', $periodoIniUtc, $periodoFimUtc, $maquinaId, $usuarioFiltro), $afkRotulo);
+        $segAfk = estenderAteProximoOuAgora(
+            segmentosLinhaDoTempo($afk, $periodoIniLocal, $faixaTotalMin, $tz, $afkRotulo,
+                fn($l) => $l['status'] === 'not-afk' ? '#178ec8' : '#dfe2ec'),
+            $faixaTotalMin, $agoraMin);
+    }
+
+    // ---- Sessão (login/bloqueio/desbloqueio, ver Agentes/aw-watcher-sessionevents) — marcos
+    // pontuais (duração zero) em vez de blocos contínuos, por isso ficam numa raia própria em vez
+    // de misturados em "Uso do Dispositivo": o AFK (acima) só enxerga tempo sem teclado/mouse, não
+    // sabe se a tela estava DE FATO bloqueada — pedido explícito pra estatística mais fiel.
+    $sessaoCores = ['login' => '#16a34a', 'lock' => '#dc2626', 'unlock' => '#178ec8'];
+    $sessaoRotulos = ['login' => 'Login', 'lock' => 'Bloqueio', 'unlock' => 'Desbloqueio'];
+    $sessaoRotulo = fn($l) => $sessaoRotulos[$l['status']] ?? ($l['status'] ?: '(evento desconhecido)');
+    $paramsSessao = [':ini' => $periodoIniUtc, ':fim' => $periodoFimUtc];
+    $filtroSessao = filtroMaquinaUsuarioSql($maquinaId, $usuarioFiltro, $paramsSessao);
+    if (contarEventosPeriodo($db, "tipo = 'sessao'", $filtroSessao, $paramsSessao) > $LIMITE_EVENTOS_DETALHADOS) {
+        $segSessao = binsLinhaDoTempo($db, "tipo = 'sessao'", "COALESCE(NULLIF(status,''), '(evento desconhecido)')", $filtroSessao, $paramsSessao,
+            $periodoIniUtc, $faixaTotalMin, fn($r) => $sessaoCores[$r] ?? corPorTexto($r));
+        $usouAgregado = true;
+    } else {
+        $sessao = eventosDoPeriodo($db, 'sessao', $periodoIniUtc, $periodoFimUtc, $maquinaId, $usuarioFiltro);
+        $segSessao = estenderAteProximoOuAgora(
+            segmentosLinhaDoTempo($sessao, $periodoIniLocal, $faixaTotalMin, $tz,
+                $sessaoRotulo, fn($l) => $sessaoCores[$l['status']] ?? corPorTexto((string)$l['status'])),
+            $faixaTotalMin, $agoraMin);
+    }
+
+    // Aplicações/Documentos coloridas pela CATEGORIA do evento (mesma cor cadastrada em Categorias,
+    // já usada no resto do dashboard) em vez de uma cor por app/título distinto — pedido explícito
+    // do usuário. $nomeCategoria/$corCategoria resolvem pelo categoria_id do evento (modo detalhado,
+    // evento a evento); $corPorNomeCategoria resolve pelo NOME (modo agregado/bins, onde o SQL já
+    // devolve o nome da categoria dominante do balde como "rótulo" — ver uso abaixo).
+    $categoriasMapa = categoriasPorId($db);
+    $nomeCategoria = fn($categoriaId) => $categoriaId !== null && isset($categoriasMapa[(int)$categoriaId])
+        ? $categoriasMapa[(int)$categoriaId]['nome'] : 'Sem categoria';
+    $corCategoria = fn($categoriaId) => $categoriaId !== null && isset($categoriasMapa[(int)$categoriaId])
+        ? $categoriasMapa[(int)$categoriaId]['cor'] : '#c7c5da';
+    $corPorNomeCategoria = function ($nome) use ($categoriasMapa) {
+        foreach ($categoriasMapa as $cat) { if ($cat['nome'] === $nome) return $cat['cor']; }
+        return '#c7c5da';
+    };
+
+    // ---- Aplicações (window, sem LockApp.exe — mesmo critério de "uso real" dos KPIs do resto do
+    // dashboard, ver filtroNaoBloqueadoSql()). $appRotulo (nome do app) continua decidindo só o
+    // MERGE de eventos consecutivos (mesmo app = funde) — a cor/legenda usam a categoria, não o app.
+    $paramsApps = [':ini' => $periodoIniUtc, ':fim' => $periodoFimUtc];
+    $filtroApps = filtroMaquinaUsuarioSql($maquinaId, $usuarioFiltro, $paramsApps) . " AND COALESCE(app,'') <> 'LockApp.exe'";
+    $appRotulo = fn($l) => $l['app'] ? nomeAmigavelApp($l['app']) : '(sem aplicativo)';
+    $janelas = null;
+    if (contarEventosPeriodo($db, "tipo = 'window'", $filtroApps, $paramsApps) > $LIMITE_EVENTOS_DETALHADOS) {
+        $segApps = binsLinhaDoTempo($db, "tipo = 'window'", "COALESCE(c.nome, 'Sem categoria')", $filtroApps, $paramsApps,
+            $periodoIniUtc, $faixaTotalMin, $corPorNomeCategoria);
+        $usouAgregado = true;
+    } else {
+        $janelas = array_filter(eventosDoPeriodo($db, 'window', $periodoIniUtc, $periodoFimUtc, $maquinaId, $usuarioFiltro),
+            fn($l) => ($l['app'] ?? '') !== 'LockApp.exe');
+        $segApps = segmentosLinhaDoTempo(mesclarEventosConsecutivos($janelas, $appRotulo), $periodoIniLocal, $faixaTotalMin, $tz,
+            fn($l) => $nomeCategoria($l['categoria_id']), fn($l) => $corCategoria($l['categoria_id']), $appRotulo);
+    }
+
+    // ---- Documentos (window + web, agrupado por título) — $docLabel decide o MERGE (mesmo título =
+    // funde) e o tooltip (via $docDetalhe, abaixo); cor/legenda usam a categoria, igual Aplicações. ----
+    $paramsDocs = [':ini' => $periodoIniUtc, ':fim' => $periodoFimUtc];
+    $filtroDocs = filtroMaquinaUsuarioSql($maquinaId, $usuarioFiltro, $paramsDocs) . " AND (tipo <> 'window' OR COALESCE(app,'') <> 'LockApp.exe')";
+    $tipoDocsSql = "tipo IN ('window','web')";
+    $docLabel = fn($l) => $l['titulo'] ?: ($l['app'] ?: '(sem título)');
+    $docDetalhe = function ($l) {
+        $titulo = $l['titulo'] ?: '(sem título)';
+        if (!empty($l['url'])) return $titulo . ' — ' . $l['url'];
+        if (!empty($l['app'])) return $titulo . ' (' . nomeAmigavelApp($l['app']) . ')';
+        return $titulo;
+    };
+    if (contarEventosPeriodo($db, $tipoDocsSql, $filtroDocs, $paramsDocs) > $LIMITE_EVENTOS_DETALHADOS) {
+        $segDocs = binsLinhaDoTempo($db, $tipoDocsSql, "COALESCE(c.nome, 'Sem categoria')", $filtroDocs, $paramsDocs,
+            $periodoIniUtc, $faixaTotalMin, $corPorNomeCategoria);
+        $usouAgregado = true;
+    } else {
+        $janelasDocs = $janelas ?? array_filter(eventosDoPeriodo($db, 'window', $periodoIniUtc, $periodoFimUtc, $maquinaId, $usuarioFiltro),
+            fn($l) => ($l['app'] ?? '') !== 'LockApp.exe');
+        $web = eventosDoPeriodo($db, 'web', $periodoIniUtc, $periodoFimUtc, $maquinaId, $usuarioFiltro);
+        $docs = array_merge($janelasDocs, $web);
+        usort($docs, fn($a, $b) => $a['ts'] <=> $b['ts']);
+        $segDocs = segmentosLinhaDoTempo(mesclarEventosConsecutivos($docs, $docLabel), $periodoIniLocal, $faixaTotalMin, $tz,
+            fn($l) => $nomeCategoria($l['categoria_id']), fn($l) => $corCategoria($l['categoria_id']), $docDetalhe);
+    }
+
+    $raias = ['Uso do Dispositivo' => $segAfk, 'Sessão' => $segSessao, 'Aplicações' => $segApps, 'Documentos' => $segDocs];
+    // Uso do Dispositivo e Sessão têm estados fixos (não um app/domínio por linha) — legenda fixa em
+    // vez de calculada a partir dos dados, pra sempre explicar as cores mesmo num período sem todos
+    // os estados presentes.
+    $legendas = [
+        'Uso do Dispositivo' => ['itens' => ['Ativo' => ['cor' => '#178ec8', 'total' => 1], 'Ausente' => ['cor' => '#dfe2ec', 'total' => 1]], 'restantes' => 0],
+        'Sessão' => ['itens' => [
+            'Login' => ['cor' => $sessaoCores['login'], 'total' => 1],
+            'Bloqueio' => ['cor' => $sessaoCores['lock'], 'total' => 1],
+            'Desbloqueio' => ['cor' => $sessaoCores['unlock'], 'total' => 1],
+        ], 'restantes' => 0],
+        'Aplicações' => legendaLinhaDoTempo($segApps),
+        'Documentos' => legendaLinhaDoTempo($segDocs),
+    ];
+    // Sufixo pra não colidir IDs se esta função algum dia for chamada mais de uma vez na mesma
+    // página (hoje não é o caso, mas o resto do arquivo segue esse padrão pros gráficos também).
+    $tlId = 'tl' . substr(md5(($maquinaId ?? '') . '|' . ($usuarioFiltro ?? '') . '|' . $periodoIniLocal->format('Y-m-d')), 0, 6);
+    $rotuloPeriodo = $periodoIniLocal->format('d/m/Y') === $periodoFimLocal->format('d/m/Y')
+        ? $periodoIniLocal->format('d/m/Y')
+        : $periodoIniLocal->format('d/m/Y') . ' – ' . $periodoFimLocal->format('d/m/Y');
+    ?>
+    <div class="card mb-3">
+        <div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
+            <span>Linha do Tempo</span>
+            <span class="mono small text-muted"><?= htmlspecialchars($rotuloPeriodo) ?></span>
+        </div>
+        <div class="card-body">
+            <?php if ($usouAgregado): ?>
+            <div class="alert alert-light border py-1 px-2 small text-muted mb-2">Período longo — Aplicações/Documentos mostram uma visão agregada (a cor predominante de cada intervalo), não evento a evento. Dê zoom pra ampliar; pra ver blocos exatos, escolha um período mais curto (ex: "Hoje").</div>
+            <?php endif; ?>
+            <div class="timeline-toolbar">
+                <span class="text-muted small" id="<?= $tlId ?>_info">Arraste sobre a linha do tempo pra dar zoom num período</span>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="<?= $tlId ?>_reset" hidden>Ver período inteiro</button>
+            </div>
+            <div class="timeline-wrap">
+                <div class="timeline-ticks" id="<?= $tlId ?>_ticks"></div>
+                <div class="timeline-body" id="<?= $tlId ?>_body">
+                    <?php foreach ($raias as $rotulo => $segs): ?>
+                    <div class="timeline-row">
+                        <div class="timeline-label"><?= htmlspecialchars($rotulo) ?></div>
+                        <div class="timeline-track">
+                            <?php foreach ($segs as $s): ?>
+                            <div class="timeline-seg" data-ini="<?= $s['minIni'] ?>" data-fim="<?= $s['minFim'] ?>" style="left:<?= $s['left'] ?>%; width:<?= $s['width'] ?>%; background:<?= $s['cor'] ?>;" title="<?= htmlspecialchars($s['titulo']) ?>"></div>
+                            <?php endforeach; ?>
+                            <?php if (empty($segs)): ?><span class="timeline-empty">Sem dados neste período</span><?php endif; ?>
+                        </div>
+                    </div>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+            <div class="timeline-legendas mt-2">
+                <?php foreach ($raias as $rotulo => $segs): ?>
+                <div class="timeline-legend">
+                    <div class="timeline-legend-titulo"><?= htmlspecialchars($rotulo) ?></div>
+                    <div class="timeline-legend-itens">
+                        <?php foreach ($legendas[$rotulo]['itens'] as $nome => $info): ?>
+                        <span class="timeline-legend-item"><span class="timeline-legend-dot" style="background:<?= $info['cor'] ?>;"></span><?= htmlspecialchars($nome) ?></span>
+                        <?php endforeach; ?>
+                        <?php if ($legendas[$rotulo]['restantes'] > 0): ?><span class="timeline-legend-item text-muted">+<?= $legendas[$rotulo]['restantes'] ?> outro(s)</span><?php endif; ?>
+                    </div>
+                </div>
+                <?php endforeach; ?>
+            </div>
+        </div>
+    </div>
+    <script>
+    (function () {
+        // Zoom por arrasto: seleciona um período na Linha do Tempo pra "explodir" (ver com mais
+        // detalhe) — pedido explícito do usuário, com print de referência de um seletor de período.
+        // Em vez de um overlay fixo por cima das raias (que bloquearia o title/tooltip nativo de
+        // cada bloco ao passar o mouse), os listeners ficam no container inteiro e só desenham a
+        // caixa de seleção quando o mouse de fato se MOVE depois do mousedown — um clique parado
+        // continua livre pra só mostrar o tooltip do bloco, sem iniciar seleção nenhuma.
+        var body = document.getElementById('<?= $tlId ?>_body');
+        var ticksEl = document.getElementById('<?= $tlId ?>_ticks');
+        var infoEl = document.getElementById('<?= $tlId ?>_info');
+        var resetBtn = document.getElementById('<?= $tlId ?>_reset');
+        var trackRef = body.querySelector('.timeline-track');
+        var segs = body.querySelectorAll('.timeline-seg');
+        if (!trackRef) return;
+
+        // Início do período em epoch ms (horário local) — só pra formatar as marcas de hora/data
+        // dos ticks a partir de um minuto absoluto; toda a matemática de posicionamento usa só
+        // minutos (0..FAIXA_TOTAL), sem depender de fuso nenhum.
+        var PERIODO_INICIO_MS = <?= $periodoIniLocal->getTimestamp() * 1000 ?>;
+        var FAIXA_TOTAL = <?= round($faixaTotalMin, 3) ?>;
+        var zoomIni = 0, zoomFim = FAIXA_TOTAL;
+        var textoPadrao = infoEl.textContent;
+
+        function formatarMin(min, comData) {
+            var dt = new Date(PERIODO_INICIO_MS + min * 60000);
+            var hh = ('0' + dt.getHours()).slice(-2), mm = ('0' + dt.getMinutes()).slice(-2);
+            if (comData) {
+                var dd = ('0' + dt.getDate()).slice(-2), mo = ('0' + (dt.getMonth() + 1)).slice(-2);
+                return dd + '/' + mo + ' ' + hh + ':' + mm;
+            }
+            return hh + ':' + mm;
+        }
+
+        // Passo dos ticks (em minutos) escolhido pela faixa visível no momento — de 5 em 5 minutos
+        // bem no zoom máximo até de 2 em 2 dias pra um período de 30 dias inteiro.
+        function passoTicks(faixaMin) {
+            if (faixaMin <= 30) return 5;
+            if (faixaMin <= 90) return 15;
+            if (faixaMin <= 180) return 30;
+            if (faixaMin <= 480) return 60;
+            if (faixaMin <= 1440) return 120;
+            if (faixaMin <= 4320) return 360;
+            if (faixaMin <= 10080) return 1440;
+            return 2880;
+        }
+
+        function redesenharTicks() {
+            var faixa = zoomFim - zoomIni;
+            var passo = passoTicks(faixa);
+            var inicio = Math.ceil(zoomIni / passo) * passo;
+            var comData = passo >= 1440 || FAIXA_TOTAL > 1440;
+            var html = '';
+            for (var m = inicio; m <= zoomFim; m += passo) {
+                html += '<span style="left:' + ((m - zoomIni) / faixa * 100).toFixed(3) + '%;">' + formatarMin(m, comData) + '</span>';
+            }
+            ticksEl.innerHTML = html;
+        }
+
+        function aplicarZoom(ini, fim) {
+            zoomIni = Math.max(0, ini);
+            zoomFim = Math.min(FAIXA_TOTAL, fim);
+            var faixa = zoomFim - zoomIni;
+            segs.forEach(function (seg) {
+                var si = parseFloat(seg.dataset.ini), sf = parseFloat(seg.dataset.fim);
+                seg.style.left = ((si - zoomIni) / faixa * 100) + '%';
+                seg.style.width = Math.max((sf - si) / faixa * 100, 0.15) + '%';
+            });
+            redesenharTicks();
+            var zoomado = zoomIni > 0 || zoomFim < FAIXA_TOTAL;
+            resetBtn.hidden = !zoomado;
+            infoEl.textContent = zoomado
+                ? ('Mostrando ' + formatarMin(zoomIni, true) + ' – ' + formatarMin(zoomFim, true) + ' · arraste de novo pra refinar')
+                : textoPadrao;
+        }
+
+        resetBtn.addEventListener('click', function () { aplicarZoom(0, FAIXA_TOTAL); });
+
+        function xParaMin(clientX) {
+            var rect = trackRef.getBoundingClientRect();
+            var pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+            return zoomIni + pct * (zoomFim - zoomIni);
+        }
+
+        var arrastando = false, moveu = false, startX = 0, caixa = null;
+        body.addEventListener('mousedown', function (ev) {
+            if (ev.button !== 0) return;
+            arrastando = true; moveu = false; startX = ev.clientX;
+        });
+        window.addEventListener('mousemove', function (ev) {
+            if (!arrastando) return;
+            if (!moveu && Math.abs(ev.clientX - startX) < 4) return;
+            if (!moveu) {
+                moveu = true;
+                caixa = document.createElement('div');
+                caixa.className = 'timeline-selection-box';
+                body.appendChild(caixa);
+            }
+            var trackRect = trackRef.getBoundingClientRect();
+            var bodyRect = body.getBoundingClientRect();
+            var x1 = Math.max(trackRect.left, Math.min(trackRect.right, startX));
+            var x2 = Math.max(trackRect.left, Math.min(trackRect.right, ev.clientX));
+            var esq = Math.min(x1, x2) - bodyRect.left;
+            var dir = Math.max(x1, x2) - bodyRect.left;
+            caixa.style.left = esq + 'px';
+            caixa.style.width = (dir - esq) + 'px';
+        });
+        window.addEventListener('mouseup', function (ev) {
+            if (!arrastando) return;
+            arrastando = false;
+            if (moveu && caixa) {
+                var m1 = xParaMin(startX), m2 = xParaMin(ev.clientX);
+                body.removeChild(caixa);
+                caixa = null;
+                var ini = Math.min(m1, m2), fim = Math.max(m1, m2);
+                if (fim - ini >= 2) aplicarZoom(ini, fim);
+            }
+            moveu = false;
+        });
+
+        redesenharTicks();
+    })();
+    </script>
+    <?php
+}
+
 // Todo o bloco de KPIs + gráficos — reaproveitado pela Visão Geral (todas as máquinas, ou uma só
 // se selecionada), pela Visão de uma Máquina e pela Visão Máquinas por Setor (ambas uma única
 // máquina, vinda do clique num hexágono ou numa tabela). $maquinaIds vazio = sem restrição (todas
 // as máquinas do sistema).
-function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inicioLocal, DateTime $fimLocal, array $maquinaIds, $exibirTendenciaPontos = false, $tendenciaDiasForcado = null) {
+function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inicioLocal, DateTime $fimLocal, array $maquinaIds, $exibirTendenciaPontos = false, $tendenciaDiasForcado = null, $usuarioFiltro = null, callable $entreStatsECharts = null) {
     $filtroMaquinaSql = '';
     $params = [':ini' => $inicioUtc, ':fim' => $fimUtc];
     if (!empty($maquinaIds)) {
@@ -186,6 +812,19 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
             $params[$chave] = $mid;
         }
         $filtroMaquinaSql = ' AND e.maquina_id IN (' . implode(',', $placeholders) . ')';
+    }
+    // Visão "por usuário da máquina" (aba Usuários): restringe as mesmas consultas de window/web/afk
+    // abaixo ao usuário do Windows escolhido, usando eventos.usuario_detectado — já pré-calculado na
+    // sincronização por atualizarUsuarioDetectadoEventos() (ver aw_client.php) a partir do bucket do
+    // aw-watcher-currentuser. Comparar isso em tempo de consulta (em vez de cruzar com os heartbeats
+    // 'usuario' aqui, via JOIN de intervalo) é o que faz esta view abrir rápido — a versão com JOIN
+    // de intervalo chegou a levar 7-10s numa base com só ~50 mil eventos, porque o otimizador do
+    // MariaDB 10.4 não usa índice nesse tipo de junção por faixa correlacionada. Anexado ao mesmo
+    // $filtroMaquinaSql (em vez de repetir a condição em cada consulta) porque essa variável já é
+    // interpolada em todas as consultas abaixo que filtram window/web/afk.
+    if ($usuarioFiltro !== null && $usuarioFiltro !== '') {
+        $filtroMaquinaSql .= ' AND e.usuario_detectado = :usuario_filtro';
+        $params[':usuario_filtro'] = $usuarioFiltro;
     }
     $filtroHorario = filtroHorarioComercialSql();
     $filtroNaoBloqueado = filtroNaoBloqueadoSql();
@@ -298,39 +937,65 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
         elseif ($row['status'] === 'afk') $tempoAusente = (float)$row['total'];
     }
 
-    // ---- Top 10 aplicativos ----
+    // ---- Top 10 — aplicativos por padrão; a caixa de seleção no card troca pra mostrar os 10
+    // títulos de janela mais vistos de UM app específico, escolhido pelo usuário (pedido explícito).
+    // $todosApps traz TODOS os apps do período (não só 10) pra popular essa caixa de seleção —
+    // $topApps continua sendo só os 10 primeiros, pro gráfico no modo padrão.
     $stmt = $db->prepare("SELECT app, SUM(duracao) AS total FROM eventos e
         WHERE tipo = 'window' AND app IS NOT NULL AND app <> '' AND ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
-        GROUP BY app ORDER BY total DESC LIMIT 10");
+        GROUP BY app ORDER BY total DESC");
     $stmt->execute($params);
-    $topApps = $stmt->fetchAll();
+    $todosApps = $stmt->fetchAll();
+    $topApps = array_slice($todosApps, 0, 10);
 
-    // Cor de cada barra = cor da categoria que mais contribuiu pro tempo daquele app (um app pode,
-    // raramente, ter migrado de categoria ao longo do tempo se as regras mudaram — fica a que tem
-    // mais tempo acumulado). Sem categoria cai no cinza padrão, igual ao resto do dashboard.
+    // Cor de cada app = cor da categoria que mais contribuiu pro tempo dele (um app pode, raramente,
+    // ter migrado de categoria ao longo do tempo se as regras mudaram — fica a que tem mais tempo
+    // acumulado). Sem categoria cai no cinza padrão, igual ao resto do dashboard. Calculado pra
+    // TODOS os apps (não só os 10 do gráfico padrão) porque a caixa de seleção deixa escolher
+    // qualquer um, e as barras de título reaproveitam a cor do próprio app selecionado.
     $corPorApp = [];
-    if (!empty($topApps)) {
-        $placeholders = [];
-        $paramsApps = $params;
-        foreach (array_values(array_column($topApps, 'app')) as $i => $appNome) {
-            $chave = ":app{$i}";
-            $placeholders[] = $chave;
-            $paramsApps[$chave] = $appNome;
-        }
+    if (!empty($todosApps)) {
         $stmt = $db->prepare("SELECT e.app, c.cor AS categoria_cor, SUM(e.duracao) AS total
             FROM eventos e LEFT JOIN categorias c ON c.id = e.categoria_id
-            WHERE e.tipo = 'window' AND e.app IN (" . implode(',', $placeholders) . ") AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
+            WHERE e.tipo = 'window' AND e.app IS NOT NULL AND e.app <> '' AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
             GROUP BY e.app, c.id, c.cor");
-        $stmt->execute($paramsApps);
+        $stmt->execute($params);
         $melhorPorApp = [];
         foreach ($stmt->fetchAll() as $row) {
             if (!isset($melhorPorApp[$row['app']]) || (float)$row['total'] > $melhorPorApp[$row['app']]['total']) {
                 $melhorPorApp[$row['app']] = ['cor' => $row['categoria_cor'] ?? '#c7c5da', 'total' => (float)$row['total']];
             }
         }
-        foreach ($topApps as $r) {
+        foreach ($todosApps as $r) {
             $corPorApp[$r['app']] = $melhorPorApp[$r['app']]['cor'] ?? '#c7c5da';
         }
+    }
+
+    // Top 10 títulos de janela de CADA app (não só os que aparecem no Top 10 padrão) — mesmo padrão
+    // de agregação de $detalheCategoriaTitulos mais abaixo, só que agrupando por app em vez de
+    // categoria. $dadosTopPorApp já sai pronto no formato que o gráfico Chart.js espera (labels +
+    // dados em minutos), indexado por app, pra trocar o gráfico inteiro no cliente sem ida ao
+    // servidor quando a caixa de seleção muda.
+    $titulosPorApp = [];
+    $stmt = $db->prepare("SELECT app, COALESCE(NULLIF(titulo, ''), '(sem título)') AS item, SUM(duracao) AS total
+        FROM eventos e
+        WHERE tipo = 'window' AND app IS NOT NULL AND app <> '' AND ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
+        GROUP BY app, item");
+    $stmt->execute($params);
+    foreach ($stmt->fetchAll() as $row) {
+        $titulosPorApp[$row['app']][$row['item']] = ($titulosPorApp[$row['app']][$row['item']] ?? 0) + (float)$row['total'];
+    }
+    $dadosTopPorApp = [];
+    foreach ($todosApps as $r) {
+        $app = $r['app'];
+        $titulos = $titulosPorApp[$app] ?? [];
+        arsort($titulos);
+        $titulos = array_slice($titulos, 0, 10, true);
+        $dadosTopPorApp[$app] = [
+            'labels' => array_keys($titulos),
+            'data' => array_values(array_map(fn($t) => round($t / 60), $titulos)),
+            'cor' => $corPorApp[$app] ?? '#c7c5da',
+        ];
     }
 
     // ---- Tendência diária (produtivo/neutro/improdutivo) — data local via offset fixo de Brasília.
@@ -345,7 +1010,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
         ':ini' => (clone $tendenciaInicioLocal)->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s'),
         ':fim' => (clone $tendenciaFimLocal)->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s'),
     ];
-    if (!empty($maquinaIds)) {
+    if (!empty($maquinaIds) || ($usuarioFiltro !== null && $usuarioFiltro !== '')) {
         foreach ($params as $chave => $valor) {
             if ($chave !== ':ini' && $chave !== ':fim') $paramsTendencia[$chave] = $valor;
         }
@@ -367,8 +1032,15 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
     // 23:59:59 daquele dia, então o DatePeriod incluía um dia a mais (8 em vez de 7, 31 em vez de
     // 30). Calculando o nº exato de dias primeiro, esse problema de horário não entra em jogo.
     $numDiasTendencia = (int)$tendenciaInicioLocal->diff($tendenciaFimLocal)->days + 1;
-    $periodoDias = new DatePeriod(clone $tendenciaInicioLocal, new DateInterval('P1D'), max(0, $numDiasTendencia - 1));
-    foreach ($periodoDias as $d) { $dias[$d->format('Y-m-d')] = ['produtivo' => 0, 'neutro' => 0, 'improdutivo' => 0]; }
+    // DatePeriod lança "Recurrence count must be greater than 0" se o 3º argumento (nº de
+    // repetições após a 1ª data) for 0 — acontece quando a tendência cobre um único dia (ex.:
+    // período customizado com data inicial = data final), daí o caso precisa ser tratado à parte.
+    if ($numDiasTendencia <= 1) {
+        $dias[$tendenciaInicioLocal->format('Y-m-d')] = ['produtivo' => 0, 'neutro' => 0, 'improdutivo' => 0];
+    } else {
+        $periodoDias = new DatePeriod(clone $tendenciaInicioLocal, new DateInterval('P1D'), $numDiasTendencia - 1);
+        foreach ($periodoDias as $d) { $dias[$d->format('Y-m-d')] = ['produtivo' => 0, 'neutro' => 0, 'improdutivo' => 0]; }
+    }
     foreach ($tendenciaRaw as $row) {
         if (!isset($dias[$row['dia']])) continue;
         if ($row['pontuacao'] == 1) $dias[$row['dia']]['produtivo'] += (float)$row['total'];
@@ -412,7 +1084,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
     }
 
 
-    $idSufixo = 'p' . substr(md5(implode(',', $maquinaIds)), 0, 6);
+    $idSufixo = 'p' . substr(md5(implode(',', $maquinaIds) . '|' . ($usuarioFiltro ?? '')), 0, 6);
 
     // Base do link "Ver eventos desta categoria" no popup — mesmo recorte de máquina(s) e período
     // desta visão; a categoria é adicionada no JS, na hora de abrir o popup (abrirModalCategoria).
@@ -435,14 +1107,16 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
             <div class="stat-icon green"><i class="bi bi-graph-up-arrow"></i></div>
         </div>
         <div class="stat-tile">
-            <div><div class="stat-label">Improdutivo</div><div class="stat-value critical-c"><?= formatarDuracao($improdutivo) ?></div><div class="stat-note">entretenimento, redes sociais...</div></div>
+            <div><div class="stat-label">Improdutivo</div><div class="stat-value critical-c"><?= formatarDuracao($improdutivo) ?></div><div class="stat-note"><?= $totalMonitorado > 0 ? round($improdutivo / $totalMonitorado * 100) . '% do tempo monitorado · ' : '' ?>neutro: <?= formatarDuracao($neutro) ?><?= $semCategoria > 0 ? ' · sem categoria: ' . formatarDuracao($semCategoria) : '' ?></div></div>
             <div class="stat-icon red"><i class="bi bi-graph-down-arrow"></i></div>
         </div>
         <div class="stat-tile">
-            <div><div class="stat-label">Ativo x Ausente</div><div class="stat-value"><?= formatarDuracao($tempoAtivo) ?></div><div class="stat-note"><?= formatarDuracao($tempoAusente) ?> ausente (AFK)</div></div>
+            <div><div class="stat-label">Ativo x Ausente</div><div class="stat-value"><?= formatarDuracao($tempoAtivo) ?></div><div class="stat-note"><?= formatarDuracao($tempoAusente) ?> ausente (AFK) · base: teclado/mouse, independe do monitorado</div></div>
             <div class="stat-icon orange"><i class="bi bi-person-check"></i></div>
         </div>
     </div>
+
+    <?php if ($entreStatsECharts !== null) $entreStatsECharts(); ?>
 
     <?php if ($exibirTendenciaPontos): ?>
     <div class="row g-3">
@@ -477,7 +1151,15 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
         </div>
         <div class="col-lg-7">
             <div class="card h-100">
-                <div class="card-header">Top 10 Aplicativos</div>
+                <div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
+                    <span>Top 10</span>
+                    <select id="seletorTopApp<?= $idSufixo ?>" class="form-select form-select-sm" style="max-width: 220px;">
+                        <option value="">Aplicativos</option>
+                        <?php foreach ($todosApps as $r): ?>
+                        <option value="<?= htmlspecialchars($r['app']) ?>"><?= htmlspecialchars(nomeAmigavelApp($r['app'])) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
                 <div class="card-body chart-card-body">
                     <div class="chart-wrap" style="height: 270px;"><canvas id="chartApps<?= $idSufixo ?>"></canvas></div>
                 </div>
@@ -702,13 +1384,23 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
         });
         <?php endif; ?>
 
-        new Chart(document.getElementById('chartApps<?= $idSufixo ?>'), {
+        // Dados por app (10 títulos de janela mais vistos de cada um, já em minutos) pra trocar o
+        // gráfico no cliente quando a caixa de seleção do card "Top 10" muda, sem ida ao servidor —
+        // mesmo princípio de detalheCategoria<?= $idSufixo ?> acima.
+        var dadosTopPorApp<?= $idSufixo ?> = <?= json_encode($dadosTopPorApp, JSON_UNESCAPED_UNICODE) ?>;
+        var topAppsPadrao<?= $idSufixo ?> = {
+            labels: <?= json_encode(array_map(fn($r) => nomeAmigavelApp($r['app']), $topApps), JSON_UNESCAPED_UNICODE) ?>,
+            data: <?= json_encode(array_map(fn($r) => round($r['total']/60), $topApps)) ?>,
+            cores: <?= json_encode(array_map(fn($r) => $corPorApp[$r['app']] ?? '#c7c5da', $topApps)) ?>,
+        };
+
+        var chartApps<?= $idSufixo ?> = new Chart(document.getElementById('chartApps<?= $idSufixo ?>'), {
             type: 'bar',
             data: {
-                labels: <?= json_encode(array_map(fn($r) => $r['app'], $topApps)) ?>,
+                labels: topAppsPadrao<?= $idSufixo ?>.labels,
                 datasets: [{
-                    data: <?= json_encode(array_map(fn($r) => round($r['total']/60), $topApps)) ?>,
-                    backgroundColor: <?= json_encode(array_map(fn($r) => $corPorApp[$r['app']] ?? '#c7c5da', $topApps)) ?>,
+                    data: topAppsPadrao<?= $idSufixo ?>.data,
+                    backgroundColor: topAppsPadrao<?= $idSufixo ?>.cores,
                 }]
             },
             options: {
@@ -716,6 +1408,23 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
                 plugins: { legend: { display: false }, tooltip: { callbacks: { label: (ctx) => ctx.raw + ' min' } } },
                 scales: { x: { title: { display: true, text: 'minutos' } } }
             }
+        });
+
+        document.getElementById('seletorTopApp<?= $idSufixo ?>').addEventListener('change', function () {
+            var app = this.value;
+            var dados = app && dadosTopPorApp<?= $idSufixo ?>[app]
+                ? dadosTopPorApp<?= $idSufixo ?>[app]
+                : null;
+            if (dados) {
+                chartApps<?= $idSufixo ?>.data.labels = dados.labels;
+                chartApps<?= $idSufixo ?>.data.datasets[0].data = dados.data;
+                chartApps<?= $idSufixo ?>.data.datasets[0].backgroundColor = dados.labels.map(() => dados.cor);
+            } else {
+                chartApps<?= $idSufixo ?>.data.labels = topAppsPadrao<?= $idSufixo ?>.labels;
+                chartApps<?= $idSufixo ?>.data.datasets[0].data = topAppsPadrao<?= $idSufixo ?>.data;
+                chartApps<?= $idSufixo ?>.data.datasets[0].backgroundColor = topAppsPadrao<?= $idSufixo ?>.cores;
+            }
+            chartApps<?= $idSufixo ?>.update();
         });
 
     })();
@@ -734,6 +1443,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
     <li class="nav-item"><a class="nav-link <?= $visao === 'geral' ? 'active' : '' ?>" href="<?= qs(['visao' => 'geral', 'maquina_id' => null, 'setor' => null]) ?>">Visão Geral</a></li>
     <li class="nav-item"><a class="nav-link <?= $visao === 'setor' ? 'active' : '' ?>" href="<?= qs(['visao' => 'setor', 'maquina_id' => null]) ?>">Setores</a></li>
     <li class="nav-item"><a class="nav-link <?= in_array($visao, ['maquinas_setor', 'maquina'], true) ? 'active' : '' ?>" href="<?= qs(['visao' => 'maquinas_setor', 'maquina_id' => null]) ?>">Máquinas por Setor</a></li>
+    <li class="nav-item"><a class="nav-link <?= in_array($visao, ['usuarios', 'usuario_detalhe'], true) ? 'active' : '' ?>" href="<?= qs(['visao' => 'usuarios', 'usuario' => null]) ?>">Usuários</a></li>
 </ul>
 
 <div class="entity-list-toolbar">
@@ -890,7 +1600,9 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
         <?php else: ?>
             <?php
             renderCardInfoMaquina($maquinaAtual, false);
-            renderPainelProdutividade($db, $inicioUtc, $fimUtc, $inicioLocal, $fimLocal, [$maquinaAtual['id']], true, $tendenciaDiasForcado);
+            renderTabelaUsuariosMaquina($db, $inicioUtc, $fimUtc, $maquinaAtual['id']);
+            renderPainelProdutividade($db, $inicioUtc, $fimUtc, $inicioLocal, $fimLocal, [$maquinaAtual['id']], true, $tendenciaDiasForcado, null,
+                fn() => renderLinhaDoTempo($db, $inicioLocal, $fimLocal, $maquinaAtual['id']));
             ?>
         <?php endif;
     }
@@ -907,6 +1619,102 @@ elseif ($visao === 'maquina'):
         echo '<div class="alert alert-danger">Máquina não encontrada.</div>';
     } else {
         renderCardInfoMaquina($maquinaAtual, true);
-        renderPainelProdutividade($db, $inicioUtc, $fimUtc, $inicioLocal, $fimLocal, [$maquinaAtual['id']], true, $tendenciaDiasForcado);
+        renderTabelaUsuariosMaquina($db, $inicioUtc, $fimUtc, $maquinaAtual['id']);
+        renderPainelProdutividade($db, $inicioUtc, $fimUtc, $inicioLocal, $fimLocal, [$maquinaAtual['id']], true, $tendenciaDiasForcado, null,
+            fn() => renderLinhaDoTempo($db, $inicioLocal, $fimLocal, $maquinaAtual['id']));
+    }
+
+elseif ($visao === 'usuarios'):
+    // Comparativo entre usuários do Windows detectados nas máquinas (aw-watcher-currentuser) —
+    // mesma estrutura da Visão Setores, mas agrupando por pessoa em vez de setor. Um usuário que
+    // loga em mais de uma máquina aparece uma única vez aqui, com o tempo somado de todas elas.
+    // eventos.usuario_detectado já vem pré-calculado da sincronização (ver comentário em
+    // renderPainelProdutividade sobre por que isso não é cruzado em tempo de consulta).
+    $stmt = $db->prepare("SELECT e.usuario_detectado AS usuario,
+               COUNT(DISTINCT e.maquina_id) AS num_maquinas,
+               SUM(e.duracao) AS total,
+               SUM(CASE WHEN c.pontuacao = 1 THEN e.duracao ELSE 0 END) AS produtivo,
+               SUM(CASE WHEN c.pontuacao = -1 THEN e.duracao ELSE 0 END) AS improdutivo
+        FROM eventos e
+        LEFT JOIN categorias c ON c.id = e.categoria_id
+        WHERE e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim
+              AND e.usuario_detectado IS NOT NULL AND e.usuario_detectado <> '' " . filtroHorarioComercialSql() . " " . filtroNaoBloqueadoSql() . "
+        GROUP BY e.usuario_detectado
+        ORDER BY total DESC");
+    $stmt->execute([':ini' => $inicioUtc, ':fim' => $fimUtc]);
+    $porUsuario = $stmt->fetchAll();
+
+    $produtividadePorUsuario = array_map(fn($u) => [
+        'id' => $u['usuario'],
+        'nome' => $u['usuario'],
+        'total' => $u['total'],
+        'produtivo' => $u['produtivo'],
+    ], $porUsuario);
+    ?>
+
+    <div class="card">
+        <div class="card-header">Comparativo entre Usuários</div>
+        <div class="table-responsive">
+            <table class="table table-bordered bg-white align-middle mb-0">
+                <thead class="table-dark"><tr><th>Usuário</th><th>Máquinas</th><th>Tempo Total</th><th>Produtivo</th><th>Improdutivo</th><th>% Produtivo</th><th></th></tr></thead>
+                <tbody>
+                    <?php foreach ($porUsuario as $u): $pct = $u['total'] > 0 ? round($u['produtivo'] / $u['total'] * 100) : 0; ?>
+                    <tr>
+                        <td><?= htmlspecialchars($u['usuario']) ?></td>
+                        <td><?= (int)$u['num_maquinas'] ?></td>
+                        <td><?= formatarDuracao($u['total'] ?: 0) ?></td>
+                        <td class="online-c"><?= formatarDuracao($u['produtivo'] ?: 0) ?></td>
+                        <td class="critical-c"><?= formatarDuracao($u['improdutivo'] ?: 0) ?></td>
+                        <td><?= $u['total'] > 0 ? $pct . '%' : '—' ?></td>
+                        <td><a class="btn btn-sm btn-outline-primary" href="<?= qs(['visao' => 'usuario_detalhe', 'usuario' => $u['usuario']]) ?>">Ver detalhes</a></td>
+                    </tr>
+                    <?php endforeach; ?>
+                    <?php if (empty($porUsuario)): ?><tr><td colspan="7" class="text-center text-muted py-3">Nenhum usuário detectado ainda — instale o agente aw-watcher-currentuser nas máquinas em <a href="index.php?page=maquinas">Máquinas</a>.</td></tr><?php endif; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-lg-6">
+            <div class="card mt-3">
+                <div class="card-header">Produtividade por Usuário</div>
+                <div class="card-body">
+                    <?php renderHexGrid($produtividadePorUsuario, fn($usuarioNome) => qs(['visao' => 'usuario_detalhe', 'usuario' => $usuarioNome])); ?>
+                </div>
+            </div>
+        </div>
+    </div>
+
+<?php elseif ($visao === 'usuario_detalhe'):
+    $usuarioSelecionado = trim($_GET['usuario'] ?? '');
+
+    if ($usuarioSelecionado === '') {
+        echo '<div class="alert alert-info">Selecione um usuário na aba <a href="' . qs(['visao' => 'usuarios']) . '">Usuários</a>.</div>';
+    } else {
+        // Máquinas onde este usuário foi detectado no período — só para o card de identificação
+        // abaixo (o painel de KPIs/gráficos em si não fica restrito a nenhuma máquina específica).
+        $stmt = $db->prepare("SELECT DISTINCT m.nome
+                               FROM eventos e JOIN maquinas m ON m.id = e.maquina_id
+                               WHERE e.tipo IN ('window','web') AND e.usuario_detectado = :u
+                                 AND e.ts BETWEEN :ini AND :fim
+                               ORDER BY m.nome ASC");
+        $stmt->execute([':u' => $usuarioSelecionado, ':ini' => $inicioUtc, ':fim' => $fimUtc]);
+        $maquinasDoUsuario = array_column($stmt->fetchAll(), 'nome');
+        ?>
+        <div class="card mb-3">
+            <div class="card-body d-flex flex-wrap align-items-center gap-3">
+                <div class="flex-grow-1">
+                    <h2 class="h5 mb-0"><?= htmlspecialchars($usuarioSelecionado) ?></h2>
+                    <div class="text-muted small mt-1">
+                        <?= $maquinasDoUsuario ? 'Máquinas no período: ' . htmlspecialchars(implode(', ', $maquinasDoUsuario)) : 'Nenhuma máquina no período selecionado.' ?>
+                    </div>
+                </div>
+                <a href="<?= qs(['visao' => 'usuarios', 'usuario' => null]) ?>" class="btn btn-outline-secondary btn-sm">← Voltar</a>
+            </div>
+        </div>
+        <?php
+        renderPainelProdutividade($db, $inicioUtc, $fimUtc, $inicioLocal, $fimLocal, [], true, $tendenciaDiasForcado, $usuarioSelecionado,
+            fn() => renderLinhaDoTempo($db, $inicioLocal, $fimLocal, null, $usuarioSelecionado));
     }
 endif; ?>

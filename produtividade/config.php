@@ -18,7 +18,10 @@ session_set_cookie_params([
 ]);
 session_start();
 
-// Configurações do Banco de Dados Local (MySQL/MariaDB)
+// Configurações do Banco de Dados Local (MySQL/MariaDB do XAMPP) — ambiente local usa seu próprio
+// banco, separado do servidor de homologação (10.1.100.123); todo teste/alteração feito aqui fica
+// isolado, sem afetar homologação. Credenciais do servidor de homologação ficam só no config.php
+// de lá (/var/www/produtividade.faesa.br/config.php), nunca neste arquivo versionado.
 define('DB_HOST', '127.0.0.1');
 define('DB_NAME', 'produtividade_aw');
 define('DB_USER', 'root');
@@ -49,9 +52,19 @@ define('AD_ENC_KEY', 'produtividade-aw-ad-troque-esta-chave');
 define('INSTALL_ENC_KEY', 'produtividade-aw-install-troque-esta-chave');
 
 // Caminho padrão do MSI gerado (ver Instaladores\msi-build) e tempo máximo (segundos) que a
-// instalação remota espera o msiexec terminar na máquina de destino antes de desistir.
-define('INSTALL_MSI_PATH_PADRAO', 'C:\\xampp\\htdocs\\produtividade\\Instaladores\\ActivityWatch-Produtividade.msi');
+// instalação remota espera o msiexec terminar na máquina de destino antes de desistir. Caminho
+// muda por SO porque o servidor pode rodar tanto no Windows (ambiente local) quanto no Linux
+// (homologação/produção) — ver install_client.php, que escolhe remote_install.ps1 ou .py conforme
+// PHP_OS_FAMILY. Isso é só o valor usado ao SEMEAR a configuração na primeira instalação; depois
+// disso o caminho fica editável em Máquinas > Instalação Remota, por ambiente.
+define('INSTALL_MSI_PATH_PADRAO', PHP_OS_FAMILY === 'Windows'
+    ? 'C:\\xampp\\htdocs\\produtividade\\Instaladores\\ActivityWatch-Produtividade.msi'
+    : '/var/www/produtividade.faesa.br/Instaladores/ActivityWatch-Produtividade.msi');
 define('INSTALL_TIMEOUT_PADRAO', 300);
+
+// Python do venv dedicado (impacket) usado pelo executor Linux da instalação remota — ver
+// remote_install.py/remote_uninstall.py e o branch em install_client.php. Sem efeito no Windows.
+define('INSTALL_PYTHON_BIN', '/opt/produtividade-remoteinstall-venv/bin/python3');
 
 // IP desta máquina (onde a aplicação roda hoje) — passado como propriedade SERVERIP do MSI na
 // instalação remota, para a regra de firewall da máquina de destino liberar o host certo. Mesmo
@@ -61,7 +74,7 @@ define('AW_SERVIDOR_IP', '10.10.140.17');
 
 // Incrementar sempre que uma migração (CREATE TABLE/ALTER TABLE) for adicionada em getDB() — é o
 // que faz o bloco de migração rodar de novo (uma única vez) na próxima requisição após o deploy.
-define('SCHEMA_VERSION', 7);
+define('SCHEMA_VERSION', 8);
 
 function getDB() {
     // Conexão + schema cacheados numa estática por requisição (mesmo motivo documentado em
@@ -316,6 +329,22 @@ function getDB() {
             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'maquinas' AND COLUMN_NAME = 'ip_local'")->fetchColumn();
         if (!$temIpLocal) {
             $db->exec("ALTER TABLE maquinas ADD COLUMN ip_local VARCHAR(45) DEFAULT NULL AFTER usuario_responsavel");
+        }
+
+        // Usuário do Windows detectado (aw-watcher-currentuser) responsável por CADA evento de
+        // window/web — pré-calculado no momento da sincronização (ver atualizarUsuarioDetectadoEventos()
+        // em aw_client.php), não em tempo de consulta: cruzar os eventos com as sessões de usuário
+        // (heartbeats tipo 'usuario') via JOIN de intervalo a cada carregamento do Dashboard levou a
+        // consulta a 7-10s numa base com só ~50 mil eventos (o otimizador do MariaDB 10.4 não usa o
+        // índice pra esse tipo de junção por faixa correlacionada). Gravar o resultado direto na
+        // linha, como já é feito com categoria_id, deixa a leitura da aba Usuários tão rápida quanto
+        // as demais abas do Dashboard.
+        $temUsuarioDetectado = (bool)$db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'eventos' AND COLUMN_NAME = 'usuario_detectado'")->fetchColumn();
+        if (!$temUsuarioDetectado) {
+            $db->exec("ALTER TABLE eventos
+                ADD COLUMN usuario_detectado VARCHAR(150) DEFAULT NULL AFTER categoria_id,
+                ADD INDEX idx_usuario_detectado (usuario_detectado)");
         }
 
         // Categorias e regras padrão — só na primeira instalação (tabela vazia). O admin edita

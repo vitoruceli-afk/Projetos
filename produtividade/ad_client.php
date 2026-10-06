@@ -49,6 +49,19 @@ function adTestarConexao(array $config) {
     return ['ok' => true, 'erro' => ''];
 }
 
+// Valida a senha de um usuário do AD fazendo bind LDAP como o PRÓPRIO usuário (não usa a conta de
+// serviço aqui — autenticar fazendo bind com o DN + senha do usuário é a forma padrão de checar
+// credenciais contra um diretório LDAP, a mesma senha que ele já usa pra logar no Windows). Usado
+// no login (ver login.php) pros usuários importados do AD (local_users.origem = 'ad'), em vez de
+// depender só da senha aleatória local gerada na importação. Só devolve true/false de propósito —
+// não expõe se o motivo da falha foi senha errada, DN inválido ou o DC estar fora do ar.
+function adAutenticarUsuario(array $config, $dn, $senha) {
+    if (empty($config['ldap_server']) || empty($dn) || $senha === '') return false;
+    $ldap = ldapConnect($config['ldap_server']);
+    if (!$ldap) return false;
+    return @ldap_bind($ldap, $dn, $senha);
+}
+
 // userAccountControl é uma máscara de bits; 0x2 (ACCOUNTCONTROL_DISABLE) indica conta desabilitada
 // no AD. Ausência do atributo (nem sempre é retornado) é tratada como "ativo" por padrão.
 function adContaAtiva($entry) {

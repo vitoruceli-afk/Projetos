@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Configurações · Tradutor de Imagens</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <div class="layout">
+      <nav class="sidebar" aria-label="Seções das configurações">
+        <div class="brand"><span aria-hidden="true">🌐</span> Tradutor de Imagens</div>
+        <a href="#traducao">Tradução</a>
+        <a href="#ocr">OCR</a>
+        <a href="#visual">Visual</a>
+        <a href="#desempenho">Desempenho</a>
+        <a href="#historico">Histórico</a>
+        <a href="#privacidade">Privacidade</a>
+        <a href="#licencas">Licenças</a>
+      </nav>
+
+      <main class="content">
+        <h1>Configurações</h1>
+        <p class="lead">As alterações são salvas automaticamente.</p>
+
+        <section id="traducao" class="card" aria-labelledby="h-traducao">
+          <h2 id="h-traducao">Tradução</h2>
+
+          <div class="grid-2">
+            <label class="field">
+              <span>Idioma de destino</span>
+              <select id="targetLanguage" data-setting></select>
+            </label>
+            <label class="field">
+              <span>Idioma de origem</span>
+              <select id="sourceLanguage" data-setting></select>
+              <small>Usado apenas quando a detecção automática estiver desligada.</small>
+            </label>
+          </div>
+
+          <label class="toggle"><input type="checkbox" id="autoDetect" data-setting /> Detectar idioma automaticamente</label>
+
+          <label class="field">
+            <span>Provedor de tradução</span>
+            <select id="provider" data-setting>
+              <option value="libre">LibreTranslate (recomendado: local, gratuito, nenhum texto sai do computador)</option>
+              <option value="google">Google Cloud Translation (API oficial, paga após a cota gratuita)</option>
+              <option value="custom">Serviço personalizado (seu endpoint)</option>
+            </select>
+          </label>
+
+          <div class="provider" data-provider="google">
+            <label class="field">
+              <span>Chave de API do Google Cloud Translation</span>
+              <div class="row">
+                <input type="password" id="googleApiKey" data-setting autocomplete="off" spellcheck="false" />
+                <button type="button" class="btn" data-toggle-password="googleApiKey">Mostrar</button>
+              </div>
+              <small>
+                Crie a chave em <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud Console</a>,
+                ative a API Cloud Translation e restrinja a chave à API. A chave fica só neste navegador.
+                <a href="https://cloud.google.com/translate/pricing" target="_blank" rel="noopener">Ver preços</a>.
+              </small>
+            </label>
+          </div>
+
+          <div class="provider" data-provider="libre" hidden>
+            <label class="field">
+              <span>Endereço do LibreTranslate</span>
+              <input type="url" id="libreUrl" data-setting placeholder="http://localhost:5000" />
+              <small>
+                Padrão: <code>http://localhost:5000</code>, o LibreTranslate rodando no seu computador. Para um servidor
+                remoto, use https. Veja como iniciar no README (seção 4.2).
+              </small>
+            </label>
+            <label class="field">
+              <span>Chave de API (se o servidor exigir)</span>
+              <div class="row">
+                <input type="password" id="libreApiKey" data-setting autocomplete="off" spellcheck="false" />
+                <button type="button" class="btn" data-toggle-password="libreApiKey">Mostrar</button>
+              </div>
+            </label>
+          </div>
+
+          <div class="provider" data-provider="custom" hidden>
+            <label class="field">
+              <span>Endereço do seu serviço</span>
+              <input type="url" id="customUrl" data-setting placeholder="https://seu-servidor.exemplo/translate" />
+              <small>
+                Recebe POST com <code>{"texts": [...], "source", "target"}</code> e deve responder
+                <code>{"translations": [...], "detectedSource": "en"}</code>.
+              </small>
+            </label>
+          </div>
+
+          <div class="row">
+            <button type="button" class="btn btn-primary" id="test-translation">Testar tradução</button>
+            <span id="test-result" class="muted" role="status" aria-live="polite"></span>
+          </div>
+        </section>
+
+        <section id="ocr" class="card" aria-labelledby="h-ocr">
+          <h2 id="h-ocr">OCR</h2>
+          <p class="muted">
+            O reconhecimento de texto roda sempre no seu computador (Tesseract.js). Nenhuma imagem é enviada para
+            servidores para fazer OCR.
+          </p>
+          <fieldset class="ocr-langs">
+            <legend>Idiomas de reconhecimento</legend>
+            <div id="ocr-list" class="checks"></div>
+            <small class="muted">
+              Idiomas marcados como “não instalado” precisam do arquivo <code>lang/&lt;código&gt;.traineddata</code> na pasta
+              da extensão. Veja o README.
+            </small>
+          </fieldset>
+          <label class="toggle"><input type="checkbox" id="enhanceImage" data-setting /> Melhorar imagem antes do OCR (contraste, tons de cinza e segunda tentativa com binarização)</label>
+        </section>
+
+        <section id="visual" class="card" aria-labelledby="h-visual">
+          <h2 id="h-visual">Visual</h2>
+          <label class="toggle"><input type="checkbox" id="showOverlay" data-setting /> Mostrar tradução sobre a imagem</label>
+          <p class="muted">
+            A tradução sobreposta cobre cada linha original e escreve a tradução na mesma posição, com o tamanho da
+            fonte ajustado à largura do texto original. Alinhamento e cores são aproximados.
+          </p>
+          <label class="toggle"><input type="checkbox" id="preserveFormatting" data-setting /> Manter formatação original na tradução da página (espaços e quebras de linha)</label>
+          <label class="field">
+            <span>Tamanho da fonte da interface</span>
+            <select id="fontScale" data-setting>
+              <option value="1">Normal (100%)</option>
+              <option value="1.15">Grande (115%)</option>
+              <option value="1.3">Muito grande (130%)</option>
+            </select>
+          </label>
+        </section>
+
+        <section id="desempenho" class="card" aria-labelledby="h-desempenho">
+          <h2 id="h-desempenho">Desempenho</h2>
+          <div class="grid-2">
+            <label class="field">
+              <span>Lado máximo da imagem antes do OCR (px)</span>
+              <select id="maxImageSide" data-setting>
+                <option value="1200">1200 (mais rápido)</option>
+                <option value="2000">2000 (recomendado)</option>
+                <option value="3000">3000 (mais detalhe, mais memória)</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Ignorar imagens menores que (px)</span>
+              <input type="number" id="minImageSide" data-setting min="8" max="400" step="1" />
+            </label>
+          </div>
+          <p class="muted">
+            As imagens só são processadas quando você pede. Nada roda em segundo plano enquanto a extensão está ociosa.
+            O mecanismo de OCR é liberado da memória após 1 minuto sem uso.
+          </p>
+        </section>
+
+        <section id="historico" class="card" aria-labelledby="h-historico">
+          <h2 id="h-historico">Histórico</h2>
+          <label class="toggle"><input type="checkbox" id="historyEnabled" data-setting /> Salvar histórico neste navegador</label>
+          <label class="field">
+            <span>Quantidade máxima de itens</span>
+            <select id="historyLimit" data-setting>
+              <option value="25">25</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+              <option value="250">250</option>
+            </select>
+          </label>
+          <div class="row">
+            <span id="history-count" class="muted"></span>
+            <button type="button" class="btn btn-danger" id="clear-history">Limpar histórico</button>
+          </div>
+          <ul id="history-list" class="history"></ul>
+        </section>
+
+        <section id="privacidade" class="card" aria-labelledby="h-privacidade">
+          <h2 id="h-privacidade">Privacidade</h2>
+          <dl class="privacy">
+            <dt>OCR local</dt>
+            <dd>Sempre no seu computador. A imagem não sai do navegador para o reconhecimento de texto.</dd>
+            <dt>Tradução</dt>
+            <dd>
+              <strong>Enviado para o provedor escolhido:</strong> somente o texto reconhecido (ou o texto da página, na
+              tradução de página inteira). A imagem não é enviada para a tradução.
+              Com LibreTranslate ou um serviço próprio, os dados vão para o servidor que você configurar.
+            </dd>
+            <dt>APIs externas</dt>
+            <dd>Google Cloud Translation, LibreTranslate ou o serviço personalizado, somente quando você configura um deles.</dd>
+            <dt>Armazenamento local</dt>
+            <dd>
+              Configurações, chave de API e histórico ficam em <code>chrome.storage.local</code>, neste navegador.
+              Miniaturas do histórico são pequenas. Nada é sincronizado com a conta Google.
+            </dd>
+            <dt>Permissões</dt>
+            <dd>
+              A extensão não tem acesso permanente a todos os sites. Ela só atua na aba em que você usa um comando,
+              o menu de contexto ou o ícone (permissão <code>activeTab</code>).
+            </dd>
+          </dl>
+        </section>
+
+        <section id="licencas" class="card" aria-labelledby="h-licencas">
+          <h2 id="h-licencas">Bibliotecas e licenças</h2>
+          <table class="licenses">
+            <thead>
+              <tr><th>Nome</th><th>Versão</th><th>Licença</th><th>Finalidade</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Tesseract.js</td><td>5.1.1</td><td>Apache-2.0</td><td>Biblioteca de OCR (wrapper do Tesseract)</td></tr>
+              <tr><td>tesseract.js-core</td><td>5.1.0</td><td>Apache-2.0</td><td>Núcleo WebAssembly do Tesseract (SIMD + LSTM)</td></tr>
+              <tr><td>Tesseract OCR (dados <code>eng</code> e <code>por</code>, tessdata_fast)</td><td>—</td><td>Apache-2.0</td><td>Modelos de reconhecimento de texto</td></tr>
+              <tr><td>Web Speech API e Canvas API</td><td>nativas</td><td>—</td><td>Leitura em voz alta e processamento de imagem (sem bibliotecas adicionais)</td></tr>
+            </tbody>
+          </table>
+        </section>
+      </main>
+    </div>
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>
