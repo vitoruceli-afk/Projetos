@@ -353,26 +353,44 @@ function mesclarEventosConsecutivos(array $linhas, callable $rotuloFn, $gapMaxSe
 // cresce junto com o volume de dados. $rotuloSql já entra pronto (COALESCE/NULLIF montado pelo
 // chamador) porque cada raia agrupa por uma coluna diferente (app x título).
 function binsLinhaDoTempo(PDO $db, $tipoSql, $rotuloSql, $filtroExtra, array $params,
-                           $periodoIniUtc, $faixaTotalMin, callable $corFn, $numBins = 300) {
+                           $periodoIniUtc, $faixaTotalMin, callable $corFn, $numBins = 300,
+                           $detalheSql = null, callable $detalheFmt = null) {
     $binWidthMin = max(1, $faixaTotalMin / $numBins);
     $params[':p_ini'] = $periodoIniUtc;
     $params[':bin_largura'] = $binWidthMin;
+    // $detalheSql (opcional): o que o tooltip deve mostrar (app em Aplicações, título da janela em
+    // Documentos). Cor e legenda continuam vindo de $rotuloSql (a categoria); o tooltip mostra o
+    // detalhe que mais ocupou o intervalo dentro da categoria dominante.
+    $detalheSelect = $detalheSql !== null ? "{$detalheSql} AS detalhe," : "'' AS detalhe,";
     // LEFT JOIN categorias sempre presente (mesmo pras raias que não usam — afk/sessão não têm
     // categoria_id, o join só fica vazio/ignorado pra elas) pra $rotuloSql poder referenciar
     // c.nome/c.cor quando for o caso (Aplicações/Documentos, coloridas por categoria).
     $stmt = $db->prepare("SELECT
             FLOOR(TIMESTAMPDIFF(SECOND, :p_ini, eventos.ts) / 60 / :bin_largura) AS bin,
             {$rotuloSql} AS rotulo,
+            {$detalheSelect}
             SUM(eventos.duracao) AS total
         FROM eventos
         LEFT JOIN categorias c ON c.id = eventos.categoria_id
         WHERE {$tipoSql} AND eventos.ts BETWEEN :ini AND :fim {$filtroExtra}
-        GROUP BY bin, rotulo");
+        GROUP BY bin, rotulo, detalhe");
     $stmt->execute($params);
 
     $porBin = [];
+    $detalhesBin = [];
     foreach ($stmt->fetchAll() as $row) {
-        $porBin[(int)$row['bin']][] = ['rotulo' => $row['rotulo'], 'total' => (float)$row['total']];
+        $b = (int)$row['bin'];
+        $t = (float)$row['total'];
+        $porBin[$b][$row['rotulo']] = ($porBin[$b][$row['rotulo']] ?? 0) + $t;
+        if ($row['detalhe'] !== '' && $row['detalhe'] !== null) {
+            $d = $detalheFmt !== null ? $detalheFmt($row['detalhe']) : $row['detalhe'];
+            $detalhesBin[$b][$row['rotulo']][$d] = ($detalhesBin[$b][$row['rotulo']][$d] ?? 0) + $t;
+        }
+    }
+    foreach ($porBin as $b => $porRotulo) {
+        $lista = [];
+        foreach ($porRotulo as $rotulo => $total) $lista[] = ['rotulo' => $rotulo, 'total' => $total];
+        $porBin[$b] = $lista;
     }
 
     $out = [];
@@ -381,6 +399,14 @@ function binsLinhaDoTempo(PDO $db, $tipoSql, $rotuloSql, $filtroExtra, array $pa
         $dominante = $itens[0];
         $somaBin = array_sum(array_column($itens, 'total'));
         $outros = count($itens) - 1;
+        // Detalhe predominante dentro da categoria dominante (app/título), pro tooltip.
+        $detalheTxt = $dominante['rotulo'];
+        $detalhesDaCategoria = $detalhesBin[$bin][$dominante['rotulo']] ?? [];
+        if ($detalhesDaCategoria) {
+            arsort($detalhesDaCategoria);
+            $detalheTxt = array_key_first($detalhesDaCategoria);
+            $outros = max(0, count($detalhesBin[$bin] ?? []) > 0 ? array_sum(array_map('count', $detalhesBin[$bin])) - 1 : 0);
+        }
         $minIni = max(0, min($faixaTotalMin, $bin * $binWidthMin));
         $minFim = max($minIni, min($faixaTotalMin, ($bin + 1) * $binWidthMin));
         $out[] = [
@@ -390,7 +416,7 @@ function binsLinhaDoTempo(PDO $db, $tipoSql, $rotuloSql, $filtroExtra, array $pa
             'width' => max(round(($minFim - $minIni) / $faixaTotalMin * 100, 3), 0.15),
             'cor' => $corFn($dominante['rotulo']),
             'rotulo' => $dominante['rotulo'],
-            'titulo' => $dominante['rotulo'] . ($outros > 0 ? ' (predominante, +' . $outros . ' outro(s) no intervalo)' : '') . ' — ' . formatarDuracao($somaBin),
+            'titulo' => $detalheTxt . ($outros > 0 ? ' (predominante, +' . $outros . ' outro(s) no intervalo)' : '') . ' — ' . formatarDuracao($somaBin),
         ];
     }
     return $out;
@@ -570,8 +596,10 @@ function renderLinhaDoTempo(PDO $db, DateTime $periodoIniLocal, DateTime $period
     $appRotulo = fn($l) => $l['app'] ? nomeAmigavelApp($l['app']) : '(sem aplicativo)';
     $janelas = null;
     if (contarEventosPeriodo($db, "tipo = 'window'", $filtroApps, $paramsApps) > $LIMITE_EVENTOS_DETALHADOS) {
+        // Cor/legenda pela categoria; o tooltip mostra o APLICATIVO em uso.
         $segApps = binsLinhaDoTempo($db, "tipo = 'window'", "COALESCE(c.nome, 'Sem categoria')", $filtroApps, $paramsApps,
-            $periodoIniUtc, $faixaTotalMin, $corPorNomeCategoria);
+            $periodoIniUtc, $faixaTotalMin, $corPorNomeCategoria, 300,
+            "COALESCE(NULLIF(eventos.app, ''), '(sem aplicativo)')", fn($app) => $app === '(sem aplicativo)' ? $app : nomeAmigavelApp($app));
         $usouAgregado = true;
     } else {
         $janelas = array_filter(eventosDoPeriodo($db, 'window', $periodoIniUtc, $periodoFimUtc, $maquinaId, $usuarioFiltro),
@@ -588,13 +616,16 @@ function renderLinhaDoTempo(PDO $db, DateTime $periodoIniLocal, DateTime $period
     $docLabel = fn($l) => $l['titulo'] ?: ($l['app'] ?: '(sem título)');
     $docDetalhe = function ($l) {
         $titulo = $l['titulo'] ?: '(sem título)';
+        // Tooltip de Documentos = título da janela (a URL, só se for aba do navegador).
         if (!empty($l['url'])) return $titulo . ' — ' . $l['url'];
-        if (!empty($l['app'])) return $titulo . ' (' . nomeAmigavelApp($l['app']) . ')';
+        if ($titulo === '(sem título)' && !empty($l['app'])) return nomeAmigavelApp($l['app']);
         return $titulo;
     };
     if (contarEventosPeriodo($db, $tipoDocsSql, $filtroDocs, $paramsDocs) > $LIMITE_EVENTOS_DETALHADOS) {
+        // Cor/legenda pela categoria; o tooltip mostra o TÍTULO DA JANELA (ou da aba) em uso.
         $segDocs = binsLinhaDoTempo($db, $tipoDocsSql, "COALESCE(c.nome, 'Sem categoria')", $filtroDocs, $paramsDocs,
-            $periodoIniUtc, $faixaTotalMin, $corPorNomeCategoria);
+            $periodoIniUtc, $faixaTotalMin, $corPorNomeCategoria, 300,
+            "COALESCE(NULLIF(eventos.titulo, ''), NULLIF(eventos.app, ''), '(sem título)')");
         $usouAgregado = true;
     } else {
         $janelasDocs = $janelas ?? array_filter(eventosDoPeriodo($db, 'window', $periodoIniUtc, $periodoFimUtc, $maquinaId, $usuarioFiltro),
