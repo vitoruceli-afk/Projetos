@@ -74,7 +74,7 @@ define('AW_SERVIDOR_IP', '10.10.140.17');
 
 // Incrementar sempre que uma migração (CREATE TABLE/ALTER TABLE) for adicionada em getDB() — é o
 // que faz o bloco de migração rodar de novo (uma única vez) na próxima requisição após o deploy.
-define('SCHEMA_VERSION', 8);
+define('SCHEMA_VERSION', 11);
 
 function getDB() {
     // Conexão + schema cacheados numa estática por requisição (mesmo motivo documentado em
@@ -378,6 +378,12 @@ function getDB() {
                 ['Produtivo · Escritório', '#178ec8', 1, 20, [
                     ['app', 'contem', 'WINWORD'], ['app', 'contem', 'EXCEL'], ['app', 'contem', 'POWERPNT'],
                     ['app', 'contem', 'Outlook'], ['app', 'contem', 'Teams'], ['app', 'contem', 'OneNote'],
+                    ['app', 'contem', 'Acrobat'], ['app', 'contem', 'AcroRd32'],
+                    ['titulo', 'contem', 'Adobe Acrobat'], ['titulo', 'contem', 'Acrobat Reader'], ['titulo', 'contem', '.pdf'], ['titulo', 'contem', 'Acrobat'],
+                    ['titulo', 'regex', '\\.(docx?|xlsx?|xlsm|xlsb|pptx?|pps[xm]?|pdf)(\\s|$)'],
+                    ['url', 'contem', 'microsoft365.com'], ['url', 'contem', 'office365.com'], ['url', 'contem', 'officeapps.live.com'],
+                    ['url', 'contem', 'onedrive.live.com'], ['url', 'contem', '1drv.ms'], ['url', 'contem', 'outlook.office'],
+                    ['url', 'contem', 'acrobat.adobe.com'], ['url', 'contem', 'documentcloud.adobe.com'], ['url', 'contem', 'adobe.com/acrobat'],
                     ['url', 'contem', 'office.com'], ['url', 'contem', 'sharepoint.com'],
                     // Regras por título: sem a extensão de navegador do ActivityWatch instalada, o
                     // campo url nunca vem preenchido — abas de Office/Google Workspace só dão pra
@@ -416,6 +422,26 @@ function getDB() {
                 foreach ($regras as [$campo, $tipo, $padrao]) {
                     $regraStmt->execute([':cat' => $catId, ':campo' => $campo, ':tipo' => $tipo, ':padrao' => $padrao, ':prio' => $prio]);
                 }
+            }
+        }
+
+        // Acrobat/PDF na categoria "Produtivo · Escritório" (junto de Word/Excel/PowerPoint) — vale
+        // pra instalações já existentes, onde a semeadura acima não roda mais. Idempotente: só insere
+        // a regra se ainda não existir nessa categoria.
+        $catEscritorio = $db->query("SELECT id FROM categorias WHERE nome = 'Produtivo · Escritório' LIMIT 1")->fetchColumn();
+        if ($catEscritorio) {
+            $existeRegra = $db->prepare("SELECT 1 FROM categoria_regras WHERE categoria_id = :cat AND campo = :campo AND tipo = :tipo AND padrao = :padrao LIMIT 1");
+            $novaRegra = $db->prepare("INSERT INTO categoria_regras (categoria_id, campo, tipo, padrao, prioridade) VALUES (:cat, :campo, :tipo, :padrao, 20)");
+            foreach ([['app', 'contem', 'Acrobat'], ['app', 'contem', 'AcroRd32'],
+                      ['titulo', 'contem', 'Adobe Acrobat'], ['titulo', 'contem', 'Acrobat Reader'], ['titulo', 'contem', '.pdf'],
+                      ['titulo', 'contem', 'Acrobat'],
+                      ['titulo', 'regex', '\\.(docx?|xlsx?|xlsm|xlsb|pptx?|pps[xm]?|pdf)(\\s|$)'],
+                      ['url', 'contem', 'microsoft365.com'], ['url', 'contem', 'office365.com'], ['url', 'contem', 'officeapps.live.com'],
+                      ['url', 'contem', 'onedrive.live.com'], ['url', 'contem', '1drv.ms'], ['url', 'contem', 'outlook.office'],
+                      ['url', 'contem', 'acrobat.adobe.com'], ['url', 'contem', 'documentcloud.adobe.com'], ['url', 'contem', 'adobe.com/acrobat']] as [$campo, $tipo, $padrao]) {
+                $p = [':cat' => $catEscritorio, ':campo' => $campo, ':tipo' => $tipo, ':padrao' => $padrao];
+                $existeRegra->execute($p);
+                if (!$existeRegra->fetchColumn()) $novaRegra->execute($p);
             }
         }
 

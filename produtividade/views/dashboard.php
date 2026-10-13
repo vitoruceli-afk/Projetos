@@ -801,7 +801,7 @@ function renderLinhaDoTempo(PDO $db, DateTime $periodoIniLocal, DateTime $period
 // se selecionada), pela Visão de uma Máquina e pela Visão Máquinas por Setor (ambas uma única
 // máquina, vinda do clique num hexágono ou numa tabela). $maquinaIds vazio = sem restrição (todas
 // as máquinas do sistema).
-function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inicioLocal, DateTime $fimLocal, array $maquinaIds, $exibirTendenciaPontos = false, $tendenciaDiasForcado = null, $usuarioFiltro = null, callable $entreStatsECharts = null) {
+function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inicioLocal, DateTime $fimLocal, array $maquinaIds, $exibirTendenciaPontos = false, $tendenciaDiasForcado = null, $usuarioFiltro = null, callable $entreStatsECharts = null, $mapaCalor = false) {
     $filtroMaquinaSql = '';
     $params = [':ini' => $inicioUtc, ':fim' => $fimUtc];
     if (!empty($maquinaIds)) {
@@ -1069,9 +1069,9 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
                 $h = (int)$row['hora'];
                 if (isset($porHora[$h])) $porHora[$h] = (float)$row['produtivo'];
             }
-            foreach ($porHora as $h => $produtivo) {
+            foreach ($porHora as $h => $produtivoHora) {
                 $pontosLabels[] = sprintf('%02dh', $h);
-                $pontosValores[] = $produtivo;
+                $pontosValores[] = $produtivoHora;
             }
         } else {
             foreach ($dias as $dia => $valores) {
@@ -1096,27 +1096,43 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
         'data_fim' => $fimLocal->format('Y-m-d'),
     ];
     if (count($maquinaIds) === 1) $eventosBaseParams['maquina_id'] = reset($maquinaIds);
+    // Cards clicáveis: abrem o Explorador de Eventos com o mesmo recorte do card (grupo) e o mesmo
+    // escopo da visão (usuário do Windows e/ou várias máquinas).
+    $eventosCardBase = $eventosBaseParams;
+    if (count($maquinaIds) > 1) $eventosCardBase['maquina_ids'] = implode(',', $maquinaIds);
+    if ($usuarioFiltro !== null && $usuarioFiltro !== '') $eventosCardBase['usuario'] = $usuarioFiltro;
+    $linkCard = fn($grupo) => 'index.php?' . http_build_query($eventosCardBase + ['grupo' => $grupo]);
     ?>
-    <div class="stat-strip">
-        <div class="stat-tile">
+    <div class="stat-strip stat-strip-5">
+        <a class="stat-tile" href="<?= htmlspecialchars($linkCard('monitorado')) ?>" title="Ver os eventos deste card">
             <div><div class="stat-label">Tempo Monitorado</div><div class="stat-value"><?= formatarDuracao($totalMonitorado) ?></div><div class="stat-note">janela + navegador</div></div>
             <div class="stat-icon blue"><i class="bi bi-clock-history"></i></div>
-        </div>
-        <div class="stat-tile">
+        </a>
+        <a class="stat-tile" href="<?= htmlspecialchars($linkCard('produtivo')) ?>" title="Ver os eventos deste card">
             <div><div class="stat-label">Produtivo</div><div class="stat-value online-c"><?= formatarDuracao($produtivo) ?></div><div class="stat-note"><?= $pctProdutivo ?>% do tempo monitorado</div></div>
             <div class="stat-icon green"><i class="bi bi-graph-up-arrow"></i></div>
-        </div>
-        <div class="stat-tile">
-            <div><div class="stat-label">Improdutivo</div><div class="stat-value critical-c"><?= formatarDuracao($improdutivo) ?></div><div class="stat-note"><?= $totalMonitorado > 0 ? round($improdutivo / $totalMonitorado * 100) . '% do tempo monitorado · ' : '' ?>neutro: <?= formatarDuracao($neutro) ?><?= $semCategoria > 0 ? ' · sem categoria: ' . formatarDuracao($semCategoria) : '' ?></div></div>
+        </a>
+        <a class="stat-tile" href="<?= htmlspecialchars($linkCard('neutro')) ?>" title="Ver os eventos deste card">
+            <div><div class="stat-label">Neutro</div><div class="stat-value"><?= formatarDuracao($neutro + $semCategoria) ?></div><div class="stat-note"><?= $totalMonitorado > 0 ? round(($neutro + $semCategoria) / $totalMonitorado * 100) : 0 ?>% do tempo monitorado<?= $semCategoria > 0 ? ' · inclui sem categoria: ' . formatarDuracao($semCategoria) : '' ?></div></div>
+            <div class="stat-icon gray"><i class="bi bi-dash-circle"></i></div>
+        </a>
+        <a class="stat-tile" href="<?= htmlspecialchars($linkCard('improdutivo')) ?>" title="Ver os eventos deste card">
+            <div><div class="stat-label">Improdutivo</div><div class="stat-value critical-c"><?= formatarDuracao($improdutivo) ?></div><div class="stat-note"><?= $totalMonitorado > 0 ? round($improdutivo / $totalMonitorado * 100) : 0 ?>% do tempo monitorado</div></div>
             <div class="stat-icon red"><i class="bi bi-graph-down-arrow"></i></div>
-        </div>
-        <div class="stat-tile">
+        </a>
+        <a class="stat-tile" href="<?= htmlspecialchars($linkCard('ativo')) ?>" title="Ver os eventos deste card">
             <div><div class="stat-label">Ativo x Ausente</div><div class="stat-value"><?= formatarDuracao($tempoAtivo) ?></div><div class="stat-note"><?= formatarDuracao($tempoAusente) ?> ausente (AFK) · base: teclado/mouse, independe do monitorado</div></div>
             <div class="stat-icon orange"><i class="bi bi-person-check"></i></div>
-        </div>
+        </a>
     </div>
 
     <?php if ($entreStatsECharts !== null) $entreStatsECharts(); ?>
+
+    <?php if ($mapaCalor && $exibirTendenciaPontos): ?>
+    <div class="row g-3 mb-1">
+        <div class="col-12"><?php renderMapaCalorProdutividade($db, $inicioLocal, $fimLocal, $maquinaIds ?: null, $usuarioFiltro); ?></div>
+    </div>
+    <?php endif; ?>
 
     <?php if ($exibirTendenciaPontos): ?>
     <div class="row g-3">
@@ -1166,6 +1182,13 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
             </div>
         </div>
     </div>
+
+    <?php if ($mapaCalor && !$exibirTendenciaPontos): ?>
+    <div class="row g-3 mt-1">
+        <div class="col-12"><?php renderMapaCalorProdutividade($db, $inicioLocal, $fimLocal, $maquinaIds ?: null, $usuarioFiltro); ?></div>
+    </div>
+    <?php renderRankings($db, $inicioUtc, $fimUtc, null); ?>
+    <?php endif; ?>
 
     <div class="row g-3 mt-1">
         <div class="col-12">
@@ -1431,6 +1454,359 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
     </script>
     <?php
 }
+
+// ---- Cards de ranking (Visão Geral / Máquinas por Setor) ----
+// Agrega produtividade por colaborador (usuário do Windows detectado), departamento (setor/OU) ou
+// máquina, no mesmo recorte de horário/bloqueio dos KPIs. $maquinaIds restringe às máquinas dadas
+// (null = todas). Devolve [chave => ['total','produtivo','improdutivo','maquinas'(lista de nomes)]].
+function agregarRanking(PDO $db, $iniUtc, $fimUtc, $dimensao, ?array $maquinaIds = null) {
+    if ($maquinaIds !== null && empty($maquinaIds)) return [];
+    $chaveSql = [
+        'usuario' => "e.usuario_detectado",
+        'setor'   => "COALESCE(ou.nome, NULLIF(m.setor, ''), 'Sem setor')",
+        'maquina' => "m.nome",
+    ][$dimensao];
+    $filtroIds = $maquinaIds !== null ? ' AND e.maquina_id IN (' . implode(',', array_map('intval', $maquinaIds)) . ')' : '';
+    $filtroUsuario = $dimensao === 'usuario' ? " AND e.usuario_detectado IS NOT NULL AND e.usuario_detectado <> ''" : '';
+    $stmt = $db->prepare("SELECT {$chaveSql} AS chave, m.nome AS maquina,
+            SUM(e.duracao) AS total,
+            SUM(CASE WHEN c.pontuacao = 1 THEN e.duracao ELSE 0 END) AS produtivo,
+            SUM(CASE WHEN c.pontuacao = -1 THEN e.duracao ELSE 0 END) AS improdutivo
+        FROM eventos e
+        JOIN maquinas m ON m.id = e.maquina_id
+        LEFT JOIN ad_ous ou ON ou.id = m.ou_id
+        LEFT JOIN categorias c ON c.id = e.categoria_id
+        WHERE e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim {$filtroIds} {$filtroUsuario} " . filtroHorarioComercialSql() . " " . filtroNaoBloqueadoSql() . "
+        GROUP BY chave, m.nome");
+    $stmt->execute([':ini' => $iniUtc, ':fim' => $fimUtc]);
+    $dados = [];
+    foreach ($stmt->fetchAll() as $r) {
+        $k = $r['chave'];
+        if ($k === null || $k === '') continue;
+        if (!isset($dados[$k])) $dados[$k] = ['total' => 0.0, 'produtivo' => 0.0, 'improdutivo' => 0.0, 'maquinas' => []];
+        $dados[$k]['total'] += (float)$r['total'];
+        $dados[$k]['produtivo'] += (float)$r['produtivo'];
+        $dados[$k]['improdutivo'] += (float)$r['improdutivo'];
+        $dados[$k]['maquinas'][$r['maquina']] = true;
+    }
+    foreach ($dados as &$d) $d['maquinas'] = array_keys($d['maquinas']);
+    unset($d);
+    return $dados;
+}
+
+function formatarPctRanking($v) { return number_format($v, 1, ',', '.') . '%'; }
+
+// Um card "Ranking por atividade produtiva/improdutiva": duas abas (Colaboradores + Departamentos
+// ou Máquinas), ordenado pelo % do tempo monitorado, com variação (em pontos percentuais) contra o
+// período anterior de mesma duração. Paginado no cliente, 5 por página.
+// $abas: [['rotulo' => ..., 'itens' => [['nome','sub','pct','delta'], ...]], ...]
+function renderCardRanking($titulo, $chaveMetrica, array $abas, $uid) {
+    $altaEhBoa = $chaveMetrica === 'produtivo';
+    ?>
+    <div class="rank-card" data-rank="<?= $uid ?>">
+        <h3 class="rank-title"><?= htmlspecialchars($titulo) ?></h3>
+        <div class="rank-tabs">
+            <?php foreach ($abas as $i => $aba): ?>
+                <button type="button" class="rank-tab <?= $i === 0 ? 'active' : '' ?>" data-tab="<?= $i ?>"><?= htmlspecialchars($aba['rotulo']) ?></button>
+            <?php endforeach; ?>
+        </div>
+        <?php foreach ($abas as $i => $aba): ?>
+        <div class="rank-pane" data-pane="<?= $i ?>" <?= $i === 0 ? '' : 'hidden' ?>>
+            <div class="rank-head"><span><?= htmlspecialchars($aba['rotulo'] === 'Colaboradores' ? 'Colaborador' : rtrim($aba['rotulo'], 's')) ?></span><span>Valor <i class="bi bi-arrow-down"></i></span></div>
+            <?php if (empty($aba['itens'])): ?>
+                <div class="rank-empty">Sem dados no período.</div>
+            <?php else: foreach ($aba['itens'] as $it):
+                $delta = $it['delta'];
+                $bom = $delta === null ? null : (($delta >= 0) === $altaEhBoa);
+                $iniciais = mb_strtoupper(mb_substr(preg_replace('/[^\p{L}\p{N}]/u', '', $it['nome']), 0, 2));
+                ?>
+                <div class="rank-row">
+                    <span class="rank-avatar" style="background: <?= htmlspecialchars(corPorTexto($it['nome'])) ?>"><?= htmlspecialchars($iniciais) ?></span>
+                    <span class="rank-info"><span class="rank-name"><?= htmlspecialchars($it['nome']) ?></span><span class="rank-sub"><?= htmlspecialchars($it['sub']) ?></span></span>
+                    <span class="rank-val"><?= formatarPctRanking($it['pct']) ?></span>
+                    <?php if ($delta === null): ?><span class="rank-delta">—</span>
+                    <?php else: ?><span class="rank-delta <?= $bom ? 'bom' : 'ruim' ?>"><?= ($delta >= 0 ? '+' : '−') . number_format(abs($delta), 1, ',', '.') ?>%</span><?php endif; ?>
+                </div>
+            <?php endforeach; endif; ?>
+            <div class="rank-pager"></div>
+        </div>
+        <?php endforeach; ?>
+    </div>
+    <?php
+}
+
+// Ranking de eventos TOP 10: aplicativos (janela ativa) e sites (navegador) com mais tempo no período.
+function renderCardRankingEventos(PDO $db, $iniUtc, $fimUtc, ?array $maquinaIds, $linkVerTodos) {
+    $filtroIds = ($maquinaIds !== null && !empty($maquinaIds)) ? ' AND e.maquina_id IN (' . implode(',', array_map('intval', $maquinaIds)) . ')' : '';
+    $stmt = $db->prepare("SELECT e.tipo,
+            CASE WHEN e.tipo = 'web' THEN SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(e.url, '://', -1), '/', 1), '?', 1) ELSE e.app END AS item,
+            COALESCE(c.nome, 'Sem categoria') AS categoria, SUM(e.duracao) AS total
+        FROM eventos e LEFT JOIN categorias c ON c.id = e.categoria_id
+        WHERE e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim {$filtroIds} " . filtroHorarioComercialSql() . " " . filtroNaoBloqueadoSql() . "
+        GROUP BY e.tipo, item, categoria
+        HAVING item IS NOT NULL AND item <> ''");
+    $stmt->execute([':ini' => $iniUtc, ':fim' => $fimUtc]);
+    $itens = [];
+    foreach ($stmt->fetchAll() as $r) {
+        $nome = $r['tipo'] === 'web' ? preg_replace('/^www\./', '', $r['item']) : nomeAmigavelApp($r['item']);
+        $k = $r['tipo'] . '|' . $nome;
+        if (!isset($itens[$k])) $itens[$k] = ['nome' => $nome, 'tipo' => $r['tipo'], 'total' => 0.0, 'cats' => []];
+        $itens[$k]['total'] += (float)$r['total'];
+        $itens[$k]['cats'][$r['categoria']] = ($itens[$k]['cats'][$r['categoria']] ?? 0) + (float)$r['total'];
+    }
+    uasort($itens, fn($a, $b) => $b['total'] <=> $a['total']);
+    $itens = array_slice($itens, 0, 10);
+    ?>
+    <div class="rank-card">
+        <div class="rank-title-row">
+            <h3 class="rank-title">Ranking de eventos <span class="rank-top">TOP 10</span></h3>
+            <a href="<?= htmlspecialchars($linkVerTodos) ?>" class="rank-all">Ver todos</a>
+        </div>
+        <div class="rank-pane" style="border-top: 1px solid var(--line); border-radius: 8px;">
+            <div class="rank-head"><span>Evento</span><span>Valor <i class="bi bi-arrow-down"></i></span></div>
+            <?php if (empty($itens)): ?>
+                <div class="rank-empty">Sem dados no período.</div>
+            <?php else: foreach ($itens as $it): arsort($it['cats']); $cat = array_key_first($it['cats']); ?>
+                <div class="rank-row">
+                    <span class="rank-info"><span class="rank-name"><?= htmlspecialchars($it['nome']) ?></span><span class="rank-sub"><?= htmlspecialchars($cat) ?> · <?= $it['tipo'] === 'web' ? 'Site' : 'Aplicativo' ?></span></span>
+                    <span class="rank-val"><?= formatarDuracao($it['total']) ?></span>
+                </div>
+            <?php endforeach; endif; ?>
+        </div>
+    </div>
+    <?php
+}
+
+// Mapa de calor de produtividade: uma linha por dia do período, uma célula por hora (horário de
+// Brasília), colorida pelo % do tempo monitorado daquela hora que foi produtivo. Mesmo recorte de
+// horário comercial/bloqueio dos KPIs. $maquinaIds vazio/null = todas as máquinas.
+function renderMapaCalorProdutividade(PDO $db, DateTime $inicioLocal, DateTime $fimLocal, ?array $maquinaIds = null, $usuarioFiltro = null) {
+    $tzBr = new DateTimeZone('America/Sao_Paulo');
+    $ini = (clone $inicioLocal)->setTimezone($tzBr)->setTime(0, 0, 0);
+    $fim = (clone $fimLocal)->setTimezone($tzBr)->setTime(0, 0, 0);
+    $maxDias = 62;
+    if ($ini->diff($fim)->days + 1 > $maxDias) $ini = (clone $fim)->modify('-' . ($maxDias - 1) . ' days');
+    $iniUtc = (clone $ini)->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+    $fimUtc = (clone $fim)->setTime(23, 59, 59)->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+    $filtroIds = !empty($maquinaIds) ? ' AND e.maquina_id IN (' . implode(',', array_map('intval', $maquinaIds)) . ')' : '';
+    $paramsMapa = [];
+    if ($usuarioFiltro !== null && $usuarioFiltro !== '') {
+        $filtroIds .= ' AND e.usuario_detectado = :usuario_mapa';
+        $paramsMapa[':usuario_mapa'] = $usuarioFiltro;
+    }
+
+    $stmt = $db->prepare("SELECT DATE(CONVERT_TZ(e.ts, '+00:00', '-03:00')) AS dia,
+            HOUR(CONVERT_TZ(e.ts, '+00:00', '-03:00')) AS hora,
+            SUM(e.duracao) AS total,
+            SUM(CASE WHEN c.pontuacao = 1 THEN e.duracao ELSE 0 END) AS produtivo
+        FROM eventos e LEFT JOIN categorias c ON c.id = e.categoria_id
+        WHERE e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim {$filtroIds} " . filtroHorarioComercialSql() . " " . filtroNaoBloqueadoSql() . "
+        GROUP BY dia, hora");
+    $stmt->execute([':ini' => $iniUtc, ':fim' => $fimUtc] + $paramsMapa);
+    $celulas = [];
+    foreach ($stmt->fetchAll() as $r) {
+        $celulas[$r['dia']][(int)$r['hora']] = ['total' => (float)$r['total'], 'produtivo' => (float)$r['produtivo']];
+    }
+
+    $meses = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
+    $nivel = function ($pct) {
+        if ($pct === null || $pct <= 0) return 0;   // sem atividade produtiva
+        if ($pct >= 75) return 5;                   // muito alta
+        if ($pct >= 55) return 4;                   // alta
+        if ($pct >= 35) return 3;                   // média
+        if ($pct >= 15) return 2;                   // baixa
+        return 1;                                   // muito baixa
+    };
+    $nomes = [5 => 'Muito alta', 4 => 'Alta', 3 => 'Média', 2 => 'Baixa', 1 => 'Muito baixa', 0 => 'Sem atividade produtiva'];
+
+    $linhas = [];
+    for ($d = clone $ini; $d <= $fim; $d->modify('+1 day')) {
+        $linhas[] = ['chave' => $d->format('Y-m-d'), 'rotulo' => (int)$d->format('j') . ' de ' . $meses[(int)$d->format('n') - 1]];
+    }
+
+    // Período com mais de um dia: em vez de uma linha por dia, uma única linha com a MÉDIA por hora
+    // sobre os dias de produção efetiva — dias sem nenhum tempo monitorado (fins de semana,
+    // feriados, máquinas desligadas) ficam FORA do divisor, em vez de entrarem como zero e
+    // puxarem a média pra baixo. Dentro de um dia efetivo, hora sem dados conta como 0%.
+    $mediaDias = null;
+    if (count($linhas) > 1) {
+        $efetivos = [];
+        foreach ($linhas as $l) {
+            $somaDia = 0.0;
+            foreach ($celulas[$l['chave']] ?? [] as $v) $somaDia += $v['total'];
+            if ($somaDia > 0) $efetivos[] = $l['chave'];
+        }
+        $nEfetivos = count($efetivos);
+        $mediaCelulas = [];
+        for ($h = 0; $h < 24; $h++) {
+            $somaPct = 0.0; $somaProd = 0.0; $somaTot = 0.0;
+            foreach ($efetivos as $dia) {
+                $v = $celulas[$dia][$h] ?? null;
+                if ($v && $v['total'] > 0) {
+                    $somaPct += $v['produtivo'] / $v['total'] * 100;
+                    $somaProd += $v['produtivo'];
+                    $somaTot += $v['total'];
+                }
+            }
+            if ($nEfetivos > 0 && $somaTot > 0) {
+                $mediaCelulas[$h] = ['total' => $somaTot / $nEfetivos, 'produtivo' => $somaProd / $nEfetivos, 'pct' => $somaPct / $nEfetivos];
+            }
+        }
+        $mediaDias = ['efetivos' => $nEfetivos, 'ignorados' => count($linhas) - $nEfetivos];
+        $linhas = [['chave' => 'media', 'rotulo' => 'Média do período']];
+        $celulas = ['media' => $mediaCelulas];
+    }
+
+    $melhor = null;
+    foreach ($celulas[$linhas[0]['chave']] ?? [] as $h => $v) {
+        if ($v['total'] <= 0) continue;
+        $pct = $v['pct'] ?? ($v['produtivo'] / $v['total'] * 100);
+        if ($pct > 0 && ($melhor === null || $pct > $melhor['pct'])) $melhor = ['pct' => $pct, 'hora' => $h];
+    }
+    ?>
+    <div class="card hm-card">
+        <div class="card-header">Mapa de calor de produtividade</div>
+        <div class="card-body">
+            <div class="hm-legend">
+                <?php foreach ([5, 4, 3, 2, 1, 0] as $n): ?>
+                    <span><i class="hm-dot hm-<?= $n ?>"></i><?= $nomes[$n] ?></span>
+                <?php endforeach; ?>
+            </div>
+            <div class="hm-scroll">
+                <?php foreach ($linhas as $l): ?>
+                <div class="hm-row">
+                    <div class="hm-day"><?= htmlspecialchars($l['rotulo']) ?></div>
+                    <div class="hm-cells">
+                        <?php for ($h = 0; $h < 24; $h++):
+                            $v = $celulas[$l['chave']][$h] ?? null;
+                            $pct = ($v && $v['total'] > 0) ? ($v['pct'] ?? $v['produtivo'] / $v['total'] * 100) : null;
+                            $n = $nivel($pct);
+                            $faixa = sprintf('%02d:00–%02d:00', $h, $h + 1);
+                            $tip = $l['rotulo'] . ' · ' . $faixa . ' · ' . ($pct === null ? 'sem dados'
+                                : formatarPctRanking($pct) . ' produtivo (' . formatarDuracao($v['produtivo']) . ' de ' . formatarDuracao($v['total']) . ($mediaDias ? ' por dia útil, em média' : '') . ')');
+                            ?>
+                            <div class="hm-cell hm-<?= $n ?>" title="<?= htmlspecialchars($tip) ?>"><span><?= sprintf('%02d:00', $h) ?></span><span><?= sprintf('%02d:00', $h + 1) ?></span></div>
+                        <?php endfor; ?>
+                    </div>
+                </div>
+                <?php endforeach; ?>
+            </div>
+            <div class="hm-best">
+                <?php if ($melhor): ?>
+                    Hora mais produtiva<?= $mediaDias ? ' (média)' : '' ?>: <strong><?= sprintf('%02d:00 – %02d:00', $melhor['hora'], $melhor['hora'] + 1) ?> — <?= formatarPctRanking($melhor['pct']) ?></strong>
+                <?php else: ?>
+                    Sem atividade produtiva no período.
+                <?php endif; ?>
+                <?php if ($mediaDias): ?>
+                    <div class="text-muted mt-1">Média sobre <?= (int)$mediaDias['efetivos'] ?> dia(s) com atividade; <?= (int)$mediaDias['ignorados'] ?> dia(s) sem atividade (fins de semana, feriados) desconsiderado(s) do cálculo.</div>
+                <?php endif; ?>
+            </div>
+        </div>
+    </div>
+    <?php
+}
+
+// Linha com os 3 cards. $maquinaIds = null na Visão Geral (todas as máquinas); lista de ids na
+// visão Máquinas por Setor (só as do setor, e a 2ª aba vira "Máquinas" em vez de "Departamentos").
+function renderRankings(PDO $db, $iniUtc, $fimUtc, ?array $maquinaIds = null) {
+    $ini = new DateTime($iniUtc, new DateTimeZone('UTC'));
+    $fim = new DateTime($fimUtc, new DateTimeZone('UTC'));
+    $duracao = $fim->getTimestamp() - $ini->getTimestamp() + 1;
+    $antFim = (clone $ini)->modify('-1 second')->format('Y-m-d H:i:s');
+    $antIni = (clone $ini)->modify('-' . $duracao . ' seconds')->format('Y-m-d H:i:s');
+
+    $dimensao2 = $maquinaIds === null ? 'setor' : 'maquina';
+    $rotulo2 = $maquinaIds === null ? 'Departamentos' : 'Máquinas';
+
+    $atual = ['usuario' => agregarRanking($db, $iniUtc, $fimUtc, 'usuario', $maquinaIds), $dimensao2 => agregarRanking($db, $iniUtc, $fimUtc, $dimensao2, $maquinaIds)];
+    $anterior = ['usuario' => agregarRanking($db, $antIni, $antFim, 'usuario', $maquinaIds), $dimensao2 => agregarRanking($db, $antIni, $antFim, $dimensao2, $maquinaIds)];
+
+    $montar = function ($metrica, $dim) use ($atual, $anterior) {
+        $itens = [];
+        foreach ($atual[$dim] as $nome => $d) {
+            if ($d['total'] <= 0) continue;
+            $pct = $d[$metrica] / $d['total'] * 100;
+            $ant = $anterior[$dim][$nome] ?? null;
+            $delta = ($ant && $ant['total'] > 0) ? $pct - ($ant[$metrica] / $ant['total'] * 100) : null;
+            if ($dim === 'usuario') {
+                $partes = explode('\\', $nome);
+                $exibir = end($partes);
+                $sub = count($partes) > 1 ? $partes[0] . ' · ' . implode(', ', $d['maquinas']) : implode(', ', $d['maquinas']);
+            } elseif ($dim === 'setor') {
+                $exibir = $nome;
+                $sub = count($d['maquinas']) . ' máquina(s)';
+            } else {
+                $exibir = $nome;
+                $sub = 'Máquina';
+            }
+            $itens[] = ['nome' => $exibir, 'sub' => $sub, 'pct' => $pct, 'delta' => $delta];
+        }
+        usort($itens, fn($a, $b) => $b['pct'] <=> $a['pct']);
+        return $itens;
+    };
+
+    $uid = 'rk' . substr(md5(uniqid('', true)), 0, 6);
+    $tzBr = new DateTimeZone('America/Sao_Paulo');
+    $ver = 'index.php?' . http_build_query(array_filter([
+        'page' => 'eventos', 'grupo' => 'monitorado',
+        'data_ini' => (clone $ini)->setTimezone($tzBr)->format('Y-m-d'),
+        'data_fim' => (clone $fim)->setTimezone($tzBr)->format('Y-m-d'),
+        'maquina_ids' => $maquinaIds ? implode(',', $maquinaIds) : null,
+    ]));
+    ?>
+    <div class="rank-grid" id="<?= $uid ?>">
+        <?php
+        renderCardRanking('Ranking por atividade produtiva', 'produtivo', [
+            ['rotulo' => 'Colaboradores', 'itens' => $montar('produtivo', 'usuario')],
+            ['rotulo' => $rotulo2, 'itens' => $montar('produtivo', $dimensao2)],
+        ], $uid . 'a');
+        renderCardRanking('Ranking por atividade improdutiva', 'improdutivo', [
+            ['rotulo' => 'Colaboradores', 'itens' => $montar('improdutivo', 'usuario')],
+            ['rotulo' => $rotulo2, 'itens' => $montar('improdutivo', $dimensao2)],
+        ], $uid . 'b');
+        renderCardRankingEventos($db, $iniUtc, $fimUtc, $maquinaIds, $ver);
+        ?>
+    </div>
+    <script>
+    (function () {
+        var POR_PAGINA = 10;
+        document.querySelectorAll('#<?= $uid ?> [data-rank]').forEach(function (card) {
+            card.querySelectorAll('.rank-pane').forEach(function (pane) {
+                var linhas = pane.querySelectorAll('.rank-row');
+                var pager = pane.querySelector('.rank-pager');
+                var total = Math.max(1, Math.ceil(linhas.length / POR_PAGINA));
+                function ir(p) {
+                    p = Math.min(Math.max(1, p), total);
+                    linhas.forEach(function (l, i) { l.hidden = Math.floor(i / POR_PAGINA) + 1 !== p; });
+                    pager.innerHTML = '';
+                    if (total <= 1) return;
+                    function botao(txt, alvo, ativo, desab) {
+                        var b = document.createElement('button');
+                        b.type = 'button'; b.textContent = txt;
+                        if (ativo) b.className = 'active';
+                        b.disabled = !!desab;
+                        b.addEventListener('click', function () { ir(alvo); });
+                        pager.appendChild(b);
+                    }
+                    botao('«', 1, false, p === 1);
+                    botao('‹', p - 1, false, p === 1);
+                    for (var n = Math.max(1, p - 2); n <= Math.min(total, p + 2); n++) botao(String(n), n, n === p, false);
+                    botao('›', p + 1, false, p === total);
+                    botao('»', total, false, p === total);
+                }
+                ir(1);
+            });
+            card.querySelectorAll('.rank-tab').forEach(function (tab) {
+                tab.addEventListener('click', function () {
+                    card.querySelectorAll('.rank-tab').forEach(function (t) { t.classList.toggle('active', t === tab); });
+                    card.querySelectorAll('.rank-pane').forEach(function (p) { p.hidden = p.getAttribute('data-pane') !== tab.getAttribute('data-tab'); });
+                });
+            });
+        });
+    })();
+    </script>
+    <?php
+}
 ?>
 <div class="page-head">
     <div>
@@ -1492,7 +1868,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
 
 <?php if ($visao === 'geral'): ?>
 
-    <?php renderPainelProdutividade($db, $inicioUtc, $fimUtc, $inicioLocal, $fimLocal, [], false, $tendenciaDiasForcado); ?>
+    <?php renderPainelProdutividade($db, $inicioUtc, $fimUtc, $inicioLocal, $fimLocal, [], false, $tendenciaDiasForcado, null, null, true); ?>
 
 <?php elseif ($visao === 'setor'): ?>
 
@@ -1517,6 +1893,18 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
     // da tabela acima); renderHexGrid() só espera itens com 'id'/'nome'/'total'/'produtivo', então
     // usamos o próprio nome do setor como "id" (não há um id numérico de setor de verdade — setor
     // aqui é texto livre ou nome de OU, ver comentário no início do arquivo).
+    // Setor selecionado no Comparativo (clique na linha): os cards de ranking abaixo passam a
+    // mostrar só as máquinas dele. Só vale se o nome existir na lista atual.
+    $setorSel = trim($_GET['setor_sel'] ?? '');
+    if ($setorSel !== '' && !in_array($setorSel, array_column($porSetor, 'setor'), true)) $setorSel = '';
+    $idsSetorSel = null;
+    if ($setorSel !== '') {
+        $stmt = $db->prepare("SELECT m.id FROM maquinas m LEFT JOIN ad_ous ou ON ou.id = m.ou_id
+            WHERE COALESCE(ou.nome, NULLIF(m.setor, ''), 'Sem setor') = :s");
+        $stmt->execute([':s' => $setorSel]);
+        $idsSetorSel = array_map('intval', array_column($stmt->fetchAll(), 'id'));
+    }
+
     $produtividadePorSetor = array_map(fn($s) => [
         'id' => $s['setor'],
         'nome' => $s['setor'],
@@ -1531,9 +1919,12 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
             <table class="table table-bordered bg-white align-middle mb-0">
                 <thead class="table-dark"><tr><th>Setor</th><th>Máquinas</th><th>Tempo Total</th><th>Produtivo</th><th>Improdutivo</th><th>% Produtivo</th><th></th></tr></thead>
                 <tbody>
-                    <?php foreach ($porSetor as $s): $pct = $s['total'] > 0 ? round($s['produtivo'] / $s['total'] * 100) : 0; ?>
-                    <tr>
-                        <td><?= htmlspecialchars($s['setor']) ?></td>
+                    <?php foreach ($porSetor as $s): $pct = $s['total'] > 0 ? round($s['produtivo'] / $s['total'] * 100) : 0;
+                        $selecionado = $setorSel === $s['setor'];
+                        $hrefSel = qs(['setor_sel' => $selecionado ? null : $s['setor']]); ?>
+                    <tr class="<?= $selecionado ? 'table-success' : '' ?>" style="cursor: pointer" title="<?= $selecionado ? 'Clique para limpar a seleção' : 'Clique para ver os rankings deste setor' ?>"
+                        onclick="if (!event.target.closest('a')) location.href = this.dataset.href" data-href="<?= $hrefSel ?>">
+                        <td><?= $selecionado ? '<i class="bi bi-check-circle-fill text-success me-1"></i>' : '' ?><?= htmlspecialchars($s['setor']) ?></td>
                         <td><?= (int)$s['num_maquinas'] ?></td>
                         <td><?= formatarDuracao($s['total'] ?: 0) ?></td>
                         <td class="online-c"><?= formatarDuracao($s['produtivo'] ?: 0) ?></td>
@@ -1549,7 +1940,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
     </div>
 
     <div class="row">
-        <div class="col-lg-6">
+        <div class="col-12">
             <div class="card mt-3">
                 <div class="card-header">Produtividade por Setor</div>
                 <div class="card-body">
@@ -1558,6 +1949,18 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
             </div>
         </div>
     </div>
+
+    <div class="mt-3"><?php renderMapaCalorProdutividade($db, $inicioLocal, $fimLocal, $idsSetorSel); ?></div>
+
+    <div class="d-flex align-items-center gap-2 mt-3 text-muted small">
+        <?php if ($setorSel !== ''): ?>
+            Rankings do setor <strong><?= htmlspecialchars($setorSel) ?></strong>
+            <a href="<?= qs(['setor_sel' => null]) ?>" class="btn btn-sm btn-outline-secondary py-0">Ver todos os setores</a>
+        <?php else: ?>
+            Rankings de todos os setores — clique numa linha do Comparativo para filtrar por setor.
+        <?php endif; ?>
+    </div>
+    <?php renderRankings($db, $inicioUtc, $fimUtc, $idsSetorSel); ?>
 
 <?php elseif ($visao === 'maquinas_setor'):
     if ($setorSelecionado === null) {
@@ -1602,7 +2005,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
             renderCardInfoMaquina($maquinaAtual, false);
             renderTabelaUsuariosMaquina($db, $inicioUtc, $fimUtc, $maquinaAtual['id']);
             renderPainelProdutividade($db, $inicioUtc, $fimUtc, $inicioLocal, $fimLocal, [$maquinaAtual['id']], true, $tendenciaDiasForcado, null,
-                fn() => renderLinhaDoTempo($db, $inicioLocal, $fimLocal, $maquinaAtual['id']));
+                fn() => renderLinhaDoTempo($db, $inicioLocal, $fimLocal, $maquinaAtual['id']), true);
             ?>
         <?php endif;
     }
@@ -1715,6 +2118,6 @@ elseif ($visao === 'usuarios'):
         </div>
         <?php
         renderPainelProdutividade($db, $inicioUtc, $fimUtc, $inicioLocal, $fimLocal, [], true, $tendenciaDiasForcado, $usuarioSelecionado,
-            fn() => renderLinhaDoTempo($db, $inicioLocal, $fimLocal, null, $usuarioSelecionado));
+            fn() => renderLinhaDoTempo($db, $inicioLocal, $fimLocal, null, $usuarioSelecionado), true);
     }
 endif; ?>

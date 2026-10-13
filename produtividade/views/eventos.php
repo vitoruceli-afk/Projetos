@@ -26,6 +26,39 @@ if ($busca !== '') {
     $where[] = '(e.app LIKE :busca OR e.titulo LIKE :busca OR e.url LIKE :busca)';
     $params[':busca'] = '%' . $busca . '%';
 }
+
+// Filtros vindos dos cards do Dashboard (mesmos critérios dos KPIs de lá): "grupo" reproduz o
+// recorte de cada card, e usuario/maquina_ids reproduzem o escopo da visão (usuário do Windows
+// escolhido na aba Usuários; várias máquinas nas visões por setor).
+$grupos = [
+    'monitorado'  => 'Tempo Monitorado',
+    'produtivo'   => 'Produtivo',
+    'neutro'      => 'Neutro (inclui sem categoria)',
+    'improdutivo' => 'Improdutivo',
+    'ativo'       => 'Ativo (teclado/mouse)',
+    'ausente'     => 'Ausente (AFK)',
+];
+$grupo = isset($grupos[$_GET['grupo'] ?? '']) ? $_GET['grupo'] : '';
+$usuarioFiltro = trim($_GET['usuario'] ?? '');
+$maquinaIdsFiltro = array_values(array_filter(array_map('intval', explode(',', $_GET['maquina_ids'] ?? '')), fn($v) => $v > 0));
+if ($maquinaIdsFiltro && $maquinaId <= 0) {
+    $where[] = 'e.maquina_id IN (' . implode(',', $maquinaIdsFiltro) . ')';
+}
+if ($usuarioFiltro !== '') { $where[] = 'e.usuario_detectado = :usuario'; $params[':usuario'] = $usuarioFiltro; }
+if ($grupo !== '') {
+    if ($grupo === 'ativo' || $grupo === 'ausente') {
+        $where[] = "e.tipo = 'afk'";
+        $where[] = $grupo === 'ativo' ? "e.status = 'not-afk'" : "e.status = 'afk'";
+    } else {
+        $where[] = "e.tipo IN ('window','web')";
+        $where[] = "COALESCE(e.app, '') <> 'LockApp.exe'";
+    }
+    if ($grupo === 'produtivo') $where[] = 'e.categoria_id IN (SELECT id FROM categorias WHERE pontuacao = 1)';
+    elseif ($grupo === 'improdutivo') $where[] = 'e.categoria_id IN (SELECT id FROM categorias WHERE pontuacao = -1)';
+    elseif ($grupo === 'neutro') $where[] = '(e.categoria_id IS NULL OR e.categoria_id IN (SELECT id FROM categorias WHERE pontuacao = 0))';
+    // Mesmo horário comercial do Dashboard (06:00-22:30, horário de Brasília).
+    $where[] = "TIME(CONVERT_TZ(e.ts, '+00:00', '-03:00')) BETWEEN '06:00:00' AND '22:30:00'";
+}
 $whereSql = implode(' AND ', $where);
 
 if (($_GET['format'] ?? '') === 'csv') {
@@ -75,7 +108,9 @@ function qsEventos($extra) {
 <div class="page-head">
     <div>
         <h1 class="page-title">Explorador de Eventos</h1>
-        <div class="page-sub"><?= number_format($total, 0, ',', '.') ?> evento(s) encontrado(s)</div>
+        <div class="page-sub"><?= number_format($total, 0, ',', '.') ?> evento(s) encontrado(s)<?php if ($grupo !== ''): ?> · card: <strong><?= htmlspecialchars($grupos[$grupo]) ?></strong>
+            <?php if ($usuarioFiltro !== ''): ?> · usuário: <?= htmlspecialchars($usuarioFiltro) ?><?php endif; ?>
+            · <a href="<?= qsEventos(['grupo' => null, 'usuario' => null, 'maquina_ids' => null, 'pg' => null]) ?>">limpar filtro do card</a><?php endif; ?></div>
     </div>
     <?php if (isAdmin()): ?>
         <a href="<?= qsEventos(['format' => 'csv', 'page' => 'eventos']) ?>" class="btn btn-outline-secondary btn-sm"><i class="bi bi-download"></i> Exportar CSV (até 50.000 linhas)</a>
@@ -84,6 +119,9 @@ function qsEventos($extra) {
 
 <form method="GET" class="entity-list-toolbar">
     <input type="hidden" name="page" value="eventos">
+    <?php if ($usuarioFiltro !== ''): ?><input type="hidden" name="usuario" value="<?= htmlspecialchars($usuarioFiltro) ?>"><?php endif; ?>
+    <?php if ($maquinaIdsFiltro): ?><input type="hidden" name="maquina_ids" value="<?= htmlspecialchars(implode(',', $maquinaIdsFiltro)) ?>"><?php endif; ?>
+    <?php if ($grupo !== ''): ?><input type="hidden" name="grupo" value="<?= htmlspecialchars($grupo) ?>"><?php endif; ?>
     <select name="maquina_id" class="form-select form-select-sm" style="max-width: 200px">
         <option value="0">Todas as máquinas</option>
         <?php foreach ($maquinas as $m): ?><option value="<?= (int)$m['id'] ?>" <?= $maquinaId === (int)$m['id'] ? 'selected' : '' ?>><?= htmlspecialchars($m['nome']) ?></option><?php endforeach; ?>

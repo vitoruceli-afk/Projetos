@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(ssh *10.1.100.123*)",
-      "Bash(scp *10.1.100.123*)"
-    ]
+      "Bash(scp *10.1.100.123*)",
+      "Bash(pscp *10.1.100.123*)"
+    ],
+    "ask": []
   }
 }
