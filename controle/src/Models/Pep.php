@@ -91,6 +91,58 @@ final class Pep extends BaseModel
     }
 
     /**
+     * Todos os PEPs com a quantidade de dispositivos vinculados e o status
+     * do prazo (ativo / a_vencer / vencido), usado no relatório de dispositivos.
+     *
+     * @return array<int,array> cada item tem as colunas de peps + qtd_dispositivos + status_pep
+     */
+    public static function comContagemDispositivos(): array
+    {
+        $sql = 'SELECT p.*, COUNT(d.id) as qtd_dispositivos '
+             . 'FROM peps p '
+             . 'LEFT JOIN dispositivos d ON d.pep_id = p.id '
+             . 'GROUP BY p.id '
+             . 'ORDER BY p.pep';
+
+        $stmt = self::pdo()->prepare($sql);
+        $stmt->execute();
+        $peps = $stmt->fetchAll();
+
+        foreach ($peps as &$p) {
+            $p['qtd_dispositivos'] = (int) $p['qtd_dispositivos'];
+            $p['status_pep'] = self::statusPrazo($p['data_termino']);
+        }
+
+        return $peps;
+    }
+
+    /**
+     * Classifica o prazo de um PEP: 'vencido' (já passou), 'a_vencer'
+     * (nos próximos 30 dias) ou 'ativo' (sem data de término, ou vencimento
+     * além de 30 dias).
+     */
+    public static function statusPrazo(?string $dataTermino): string
+    {
+        if ($dataTermino === null || $dataTermino === '') {
+            return 'ativo';
+        }
+
+        $termino = \DateTime::createFromFormat('Y-m-d', $dataTermino) ?: new \DateTime($dataTermino);
+        $hoje = new \DateTime('today');
+
+        if ($termino < $hoje) {
+            return 'vencido';
+        }
+
+        $limite = (clone $hoje)->modify('+30 days');
+        if ($termino <= $limite) {
+            return 'a_vencer';
+        }
+
+        return 'ativo';
+    }
+
+    /**
      * Calcula a data de término baseado na data de início e período em meses
      */
     public static function calcularDataTermino(?string $data_inicio, int $periodo_meses): ?string

@@ -258,6 +258,13 @@ final class Dispositivo extends BaseModel
         return (int) $stmt->fetch()['total'];
     }
 
+    public static function contarSemPep(): int
+    {
+        $stmt = self::pdo()->prepare('SELECT COUNT(*) as total FROM dispositivos WHERE pep_id IS NULL');
+        $stmt->execute();
+        return (int) $stmt->fetch()['total'];
+    }
+
     public static function dispositivosPorPep(int $pep_id): array
     {
         $sql = 'SELECT d.*, t.nome as tipo_nome, t.icone '

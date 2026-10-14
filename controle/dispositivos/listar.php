@@ -42,8 +42,11 @@ $badgeStatus = static fn(string $s) => match($s) {
         <h1 class="page-title">Controle de Dispositivos</h1>
         <p class="page-sub">Gerencie computadores, celulares, tablets, impressoras e outros dispositivos</p>
     </div>
-    <?php if ($ehAdmin): ?>
-        <div>
+    <div>
+        <a href="<?= url('dispositivos/relatorios.php') ?>" class="btn btn-outline-primary">
+            <i class="bi bi-bar-chart"></i> Relatórios
+        </a>
+        <?php if ($ehAdmin): ?>
             <a href="<?= url('dispositivos/importar.php') ?>" class="btn btn-outline-success">
                 <i class="bi bi-filetype-csv"></i> Importar CSV
             </a>
@@ -53,8 +56,8 @@ $badgeStatus = static fn(string $s) => match($s) {
             <a href="<?= url('dispositivos/form.php') ?>" class="btn btn-primary">
                 <i class="bi bi-plus-lg"></i> Novo Dispositivo
             </a>
-        </div>
-    <?php endif; ?>
+        <?php endif; ?>
+    </div>
 </div>
 
 <!-- ESTATÍSTICAS -->
