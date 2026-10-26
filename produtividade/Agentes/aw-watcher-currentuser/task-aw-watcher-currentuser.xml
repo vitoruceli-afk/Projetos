@@ -11,6 +11,20 @@
         <StopAtDurationEnd>false</StopAtDurationEnd>
       </Repetition>
     </LogonTrigger>
+    <!-- Repeticao por horario, independente do logon: o LogonTrigger acima so comeca a repetir de 5 em 5
+         minutos NO PROXIMO logon depois que a tarefa e (re)registrada - ex.: depois de instalar/atualizar
+         o MSI com o usuario ja logado, o agente rodava uma unica vez (ReligarAgenteUsuario) e parava de
+         reportar o usuario ate o logoff/logon seguinte, deixando os eventos sem usuario_detectado.
+         Este gatilho comeca a repetir ja a partir do registro (StartBoundary no passado = alinhado ao
+         relogio) e continua para sempre; MultipleInstancesPolicy=IgnoreNew impede sobreposicao. -->
+    <TimeTrigger>
+      <StartBoundary>2020-01-01T00:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT5M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
   </Triggers>
   <Principals>
     <Principal id="Author">

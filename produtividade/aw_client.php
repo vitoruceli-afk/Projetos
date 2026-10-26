@@ -303,17 +303,101 @@ function sincronizarMaquina(PDO $db, array $maquina, $origem = 'manual') {
 
     atualizarUsuarioResponsavelDetectado($db, $maquina['id']);
     atualizarUsuarioDetectadoEventos($db, $maquina['id']);
+    propagarUsuarioDetectado($db, $maquina['id']);
+
+    // Janela do navegador herda a categoria da aba (URL) correspondente — ver herdarCategoriaDasAbas().
+    // Só os últimos dias: eventos já reconciliados não mudam, e o upsert acima regrava a categoria de
+    // janela dos ~5 min finais, que precisam ser reconciliados de novo.
+    herdarCategoriaDasAbas($db, $maquina['id'], gmdate('Y-m-d H:i:s', time() - 3 * 86400));
+
+    // A máquina respondeu (sincronização 'ok' ou 'parcial') — é a hora de disparar a atualização do
+    // agente, se alguém a deixou agendada para "a próxima vez que estiver comunicável".
+    $atualizacaoDisparada = dispararAtualizacaoAgendada($db, $maquina);
 
     if (!empty($avisos)) {
         $msg = implode('; ', $avisos);
         $marcarMaquina('parcial', $msg);
         $finalizar('parcial', $msg, $totalNovos);
-        return ['ok' => true, 'aviso' => $msg, 'eventos_novos' => $totalNovos];
+        return ['ok' => true, 'aviso' => $msg, 'eventos_novos' => $totalNovos, 'atualizacao_disparada' => $atualizacaoDisparada];
     }
 
     $marcarMaquina('ok', null);
     $finalizar('ok', '', $totalNovos);
-    return ['ok' => true, 'erro' => '', 'eventos_novos' => $totalNovos];
+    return ['ok' => true, 'erro' => '', 'eventos_novos' => $totalNovos, 'atualizacao_disparada' => $atualizacaoDisparada];
+}
+
+// Uma mesma atividade no navegador gera DOIS eventos: o de JANELA (watcher de janela, ex.: chrome.exe +
+// título "Baixar o arquivo | iLovePDF - Google Chrome", classificado por aplicativo/título) e o de ABA
+// (extensão aw-watcher-web, com a URL, classificado por regras de domínio). Sem reconciliar, o mesmo
+// acesso podia cair em categorias diferentes — a janela na categoria de reserva "Neutro · Navegação"
+// (só casou o aplicativo) e a aba em "Produtivo · Escritório" (casou o domínio).
+// A URL é a informação mais precisa: a janela de navegador passa a herdar a categoria da aba que está
+// dentro dela, desde que essa categoria seja específica — não a de reserva nem nula. Vale também quando
+// a janela casou uma categoria específica por título e a aba outra.
+// A MELHOR aba é escolhida primeiro, qualquer que seja a categoria dela (inclusive neutra ou sem categoria); só
+// depois se verifica se ela é específica. Filtrar por categoria antes de escolher fazia a janela herdar a categoria
+// de OUTRA aba vizinha quando a aba certa era neutra (ex.: WhatsApp Web ao lado de uma aba de trabalho).
+// Casamento janela↔aba: a aba começa até 2s antes ou (duração da janela + 3s) depois do início da janela
+// — a extensão costuma reportar a aba ALGUNS décimos DEPOIS do watcher de janela, e janelas de duração 0
+// (troca rápida de foco) precisam dessa folga — e, entre os candidatos, vale primeiro a aba cujo título
+// está contido no título da janela ("Baixar o arquivo | iLovePDF" em "... - Google Chrome") e depois a de
+// início mais próximo.
+// $maquinaId e $desdeUtc limitam o trabalho (null = tudo). Devolve quantos eventos mudaram.
+function herdarCategoriaDasAbas(PDO $db, $maquinaId = null, $desdeUtc = null) {
+    // Categoria "de reserva" = a neutra (pontuação 0): é onde a janela do navegador cai quando só o aplicativo
+    // casou. A categoria da aba só é herdada quando é específica (produtiva/improdutiva), nunca a neutra.
+    $reserva = array_column($db->query("SELECT id FROM categorias WHERE pontuacao = 0")->fetchAll(), 'id');
+    $reservaSql = $reserva ? implode(',', array_map('intval', $reserva)) : '0';
+    $filtro = ''; $params = [];
+    if ($maquinaId !== null) { $filtro .= ' AND w.maquina_id = :m'; $params[':m'] = $maquinaId; }
+    if ($desdeUtc !== null)  { $filtro .= ' AND w.ts >= :d'; $params[':d'] = $desdeUtc; }
+
+    $stmt = $db->prepare("SELECT w.id, w.categoria_id AS atual,
+            (SELECT b.categoria_id FROM eventos b
+              WHERE b.maquina_id = w.maquina_id AND b.tipo = 'web'
+                AND b.ts >= w.ts - INTERVAL 2 SECOND AND b.ts <= w.ts + INTERVAL (CEIL(w.duracao) + 3) SECOND
+              ORDER BY (b.titulo IS NOT NULL AND b.titulo <> '' AND LOCATE(b.titulo, w.titulo) > 0) DESC,
+                       ABS(TIMESTAMPDIFF(MICROSECOND, w.ts, b.ts)) LIMIT 1) AS nova
+        FROM eventos w
+        WHERE w.tipo = 'window' AND LOWER(w.app) IN ('chrome.exe', 'msedge.exe', 'firefox.exe', 'brave.exe', 'opera.exe') {$filtro}
+        HAVING nova IS NOT NULL AND nova NOT IN ({$reservaSql}) AND (atual IS NULL OR atual <> nova)");
+    $stmt->execute($params);
+    $update = $db->prepare("UPDATE eventos SET categoria_id = :c WHERE id = :id");
+    $n = 0;
+    foreach ($stmt->fetchAll() as $r) {
+        $update->execute([':c' => $r['nova'], ':id' => $r['id']]);
+        $n++;
+    }
+    return $n;
+}
+
+// Atualização agendada ("atualizar na próxima vez que a máquina estiver comunicável"): chamada ao fim
+// de uma sincronização bem-sucedida (a prova de que a máquina está de pé e alcançável). Dispara a
+// atualização remota UMA vez e limpa o agendamento — se a atualização falhar, o resultado aparece no
+// status da instalação, e quem quiser tentar de novo agenda outra vez (evita um laço de tentativas
+// infinitas numa máquina que responde na porta 5600 mas recusa SMB/DCOM). Devolve true se disparou.
+function dispararAtualizacaoAgendada(PDO $db, array $maquina) {
+    $stmt = $db->prepare("SELECT atualizar_pendente_em FROM maquinas WHERE id = :id");
+    $stmt->execute([':id' => $maquina['id']]);
+    if (!$stmt->fetchColumn()) return false;
+
+    // Já há uma instalação/atualização em andamento nesta máquina: mantém o agendamento para a
+    // próxima sincronização, em vez de empilhar uma segunda execução em paralelo.
+    $andamento = $db->prepare("SELECT COUNT(*) FROM instalacoes_remotas WHERE maquina_id = :id AND status IN ('fila', 'executando')");
+    $andamento->execute([':id' => $maquina['id']]);
+    if ((int)$andamento->fetchColumn() > 0) return false;
+
+    $config = getInstalacaoConfig($db);
+    if (empty($config['admin_usuario'])) return false;
+
+    // "Reivindica" o agendamento de forma atômica: se duas sincronizações da mesma máquina
+    // coincidirem, só uma delas consegue limpar o campo e disparar.
+    $claim = $db->prepare("UPDATE maquinas SET atualizar_pendente_em = NULL WHERE id = :id AND atualizar_pendente_em IS NOT NULL");
+    $claim->execute([':id' => $maquina['id']]);
+    if ($claim->rowCount() < 1) return false;
+
+    dispararInstalacaoRemota($db, $maquina, 'atualizar');
+    return true;
 }
 
 // Preenche "Usuário responsável" e "IP local" sozinho a partir do bucket "aw-watcher-currentuser_<host>"
@@ -340,6 +424,45 @@ function atualizarUsuarioResponsavelDetectado(PDO $db, $maquinaId) {
                ':id' => $maquinaId,
            ]);
     }
+}
+
+// Propaga o último usuário conhecido para eventos que ficaram SEM usuário_detectado — por exemplo quando o
+// agente aw-watcher-currentuser parou de enviar batimentos (depois de uma atualização do MSI com o usuário
+// já logado, ou com o agente parado) mas a máquina continuou gerando eventos de janela, aba e AFK.
+// Evidências de quem estava logado (em ordem de tempo): os batimentos do bucket 'usuario' e os eventos de
+// 'sessao' (login/bloqueio/desbloqueio), que trazem o usuário na própria linha. Cada evidência vale a partir
+// do seu início até a PRÓXIMA evidência (de qualquer usuário — um login de outra pessoa encerra a anterior) ou,
+// no máximo, 24 h depois do fim dela. Só toca eventos ainda sem usuário: o que a correlação por batimento já
+// preencheu não muda. $dias limita a janela reprocessada (padrão: as últimas 72 h; um backfill usa um valor maior).
+function propagarUsuarioDetectado(PDO $db, $maquinaId, $dias = 3) {
+    $desde = gmdate('Y-m-d H:i:s', time() - ($dias + 1) * 86400);
+    $stmt = $db->prepare("SELECT ts, duracao, tipo, JSON_UNQUOTE(JSON_EXTRACT(dados, '$.user')) AS usuario
+                           FROM eventos WHERE maquina_id = :m AND tipo IN ('usuario', 'sessao') AND ts >= :d ORDER BY ts ASC");
+    $stmt->execute([':m' => $maquinaId, ':d' => $desde]);
+    $pontos = [];
+    foreach ($stmt->fetchAll() as $r) {
+        if ($r['usuario'] === null || $r['usuario'] === '') continue;
+        $ini = strtotime(substr($r['ts'], 0, 19) . ' UTC');
+        $fimCobertura = $r['tipo'] === 'usuario' ? $ini + (int)ceil((float)$r['duracao']) : $ini;
+        $pontos[] = ['ini' => $ini, 'fim' => $fimCobertura, 'u' => mb_substr($r['usuario'], 0, 150)];
+    }
+    $n = count($pontos);
+    if ($n === 0) return 0;
+    $limiteInferior = time() - $dias * 86400;
+    $update = $db->prepare("UPDATE eventos SET usuario_detectado = :u
+                             WHERE maquina_id = :m AND tipo IN ('window', 'web', 'afk', 'sessao')
+                               AND (usuario_detectado IS NULL OR usuario_detectado = '')
+                               AND ts >= :a AND ts < :b");
+    $alterados = 0;
+    for ($i = 0; $i < $n; $i++) {
+        $a = $pontos[$i]['ini'];
+        $b = $pontos[$i]['fim'] + 86400;
+        if ($i + 1 < $n && $pontos[$i + 1]['ini'] < $b) $b = $pontos[$i + 1]['ini'];
+        if ($b <= $limiteInferior || $b <= $a) continue;
+        $update->execute([':u' => $pontos[$i]['u'], ':m' => $maquinaId, ':a' => gmdate('Y-m-d H:i:s', max($a, $limiteInferior)) . '.000', ':b' => gmdate('Y-m-d H:i:s', $b) . '.000']);
+        $alterados += $update->rowCount();
+    }
+    return $alterados;
 }
 
 // Preenche eventos.usuario_detectado (window/web/afk/sessao) com o usuário do Windows que estava logado na

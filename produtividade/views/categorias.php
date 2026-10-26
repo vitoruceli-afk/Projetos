@@ -81,7 +81,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $total++;
             }
         } while (count($lote) === $loteTamanho);
-        $reprocessarMsg = "Reprocessamento concluído: {$total} evento(s) reclassificado(s).";
+        // Depois de reclassificar cada evento por suas regras, a janela do navegador herda a categoria da
+        // aba (URL) correspondente — mesma reconciliação feita a cada sincronização.
+        $herdados = herdarCategoriaDasAbas($db);
+        $reprocessarMsg = "Reprocessamento concluído: {$total} evento(s) reclassificado(s)" . ($herdados > 0 ? " e {$herdados} janela(s) de navegador alinhada(s) com a categoria da aba." : '.');
     }
 }
 

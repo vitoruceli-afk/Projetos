@@ -98,11 +98,16 @@ function executarInstalacaoRemota(PDO $db, $instalacaoId) {
     $stderr = stream_get_contents($pipes[2]);
     fclose($pipes[1]);
     fclose($pipes[2]);
-    proc_close($proc);
+    $codigoSaida = proc_close($proc);
 
     $resultado = json_decode(trim($stdout), true);
     if ($resultado === null) {
-        finalizarInstalacaoRemota($db, $instalacaoId, false, 'Resposta inválida do script de instalação.', $stdout . "\n" . $stderr);
+        // Sem JSON no stdout = o script nem chegou ao fim (ex.: o próprio powershell/python caiu).
+        // O código de saída ajuda a distinguir: -1073741819 (0xC0000005) = violação de acesso à
+        // memória (crash nativo), 1 = erro não tratado do script.
+        $detalhe = 'Resposta inválida do script de instalação (código de saída ' . $codigoSaida . ').';
+        finalizarInstalacaoRemota($db, $instalacaoId, false, $detalhe,
+            "código de saída: {$codigoSaida}\n--- stdout ---\n{$stdout}\n--- stderr ---\n{$stderr}");
         return;
     }
 

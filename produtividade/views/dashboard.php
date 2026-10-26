@@ -99,7 +99,7 @@ function calcularHexProdutividade(PDO $db, $inicioUtc, $fimUtc, ?array $maquinaI
             SUM(e.duracao) AS total,
             SUM(CASE WHEN c.pontuacao = 1 THEN e.duracao ELSE 0 END) AS produtivo
         FROM maquinas m
-        LEFT JOIN eventos e ON e.maquina_id = m.id AND e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim " . filtroHorarioComercialSql() . " " . filtroNaoBloqueadoSql() . "
+        LEFT JOIN eventos e ON e.maquina_id = m.id AND e.tipo = 'window' AND e.ts BETWEEN :ini AND :fim " . filtroHorarioComercialSql() . " " . filtroNaoBloqueadoSql() . "
         LEFT JOIN categorias c ON c.id = e.categoria_id
         WHERE m.ativo = 1 {$filtroIds}
         GROUP BY m.id, m.nome
@@ -138,6 +138,51 @@ function renderHexGrid(array $maquinasComTempo, callable $linkFn, $maquinaSeleci
         <?php if (empty($maquinasComTempo)): ?><div class="text-muted text-center py-3">Nenhum dado para exibir.</div><?php endif; ?>
     </div>
     <?php
+    // Reorganiza as linhas conforme a LARGURA do card: o servidor só divide em 2 linhas fixas, o que
+    // estourava a borda do card quando havia muitos itens (ex.: muitos usuários). Aqui cada linha leva
+    // quantos hexágonos couberem e as linhas ímpares deslocam meia célula (colmeia). Mesmas medidas do
+    // CSS: hexágono 112px + folga 18px; deslocamento = (112 + 18) / 2 = 65px.
+    static $scriptHexEmitido = false;
+    if (!$scriptHexEmitido):
+        $scriptHexEmitido = true;
+        ?>
+    <script>
+    (function () {
+        var LARGURA = 112, FOLGA = 18, PASSO = LARGURA + FOLGA, DESLOCAMENTO = PASSO / 2;
+        function organizar(grid) {
+            var tiles = Array.prototype.slice.call(grid.querySelectorAll('.hex-tile'));
+            if (!tiles.length) return;
+            var disponivel = grid.parentElement ? grid.parentElement.clientWidth : 0;
+            var cs = grid.parentElement ? getComputedStyle(grid.parentElement) : null;
+            if (cs) disponivel -= parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+            if (disponivel <= 0) return;
+            var linhaPar = Math.max(1, Math.floor((disponivel + FOLGA) / PASSO));
+            var linhaImpar = Math.max(1, Math.floor((disponivel - DESLOCAMENTO + FOLGA) / PASSO));
+            // cada linha recebe quantos hexágonos couberem (a ímpar perde meia célula pelo deslocamento)
+            // quantas linhas são necessárias com essas capacidades — e então divide os itens por igual entre elas
+            // (em vez de encher a primeira e deixar 1 hexágono sozinho na última)
+            var n = 0, usados = 0;
+            while (usados < tiles.length) { usados += (n % 2 === 0 ? linhaPar : linhaImpar); n++; }
+            var base = Math.ceil(tiles.length / n);
+            var linhas = [], i = 0, r = 0;
+            while (i < tiles.length) { var cap = Math.min(base, r % 2 === 0 ? linhaPar : linhaImpar); linhas.push(tiles.slice(i, i + cap)); i += cap; r++; }
+            grid.querySelectorAll('.hex-row').forEach(function (el) { el.remove(); });
+            var vazio = grid.querySelector('.text-muted');
+            linhas.forEach(function (linha, idx) {
+                var row = document.createElement('div');
+                row.className = 'hex-row' + (idx % 2 === 1 ? ' hex-row-offset' : '');
+                linha.forEach(function (t) { row.appendChild(t); });
+                grid.insertBefore(row, vazio);
+            });
+        }
+        function todos() { document.querySelectorAll('.hex-grid').forEach(organizar); }
+        var t = null;
+        window.addEventListener('resize', function () { clearTimeout(t); t = setTimeout(todos, 120); });
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', todos); else todos();
+        window.addEventListener('load', todos);
+    })();
+    </script>
+    <?php endif;
 }
 
 // Card de identificação/resumo de uma máquina — reaproveitado pela Visão Máquina (standalone) e
@@ -186,7 +231,7 @@ function renderTabelaUsuariosMaquina(PDO $db, $inicioUtc, $fimUtc, $maquinaId) {
                SUM(CASE WHEN c.pontuacao = 1 THEN e.duracao ELSE 0 END) AS produtivo
         FROM eventos e
         LEFT JOIN categorias c ON c.id = e.categoria_id
-        WHERE e.maquina_id = :maquina_id AND e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim
+        WHERE e.maquina_id = :maquina_id AND e.tipo = 'window' AND e.ts BETWEEN :ini AND :fim
               AND e.usuario_detectado IS NOT NULL AND e.usuario_detectado <> '' {$filtroHorario} {$filtroNaoBloqueado}
         GROUP BY e.usuario_detectado
         ORDER BY total DESC");
@@ -832,6 +877,132 @@ function renderLinhaDoTempo(PDO $db, DateTime $periodoIniLocal, DateTime $period
 // se selecionada), pela Visão de uma Máquina e pela Visão Máquinas por Setor (ambas uma única
 // máquina, vinda do clique num hexágono ou numa tabela). $maquinaIds vazio = sem restrição (todas
 // as máquinas do sistema).
+// ---- Partição do tempo do dispositivo (Ativo / Ausente / Tela bloqueada / Sem registro) ----
+// Operações sobre listas de intervalos [início, fim] em epoch (segundos): união, interseção e subtração.
+// Servem pra montar uma PARTIÇÃO de verdade do tempo — cada segundo cai em um único balde — em vez de
+// somar durações de fontes que se sobrepõem (a tela bloqueada também é "sem teclado/mouse", então
+// somar AFK + bloqueio contava o mesmo tempo duas vezes).
+function ivMesclar(array $iv) {
+    if (!$iv) return [];
+    usort($iv, fn($a, $b) => $a[0] <=> $b[0]);
+    $out = [$iv[0]];
+    for ($i = 1, $n = count($iv); $i < $n; $i++) {
+        $u = count($out) - 1;
+        if ($iv[$i][0] <= $out[$u][1]) { if ($iv[$i][1] > $out[$u][1]) $out[$u][1] = $iv[$i][1]; }
+        else $out[] = $iv[$i];
+    }
+    return $out;
+}
+function ivIntersecao(array $a, array $b) {
+    $out = []; $i = 0; $j = 0; $na = count($a); $nb = count($b);
+    while ($i < $na && $j < $nb) {
+        $s = max($a[$i][0], $b[$j][0]); $e = min($a[$i][1], $b[$j][1]);
+        if ($s < $e) $out[] = [$s, $e];
+        if ($a[$i][1] < $b[$j][1]) $i++; else $j++;
+    }
+    return $out;
+}
+function ivSubtrair(array $a, array $b) {
+    $out = []; $nb = count($b); $j = 0;
+    foreach ($a as [$s, $e]) {
+        $cur = $s;
+        while ($j < $nb && $b[$j][1] <= $cur) $j++;
+        for ($k = $j; $k < $nb && $b[$k][0] < $e; $k++) {
+            if ($b[$k][0] > $cur) $out[] = [$cur, $b[$k][0]];
+            $cur = max($cur, $b[$k][1]);
+            if ($cur >= $e) break;
+        }
+        if ($cur < $e) $out[] = [$cur, $e];
+    }
+    return $out;
+}
+function ivTotal(array $iv) { $t = 0.0; foreach ($iv as [$s, $e]) $t += $e - $s; return $t; }
+
+// Divide o "tempo de referência" do dispositivo em Ativo, Ausente (tela liberada), Tela bloqueada e
+// Sem registro, sempre somando exatamente o tempo de referência.
+//  - Referência: para cada máquina, cada DIA COM ATIVIDADE (algum evento de janela/navegador no horário
+//    comercial) vale a janela 06:00-22:30 de Brasília — recortada ao período e a "agora". Dias sem
+//    nenhuma atividade (fim de semana, feriado, máquina desligada) ficam fora, como na média do mapa de calor.
+//  - Prioridade quando as fontes se sobrepõem: Tela bloqueada > Ativo > Ausente.
+//  - Sem registro = referência menos o que as três fontes cobrem (lacunas de coleta: máquina desligada ou
+//    em repouso, agente parado, rede) — mostrar a lacuna em vez de escondê-la é o que mantém a conta honesta.
+// Também devolve 'diasUteis' (datas distintas com atividade) e 'diasMaquina' (máquina × dia com atividade).
+function calcularParticaoDispositivo(PDO $db, $iniUtc, $fimUtc, array $maquinaIds, $usuarioFiltro = null) {
+    $res = ['ativo' => 0.0, 'ausente' => 0.0, 'bloqueada' => 0.0, 'semRegistro' => 0.0, 'referencia' => 0.0, 'diasUteis' => 0, 'diasMaquina' => 0];
+    $utc = new DateTimeZone('UTC'); $br = new DateTimeZone('America/Sao_Paulo');
+    $ini = (new DateTime($iniUtc, $utc))->getTimestamp();
+    $fimPeriodo = (new DateTime($fimUtc, $utc))->getTimestamp();
+    $fim = min($fimPeriodo, time());
+    $filtro = ''; $params = [':ini' => $iniUtc, ':fim' => $fimUtc];
+    if ($maquinaIds) $filtro .= ' AND e.maquina_id IN (' . implode(',', array_map('intval', $maquinaIds)) . ')';
+    if ($usuarioFiltro !== null && $usuarioFiltro !== '') { $filtro .= ' AND e.usuario_detectado = :usr'; $params[':usr'] = $usuarioFiltro; }
+
+    // Dias com atividade por máquina (mesmo recorte do tempo monitorado).
+    $stmt = $db->prepare("SELECT e.maquina_id, DATE(CONVERT_TZ(e.ts, '+00:00', '-03:00')) AS dia FROM eventos e
+        WHERE e.tipo = 'window' AND e.ts BETWEEN :ini AND :fim {$filtro} " . filtroHorarioComercialSql() . " " . filtroNaoBloqueadoSql() . "
+        GROUP BY e.maquina_id, dia");
+    $stmt->execute($params);
+    $janelas = []; $datas = [];
+    foreach ($stmt->fetchAll() as $r) {
+        $datas[$r['dia']] = true;
+        $s = max((new DateTime($r['dia'] . ' 06:00:00', $br))->getTimestamp(), $ini);
+        $e = min((new DateTime($r['dia'] . ' 22:30:00', $br))->getTimestamp(), $fim);
+        if ($s < $e) { $janelas[$r['maquina_id']][] = [$s, $e]; $res['diasMaquina']++; }
+    }
+    $res['diasUteis'] = count($datas);
+    if (!$janelas) return $res;
+
+    // AFK e tela bloqueada (LockApp.exe) — busca desde 1 dia antes do período porque eventos longos
+    // (ex.: um "ausente" que atravessa a madrugada) começam antes e entram no período recortados.
+    $params2 = $params; $params2[':ini'] = gmdate('Y-m-d H:i:s', $ini - 86400);
+    $stmt = $db->prepare("SELECT e.maquina_id, e.tipo, e.status, e.ts, e.duracao FROM eventos e
+        WHERE (e.tipo = 'afk' OR (e.tipo = 'window' AND e.app = 'LockApp.exe')) AND e.ts BETWEEN :ini AND :fim {$filtro}");
+    $stmt->execute($params2);
+    $atv = []; $aus = []; $blq = [];
+    foreach ($stmt->fetchAll() as $r) {
+        $m = $r['maquina_id'];
+        if (!isset($janelas[$m])) continue;
+        $s = strtotime(substr($r['ts'], 0, 19) . ' UTC');
+        $iv = [$s, $s + (float)$r['duracao']];
+        if ($r['tipo'] === 'window') $blq[$m][] = $iv;
+        elseif ($r['status'] === 'not-afk') $atv[$m][] = $iv;
+        elseif ($r['status'] === 'afk') $aus[$m][] = $iv;
+    }
+
+    foreach ($janelas as $m => $jan) {
+        $jan = ivMesclar($jan);
+        $lock = ivIntersecao(ivMesclar($blq[$m] ?? []), $jan);
+        $ativo = ivSubtrair(ivIntersecao(ivMesclar($atv[$m] ?? []), $jan), $lock);
+        $ausente = ivSubtrair(ivSubtrair(ivIntersecao(ivMesclar($aus[$m] ?? []), $jan), $lock), $ativo);
+        $ref = ivTotal($jan); $a = ivTotal($ativo); $b = ivTotal($ausente); $l = ivTotal($lock);
+        $res['referencia'] += $ref; $res['ativo'] += $a; $res['ausente'] += $b; $res['bloqueada'] += $l;
+        $res['semRegistro'] += max(0.0, $ref - $a - $b - $l);
+    }
+    return $res;
+}
+
+// Resumo de integridade da coleta: quantas máquinas do escopo sincronizaram na última hora e quando foi
+// a sincronização mais recente. Escopo: as máquinas dadas; ou, na visão de um usuário, as máquinas em
+// que ele teve eventos no período; ou todas as ativas.
+function resumoIntegridadeColeta(PDO $db, array $maquinaIds, $usuarioFiltro, $iniUtc, $fimUtc) {
+    if (!$maquinaIds && $usuarioFiltro !== null && $usuarioFiltro !== '') {
+        $s = $db->prepare("SELECT DISTINCT maquina_id FROM eventos WHERE usuario_detectado = :u AND ts BETWEEN :ini AND :fim");
+        $s->execute([':u' => $usuarioFiltro, ':ini' => $iniUtc, ':fim' => $fimUtc]);
+        $maquinaIds = array_map('intval', array_column($s->fetchAll(), 'maquina_id'));
+        if (!$maquinaIds) return ['total' => 0, 'ok' => 0, 'ultima' => null, 'atrasadas' => []];
+    }
+    $filtro = $maquinaIds ? ' AND id IN (' . implode(',', array_map('intval', $maquinaIds)) . ')' : '';
+    $total = 0; $ok = 0; $ultima = null; $atrasadas = [];
+    foreach ($db->query("SELECT nome, ultimo_sync_at, ultimo_sync_status FROM maquinas WHERE ativo = 1 {$filtro}")->fetchAll() as $m) {
+        $total++;
+        $t = $m['ultimo_sync_at'] ? strtotime($m['ultimo_sync_at']) : 0;
+        if ($t && ($ultima === null || $t > $ultima)) $ultima = $t;
+        if ($t && $t > time() - 3600 && in_array($m['ultimo_sync_status'], ['ok', 'parcial'], true)) $ok++;
+        else $atrasadas[] = $m['nome'];
+    }
+    return ['total' => $total, 'ok' => $ok, 'ultima' => $ultima, 'atrasadas' => $atrasadas];
+}
+
 function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inicioLocal, DateTime $fimLocal, array $maquinaIds, $exibirTendenciaPontos = false, $tendenciaDiasForcado = null, $usuarioFiltro = null, callable $entreStatsECharts = null, $mapaCalor = false) {
     $filtroMaquinaSql = '';
     $params = [':ini' => $inicioUtc, ':fim' => $fimUtc];
@@ -869,7 +1040,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
             SUM(e.duracao) AS total
         FROM eventos e
         LEFT JOIN categorias c ON c.id = e.categoria_id
-        WHERE e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
+        WHERE e.tipo = 'window' AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
         GROUP BY c.id, COALESCE(c.pontuacao, 99), c.nome, c.cor
         ORDER BY total DESC");
     $stmt->execute($params);
@@ -931,7 +1102,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
             e.app AS app,
             SUM(e.duracao) AS total
         FROM eventos e LEFT JOIN categorias c ON c.id = e.categoria_id
-        WHERE e.tipo IN ('window', 'web') AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
+        WHERE e.tipo = 'window' AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
         GROUP BY categoria_key, item, app");
     $stmt->execute($params);
     foreach ($stmt->fetchAll() as $row) {
@@ -957,16 +1128,10 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
         }
     }
 
-    // ---- KPI: tempo ativo x ausente (bucket afk) ----
-    $stmt = $db->prepare("SELECT status, SUM(duracao) AS total FROM eventos e
-        WHERE tipo = 'afk' AND ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario}
-        GROUP BY status");
-    $stmt->execute($params);
-    $tempoAtivo = 0; $tempoAusente = 0;
-    foreach ($stmt->fetchAll() as $row) {
-        if ($row['status'] === 'not-afk') $tempoAtivo = (float)$row['total'];
-        elseif ($row['status'] === 'afk') $tempoAusente = (float)$row['total'];
-    }
+    // ---- Tempo do dispositivo como PARTIÇÃO (Ativo / Ausente / Tela bloqueada / Sem registro) — ver
+    // calcularParticaoDispositivo(): cada segundo cai em um único balde e a soma fecha com a referência. ----
+    $part = calcularParticaoDispositivo($db, $inicioUtc, $fimUtc, $maquinaIds, $usuarioFiltro);
+    $integridade = resumoIntegridadeColeta($db, $maquinaIds, $usuarioFiltro, $inicioUtc, $fimUtc);
 
     // ---- Top 10 — aplicativos por padrão; a caixa de seleção no card troca pra mostrar os 10
     // títulos de janela mais vistos de UM app específico, escolhido pelo usuário (pedido explícito).
@@ -1052,7 +1217,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
             SUM(e.duracao) AS total
         FROM eventos e
         LEFT JOIN categorias c ON c.id = e.categoria_id
-        WHERE e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
+        WHERE e.tipo = 'window' AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
         GROUP BY dia, pontuacao ORDER BY dia ASC");
     $stmt->execute($paramsTendencia);
     $tendenciaRaw = $stmt->fetchAll();
@@ -1092,7 +1257,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
                     SUM(CASE WHEN c.pontuacao = 1 THEN e.duracao ELSE 0 END) AS produtivo
                 FROM eventos e
                 LEFT JOIN categorias c ON c.id = e.categoria_id
-                WHERE e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
+                WHERE e.tipo = 'window' AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
                 GROUP BY hora");
             $stmt->execute($params);
             $porHora = array_fill(6, 17, 0.0); // 06h .. 22h (janela comercial)
@@ -1134,27 +1299,153 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
     if ($usuarioFiltro !== null && $usuarioFiltro !== '') $eventosCardBase['usuario'] = $usuarioFiltro;
     $linkCard = fn($grupo) => 'index.php?' . http_build_query($eventosCardBase + ['grupo' => $grupo]);
     ?>
-    <div class="stat-strip stat-strip-5">
-        <a class="stat-tile" href="<?= htmlspecialchars($linkCard('monitorado')) ?>" title="Ver os eventos deste card">
-            <div><div class="stat-label">Tempo Monitorado</div><div class="stat-value"><?= formatarDuracao($totalMonitorado) ?></div><div class="stat-note">janela + navegador</div></div>
+    <?php
+    // ---- Cálculos de apresentação dos cards/barras (tudo derivado dos totais já calculados acima) ----
+    $pctDe = fn($v, $t) => $t > 0 ? $v / $t * 100 : 0;
+    $fmtPct = fn($v) => number_format($v, 1, ',', '.') . '%';
+    $neutroTotal = $neutro + $semCategoria; // Neutro (categorias neutras) + sem categoria
+    $indiceProd = ($produtivo + $improdutivo) > 0 ? $produtivo / ($produtivo + $improdutivo) * 100 : null;
+    $mediaDia = $part['diasUteis'] > 0 ? $totalMonitorado / $part['diasUteis'] : 0;
+    $pctSemCat = $pctDe($semCategoria, $totalMonitorado);
+
+    $segsTela = [
+        ['rot' => 'Produtivo',   'v' => $produtivo,   'cls' => 'prod', 'g' => 'produtivo',   'nota' => 'categorias com pontuação positiva'],
+        ['rot' => 'Neutro',      'v' => $neutroTotal, 'cls' => 'neut', 'g' => 'neutro',      'nota' => 'categorias neutras + sem categoria'],
+        ['rot' => 'Improdutivo', 'v' => $improdutivo, 'cls' => 'impr', 'g' => 'improdutivo', 'nota' => 'categorias com pontuação negativa'],
+    ];
+    $somaTela = array_sum(array_column($segsTela, 'v'));
+    $fechaTela = abs($somaTela - $totalMonitorado) < 1;
+
+    $segsDisp = [
+        ['rot' => 'Ativo',          'v' => $part['ativo'],       'cls' => 'ativ', 'g' => 'ativo',     'nota' => 'teclado/mouse em uso'],
+        ['rot' => 'Ausente',        'v' => $part['ausente'],     'cls' => 'ause', 'g' => 'ausente',   'nota' => 'sem teclado/mouse, com a tela liberada'],
+        ['rot' => 'Tela bloqueada', 'v' => $part['bloqueada'],   'cls' => 'bloq', 'g' => 'bloqueada', 'nota' => 'sessão do Windows bloqueada'],
+        ['rot' => 'Sem registro',   'v' => $part['semRegistro'], 'cls' => 'semr', 'g' => null,        'nota' => 'nenhum dado coletado: máquina desligada ou em repouso, agente parado ou sem rede'],
+    ];
+    $somaDisp = array_sum(array_column($segsDisp, 'v'));
+    $fechaDisp = abs($somaDisp - $part['referencia']) < 1;
+
+    // Desenha uma barra 100% empilhada: cada segmento é clicável (leva aos eventos) e mostra o % dentro
+    // quando cabe; a legenda abaixo repete tempo e % de todos, inclusive dos que ficaram finos demais.
+    $barraEmpilhada = function (array $segs, $total) use ($pctDe, $fmtPct, $linkCard) {
+        echo '<div class="ib-bar" role="img" aria-label="Distribuição do tempo">';
+        if ($total <= 0) echo '<div class="ib-seg ib-vazio">sem dados no período</div>';
+        foreach ($segs as $s) {
+            $p = $pctDe($s['v'], $total);
+            if ($p <= 0) continue;
+            $tag = $s['g'] ? 'a' : 'div';
+            $href = $s['g'] ? ' href="' . htmlspecialchars($linkCard($s['g'])) . '"' : '';
+            echo "<$tag class=\"ib-seg ib-{$s['cls']}\"$href style=\"width:" . round($p, 3) . '%" title="' . htmlspecialchars($s['rot'] . ': ' . formatarDuracao($s['v']) . ' (' . $fmtPct($p) . ') — ' . $s['nota']) . '">'
+                . ($p >= 7 ? $fmtPct($p) : '') . "</$tag>";
+        }
+        echo '</div><div class="ib-legend">';
+        foreach ($segs as $s) {
+            $p = $pctDe($s['v'], $total);
+            $tag = $s['g'] ? 'a' : 'span';
+            $href = $s['g'] ? ' href="' . htmlspecialchars($linkCard($s['g'])) . '"' : '';
+            echo "<$tag class=\"ib-leg\"$href title=\"" . htmlspecialchars($s['nota']) . "\"><i class=\"ib-dot ib-{$s['cls']}\"></i><span class=\"ib-leg-rot\">" . htmlspecialchars($s['rot']) . '</span>'
+                . '<strong>' . formatarDuracao($s['v']) . '</strong><span class="ib-leg-pct">' . $fmtPct($p) . "</span></$tag>";
+        }
+        echo '</div>';
+    };
+    $tempoLegivel = fn($segs) => implode(' + ', array_map(fn($s) => formatarDuracao($s['v']), $segs));
+    ?>
+
+    <div class="stat-strip stat-strip-6">
+        <a class="stat-tile" href="<?= htmlspecialchars($linkCard('monitorado')) ?>" title="Soma do tempo de janela ativa (inclui o navegador; a categoria vem da URL da aba quando há extensão), no horário comercial, sem a tela bloqueada. Clique para ver os eventos.">
+            <div><div class="stat-label">Tempo Monitorado</div><div class="stat-value"><?= formatarDuracao($totalMonitorado) ?></div><div class="stat-note">janela ativa (navegador incluso)</div></div>
             <div class="stat-icon blue"><i class="bi bi-clock-history"></i></div>
         </a>
-        <a class="stat-tile" href="<?= htmlspecialchars($linkCard('produtivo')) ?>" title="Ver os eventos deste card">
-            <div><div class="stat-label">Produtivo</div><div class="stat-value online-c"><?= formatarDuracao($produtivo) ?></div><div class="stat-note"><?= $pctProdutivo ?>% do tempo monitorado</div></div>
+        <a class="stat-tile" href="<?= htmlspecialchars($linkCard('produtivo')) ?>" title="Clique para ver os eventos">
+            <div><div class="stat-label">Produtivo</div><div class="stat-value online-c"><?= formatarDuracao($produtivo) ?></div><div class="stat-note"><?= $fmtPct($pctDe($produtivo, $totalMonitorado)) ?> do monitorado</div></div>
             <div class="stat-icon green"><i class="bi bi-graph-up-arrow"></i></div>
         </a>
-        <a class="stat-tile" href="<?= htmlspecialchars($linkCard('neutro')) ?>" title="Ver os eventos deste card">
-            <div><div class="stat-label">Neutro</div><div class="stat-value"><?= formatarDuracao($neutro + $semCategoria) ?></div><div class="stat-note"><?= $totalMonitorado > 0 ? round(($neutro + $semCategoria) / $totalMonitorado * 100) : 0 ?>% do tempo monitorado<?= $semCategoria > 0 ? ' · inclui sem categoria: ' . formatarDuracao($semCategoria) : '' ?></div></div>
+        <a class="stat-tile" href="<?= htmlspecialchars($linkCard('neutro')) ?>" title="Categorias neutras + eventos sem categoria. Clique para ver os eventos.">
+            <div><div class="stat-label">Neutro</div><div class="stat-value"><?= formatarDuracao($neutroTotal) ?></div><div class="stat-note"><?= $fmtPct($pctDe($neutroTotal, $totalMonitorado)) ?> do monitorado<?= $semCategoria > 0 ? ' · inclui sem categoria: ' . formatarDuracao($semCategoria) : '' ?></div></div>
             <div class="stat-icon gray"><i class="bi bi-dash-circle"></i></div>
         </a>
-        <a class="stat-tile" href="<?= htmlspecialchars($linkCard('improdutivo')) ?>" title="Ver os eventos deste card">
-            <div><div class="stat-label">Improdutivo</div><div class="stat-value critical-c"><?= formatarDuracao($improdutivo) ?></div><div class="stat-note"><?= $totalMonitorado > 0 ? round($improdutivo / $totalMonitorado * 100) : 0 ?>% do tempo monitorado</div></div>
+        <a class="stat-tile" href="<?= htmlspecialchars($linkCard('improdutivo')) ?>" title="Clique para ver os eventos">
+            <div><div class="stat-label">Improdutivo</div><div class="stat-value critical-c"><?= formatarDuracao($improdutivo) ?></div><div class="stat-note"><?= $fmtPct($pctDe($improdutivo, $totalMonitorado)) ?> do monitorado</div></div>
             <div class="stat-icon red"><i class="bi bi-graph-down-arrow"></i></div>
         </a>
-        <a class="stat-tile" href="<?= htmlspecialchars($linkCard('ativo')) ?>" title="Ver os eventos deste card">
-            <div><div class="stat-label">Ativo x Ausente</div><div class="stat-value"><?= formatarDuracao($tempoAtivo) ?></div><div class="stat-note"><?= formatarDuracao($tempoAusente) ?> ausente (AFK) · base: teclado/mouse, independe do monitorado</div></div>
-            <div class="stat-icon orange"><i class="bi bi-person-check"></i></div>
-        </a>
+        <div class="stat-tile" title="Produtivo ÷ (Produtivo + Improdutivo): compara só os dois extremos, sem o tempo neutro, então é comparável entre pessoas e períodos.">
+            <div><div class="stat-label">Índice de Produtividade</div><div class="stat-value"><?= $indiceProd === null ? '—' : $fmtPct($indiceProd) ?></div><div class="stat-note">produtivo ÷ (produtivo + improdutivo)</div></div>
+            <div class="stat-icon purple"><i class="bi bi-speedometer2"></i></div>
+        </div>
+        <div class="stat-tile" title="Tempo monitorado ÷ dias com atividade (fins de semana, feriados e máquinas desligadas ficam fora do divisor).">
+            <div><div class="stat-label">Média por Dia Útil</div><div class="stat-value"><?= formatarDuracao($mediaDia) ?></div><div class="stat-note"><?= (int)$part['diasUteis'] ?> dia(s) com atividade</div></div>
+            <div class="stat-icon orange"><i class="bi bi-calendar-check"></i></div>
+        </div>
+    </div>
+
+    <div class="row g-3 mb-3">
+        <div class="col-lg-6">
+            <div class="card ib-card h-100">
+                <div class="ib-head">
+                    <span class="ib-title">O que estava na tela</span>
+                    <span class="ib-base">100% = tempo monitorado · <strong><?= formatarDuracao($totalMonitorado) ?></strong></span>
+                </div>
+                <div class="ib-source"><i class="bi bi-window-stack"></i> fonte: watcher de janela (no navegador, a categoria vem da URL da aba)</div>
+                <?php $barraEmpilhada($segsTela, $totalMonitorado); ?>
+                <div class="ib-eq <?= $fechaTela ? 'ok' : 'warn' ?>">
+                    <?= $tempoLegivel($segsTela) ?> = <strong><?= formatarDuracao($somaTela) ?></strong>
+                    <?php if ($fechaTela): ?><span class="ib-check"><i class="bi bi-check-circle-fill"></i> fecha com o tempo monitorado</span>
+                    <?php else: ?><span class="ib-check"><i class="bi bi-exclamation-triangle-fill"></i> difere do monitorado em <?= formatarDuracao(abs($somaTela - $totalMonitorado)) ?></span><?php endif; ?>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-6">
+            <div class="card ib-card h-100">
+                <div class="ib-head">
+                    <span class="ib-title">O que o computador fez</span>
+                    <span class="ib-base">100% = referência · <strong><?= formatarDuracao($part['referencia']) ?></strong></span>
+                </div>
+                <div class="ib-source"><i class="bi bi-keyboard"></i> fonte: teclado/mouse (AFK) + sessão · referência: <?= (int)$part['diasMaquina'] ?> dia(s) de máquina com atividade × 06:00–22:30</div>
+                <?php $barraEmpilhada($segsDisp, $part['referencia']); ?>
+                <div class="ib-eq <?= $fechaDisp ? 'ok' : 'warn' ?>">
+                    <?= $tempoLegivel($segsDisp) ?> = <strong><?= formatarDuracao($somaDisp) ?></strong>
+                    <?php if ($fechaDisp): ?><span class="ib-check"><i class="bi bi-check-circle-fill"></i> fecha com a referência</span>
+                    <?php else: ?><span class="ib-check"><i class="bi bi-exclamation-triangle-fill"></i> difere da referência em <?= formatarDuracao(abs($somaDisp - $part['referencia'])) ?></span><?php endif; ?>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <?php
+    $coletaOk = $integridade['total'] > 0 && $integridade['ok'] === $integridade['total'];
+    $ultimaSync = $integridade['ultima'] ? date('d/m H:i', $integridade['ultima']) : '—';
+    ?>
+    <div class="card ib-integridade mb-3">
+        <div class="ib-int-grid">
+            <div class="ib-int-item <?= $coletaOk ? 'ok' : 'warn' ?>" title="<?= $integridade['atrasadas'] ? htmlspecialchars('Sem sincronizar na última hora: ' . implode(', ', $integridade['atrasadas'])) : 'Todas as máquinas do escopo sincronizaram na última hora' ?>">
+                <i class="bi <?= $coletaOk ? 'bi-check-circle-fill' : 'bi-exclamation-triangle-fill' ?>"></i>
+                <span><strong><?= (int)$integridade['ok'] ?> de <?= (int)$integridade['total'] ?></strong> máquina(s) sincronizaram na última hora<br><small>última sincronização: <?= $ultimaSync ?></small></span>
+            </div>
+            <div class="ib-int-item <?= $fechaTela ? 'ok' : 'warn' ?>">
+                <i class="bi <?= $fechaTela ? 'bi-check-circle-fill' : 'bi-exclamation-triangle-fill' ?>"></i>
+                <span>Produtivo + Neutro + Improdutivo <strong><?= $fechaTela ? '=' : '≠' ?></strong> Monitorado<br><small><?= formatarDuracao($somaTela) ?> <?= $fechaTela ? '=' : '≠' ?> <?= formatarDuracao($totalMonitorado) ?></small></span>
+            </div>
+            <div class="ib-int-item <?= $pctSemCat <= 5 ? 'ok' : 'warn' ?>">
+                <i class="bi <?= $pctSemCat <= 5 ? 'bi-check-circle-fill' : 'bi-exclamation-triangle-fill' ?>"></i>
+                <span><strong><?= $fmtPct($pctSemCat) ?></strong> do tempo sem categoria (<?= formatarDuracao($semCategoria) ?>)<br>
+                    <small><?= $semCategoria > 0 ? '<a href="' . htmlspecialchars('index.php?' . http_build_query($eventosCardBase + ['grupo' => 'monitorado', 'categoria_id' => -1])) . '">ver eventos sem categoria</a> · ' : '' ?><?= $pctSemCat <= 5 ? 'dentro do esperado (até 5%)' : 'acima de 5% — vale criar regras' ?></small></span>
+            </div>
+            <div class="ib-int-item info">
+                <i class="bi bi-info-circle-fill"></i>
+                <span>Período <strong><?= $inicioLocal->format('d/m') ?><?= $inicioLocal->format('Y-m-d') === $fimLocal->format('Y-m-d') ? '' : '–' . $fimLocal->format('d/m') ?></strong> · horário 06:00–22:30 (Brasília)<br><small>fonte: ActivityWatch de cada máquina, sincronizado pela aplicação</small></span>
+            </div>
+        </div>
+        <details class="ib-como">
+            <summary>Como cada número é calculado</summary>
+            <ul>
+                <li><strong>Tempo monitorado:</strong> soma da duração dos eventos de janela ativa — o navegador inclusive, uma única vez —, no horário comercial, sem a tela bloqueada (<code>LockApp.exe</code>). A aba (URL) não é somada de novo: serve para dar à janela a categoria do site.</li>
+                <li><strong>Produtivo / Neutro / Improdutivo:</strong> o monitorado dividido pela pontuação da categoria de cada evento (+1, 0, −1). Evento sem categoria conta como Neutro e é mostrado à parte.</li>
+                <li><strong>Índice de produtividade:</strong> Produtivo ÷ (Produtivo + Improdutivo), sem o neutro.</li>
+                <li><strong>Média por dia útil:</strong> monitorado ÷ dias com atividade; fins de semana, feriados e máquinas desligadas não entram no divisor.</li>
+                <li><strong>Tempo do computador:</strong> para cada máquina e cada dia com atividade, a referência é a janela 06:00–22:30. Cada instante é classificado numa única faixa, com prioridade Tela bloqueada &gt; Ativo &gt; Ausente. O que nenhuma fonte cobriu é <em>Sem registro</em> — por isso a soma sempre fecha.</li>
+                <li><strong>Por que as duas barras têm totais diferentes:</strong> a primeira mede <em>o que apareceu na tela</em>; a segunda mede <em>o que o computador estava fazendo</em>. Cada uma soma 100% da própria base.</li>
+            </ul>
+        </details>
     </div>
 
     <?php if ($entreStatsECharts !== null) $entreStatsECharts(); ?>
@@ -1507,7 +1798,7 @@ function agregarRanking(PDO $db, $iniUtc, $fimUtc, $dimensao, ?array $maquinaIds
         JOIN maquinas m ON m.id = e.maquina_id
         LEFT JOIN ad_ous ou ON ou.id = m.ou_id
         LEFT JOIN categorias c ON c.id = e.categoria_id
-        WHERE e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim {$filtroIds} {$filtroUsuario} " . filtroHorarioComercialSql() . " " . filtroNaoBloqueadoSql() . "
+        WHERE e.tipo = 'window' AND e.ts BETWEEN :ini AND :fim {$filtroIds} {$filtroUsuario} " . filtroHorarioComercialSql() . " " . filtroNaoBloqueadoSql() . "
         GROUP BY chave, m.nome");
     $stmt->execute([':ini' => $iniUtc, ':fim' => $fimUtc]);
     $dados = [];
@@ -1631,7 +1922,7 @@ function renderMapaCalorProdutividade(PDO $db, DateTime $inicioLocal, DateTime $
             SUM(e.duracao) AS total,
             SUM(CASE WHEN c.pontuacao = 1 THEN e.duracao ELSE 0 END) AS produtivo
         FROM eventos e LEFT JOIN categorias c ON c.id = e.categoria_id
-        WHERE e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim {$filtroIds} " . filtroHorarioComercialSql() . " " . filtroNaoBloqueadoSql() . "
+        WHERE e.tipo = 'window' AND e.ts BETWEEN :ini AND :fim {$filtroIds} " . filtroHorarioComercialSql() . " " . filtroNaoBloqueadoSql() . "
         GROUP BY dia, hora");
     $stmt->execute([':ini' => $iniUtc, ':fim' => $fimUtc] + $paramsMapa);
     $celulas = [];
@@ -1913,7 +2204,7 @@ function renderRankings(PDO $db, $iniUtc, $fimUtc, ?array $maquinaIds = null) {
             SUM(CASE WHEN c.pontuacao = -1 THEN e.duracao ELSE 0 END) AS improdutivo
         FROM maquinas m
         LEFT JOIN ad_ous ou ON ou.id = m.ou_id
-        LEFT JOIN eventos e ON e.maquina_id = m.id AND e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim " . filtroHorarioComercialSql() . " " . filtroNaoBloqueadoSql() . "
+        LEFT JOIN eventos e ON e.maquina_id = m.id AND e.tipo = 'window' AND e.ts BETWEEN :ini AND :fim " . filtroHorarioComercialSql() . " " . filtroNaoBloqueadoSql() . "
         LEFT JOIN categorias c ON c.id = e.categoria_id
         GROUP BY COALESCE(ou.nome, NULLIF(m.setor, ''), 'Sem setor')
         ORDER BY total DESC");
@@ -2071,7 +2362,7 @@ elseif ($visao === 'usuarios'):
                SUM(CASE WHEN c.pontuacao = -1 THEN e.duracao ELSE 0 END) AS improdutivo
         FROM eventos e
         LEFT JOIN categorias c ON c.id = e.categoria_id
-        WHERE e.tipo IN ('window','web') AND e.ts BETWEEN :ini AND :fim
+        WHERE e.tipo = 'window' AND e.ts BETWEEN :ini AND :fim
               AND e.usuario_detectado IS NOT NULL AND e.usuario_detectado <> '' " . filtroHorarioComercialSql() . " " . filtroNaoBloqueadoSql() . "
         GROUP BY e.usuario_detectado
         ORDER BY total DESC");
@@ -2110,7 +2401,7 @@ elseif ($visao === 'usuarios'):
     </div>
 
     <div class="row">
-        <div class="col-lg-6">
+        <div class="col-12">
             <div class="card mt-3">
                 <div class="card-header">Produtividade por Usuário</div>
                 <div class="card-body">

@@ -37,6 +37,7 @@ $grupos = [
     'improdutivo' => 'Improdutivo',
     'ativo'       => 'Ativo (teclado/mouse)',
     'ausente'     => 'Ausente (AFK)',
+    'bloqueada'   => 'Tela Bloqueada',
 ];
 $grupo = isset($grupos[$_GET['grupo'] ?? '']) ? $_GET['grupo'] : '';
 $usuarioFiltro = trim($_GET['usuario'] ?? '');
@@ -49,8 +50,11 @@ if ($grupo !== '') {
     if ($grupo === 'ativo' || $grupo === 'ausente') {
         $where[] = "e.tipo = 'afk'";
         $where[] = $grupo === 'ativo' ? "e.status = 'not-afk'" : "e.status = 'afk'";
+    } elseif ($grupo === 'bloqueada') {
+        $where[] = "e.tipo = 'window'";
+        $where[] = "e.app = 'LockApp.exe'";
     } else {
-        $where[] = "e.tipo IN ('window','web')";
+        $where[] = "e.tipo = 'window'";
         $where[] = "COALESCE(e.app, '') <> 'LockApp.exe'";
     }
     if ($grupo === 'produtivo') $where[] = 'e.categoria_id IN (SELECT id FROM categorias WHERE pontuacao = 1)';
@@ -63,7 +67,7 @@ $whereSql = implode(' AND ', $where);
 
 if (($_GET['format'] ?? '') === 'csv') {
     requireAdmin();
-    $stmt = $db->prepare("SELECT e.ts, m.nome AS maquina, e.tipo, e.app, e.titulo, e.url, e.status, e.duracao, c.nome AS categoria
+    $stmt = $db->prepare("SELECT e.ts, m.nome AS maquina, e.usuario_detectado AS usuario, e.tipo, e.app, e.titulo, e.url, e.status, e.duracao, c.nome AS categoria
         FROM eventos e JOIN maquinas m ON m.id = e.maquina_id LEFT JOIN categorias c ON c.id = e.categoria_id
         WHERE {$whereSql} ORDER BY e.ts DESC LIMIT 50000");
     $stmt->execute($params);
@@ -72,10 +76,10 @@ if (($_GET['format'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="eventos_' . date('Ymd_His') . '.csv"');
     $out = fopen('php://output', 'w');
     fputs($out, "\xEF\xBB\xBF"); // BOM para o Excel abrir acentuação corretamente
-    fputcsv($out, ['Data/Hora (local)', 'Máquina', 'Tipo', 'Aplicativo', 'Título', 'URL', 'Status AFK', 'Duração (s)', 'Categoria'], ';');
+    fputcsv($out, ['Data/Hora (local)', 'Máquina', 'Usuário', 'Tipo', 'Aplicativo', 'Título', 'URL', 'Status AFK', 'Duração (s)', 'Categoria'], ';');
     while ($row = $stmt->fetch()) {
         $tsLocal = (new DateTime($row['ts'], new DateTimeZone('UTC')))->setTimezone($tz)->format('d/m/Y H:i:s');
-        fputcsv($out, [$tsLocal, $row['maquina'], $row['tipo'], $row['app'], $row['titulo'], $row['url'], $row['status'], $row['duracao'], $row['categoria']], ';');
+        fputcsv($out, [$tsLocal, $row['maquina'], $row['usuario'], $row['tipo'], $row['app'], $row['titulo'], $row['url'], $row['status'], $row['duracao'], $row['categoria']], ';');
     }
     fclose($out);
     return;
@@ -89,7 +93,7 @@ $totalStmt = $db->prepare("SELECT COUNT(*) FROM eventos e WHERE {$whereSql}");
 $totalStmt->execute($params);
 $total = (int)$totalStmt->fetchColumn();
 
-$stmt = $db->prepare("SELECT e.ts, m.nome AS maquina, e.tipo, e.app, e.titulo, e.url, e.status, e.duracao, c.nome AS categoria, c.cor AS categoria_cor
+$stmt = $db->prepare("SELECT e.ts, m.nome AS maquina, e.usuario_detectado AS usuario, e.tipo, e.app, e.titulo, e.url, e.status, e.duracao, c.nome AS categoria, c.cor AS categoria_cor
     FROM eventos e JOIN maquinas m ON m.id = e.maquina_id LEFT JOIN categorias c ON c.id = e.categoria_id
     WHERE {$whereSql} ORDER BY e.ts DESC LIMIT {$porPagina} OFFSET {$offset}");
 $stmt->execute($params);
@@ -146,18 +150,20 @@ function qsEventos($extra) {
 
 <div class="table-responsive">
     <table class="table table-bordered bg-white align-middle table-sm">
-        <thead class="table-dark"><tr><th>Data/Hora</th><th>Máquina</th><th>Tipo</th><th>Aplicativo / URL</th><th>Título</th><th>Duração</th><th>Categoria</th></tr></thead>
+        <thead class="table-dark"><tr><th>Data/Hora</th><th>Máquina</th><th>Usuário</th><th>Tipo</th><th>Aplicativo / URL</th><th>Título</th><th>Duração</th><th>Categoria</th></tr></thead>
         <tbody>
             <?php foreach ($eventos as $e): $tsLocal = (new DateTime($e['ts'], new DateTimeZone('UTC')))->setTimezone($tz); ?>
             <tr>
                 <td class="text-nowrap"><small class="mono"><?= $tsLocal->format('d/m/Y H:i:s') ?></small></td>
                 <td><?= htmlspecialchars($e['maquina']) ?></td>
+                <td class="text-nowrap"><?= $e['usuario'] ? htmlspecialchars($e['usuario']) : '<span class="text-muted">—</span>' ?></td>
                 <td>
                     <?php if ($e['tipo'] === 'window'): ?><span class="badge bg-info">Janela</span>
                     <?php elseif ($e['tipo'] === 'web'): ?><span class="badge bg-dark">Navegador</span>
                     <?php else: ?><span class="badge bg-secondary"><?= $e['status'] === 'afk' ? 'AFK' : 'Ativo' ?></span><?php endif; ?>
                 </td>
-                <td class="text-truncate" style="max-width: 260px"><?= htmlspecialchars($e['tipo'] === 'web' ? ($e['url'] ?: '—') : ($e['app'] ?: '—')) ?></td>
+                <?php $origem = $e['tipo'] === 'web' ? ($e['url'] ?: '—') : ($e['app'] ?: '—'); ?>
+                <td class="text-truncate" style="max-width: 260px" title="<?= htmlspecialchars($origem) ?>"><?= htmlspecialchars($origem) ?></td>
                 <td class="text-truncate" style="max-width: 260px" title="<?= htmlspecialchars($e['titulo'] ?? '') ?>"><?= htmlspecialchars($e['titulo'] ?? '—') ?></td>
                 <td class="text-nowrap"><?= formatarDuracao($e['duracao']) ?></td>
                 <td>
@@ -167,7 +173,7 @@ function qsEventos($extra) {
                 </td>
             </tr>
             <?php endforeach; ?>
-            <?php if (empty($eventos)): ?><tr><td colspan="7" class="text-center text-muted py-3">Nenhum evento encontrado com esses filtros.</td></tr><?php endif; ?>
+            <?php if (empty($eventos)): ?><tr><td colspan="8" class="text-center text-muted py-3">Nenhum evento encontrado com esses filtros.</td></tr><?php endif; ?>
         </tbody>
     </table>
 </div>

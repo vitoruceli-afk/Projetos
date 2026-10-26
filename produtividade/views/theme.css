@@ -419,9 +419,12 @@ hr { border-color: var(--line); opacity: 1; }
   .stat-strip { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-bottom: 22px; }
 }
 @media (min-width: 992px) {
-  .stat-strip.stat-strip-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
-  .stat-strip-5 .stat-tile { padding: 14px; }
-  .stat-strip-5 .stat-icon { width: 34px; height: 34px; border-radius: 10px; }
+  .stat-strip.stat-strip-6 { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
+  .stat-strip-6 .stat-tile { padding: 12px; gap: 6px; }
+  .stat-strip-6 .stat-icon { width: 30px; height: 30px; border-radius: 9px; font-size: 14px; }
+  .stat-strip-6 .stat-label { font-size: 11.5px; }
+  .stat-strip-6 .stat-value { font-size: clamp(18px, 1.8vw, 26px); }
+  .stat-strip-6 .stat-note { font-size: 11px; }
 }
 .stat-tile {
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); box-shadow: var(--shadow);
@@ -447,6 +450,47 @@ a.stat-tile:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-so
 .stat-icon.red { background: var(--critical); }
 .stat-icon.green { background: var(--online); }
 .stat-icon.gray { background: #94a2b8; }
+.stat-icon.amber { background: var(--warning); }
+.stat-icon.slate { background: #5c6b80; }
+.stat-icon.purple { background: #7c3aed; }
+
+/* Barras 100% empilhadas, conferência de totais e selo de integridade (cards do topo do dashboard) */
+.ib-card { padding: 16px 18px; }
+.ib-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; }
+.ib-title { font-size: 15px; font-weight: 700; }
+.ib-base { font-size: 12px; color: var(--text-600); }
+.ib-source { font-size: 11.5px; color: var(--text-400); margin: 2px 0 12px; }
+.ib-bar { display: flex; width: 100%; height: 34px; border-radius: 8px; overflow: hidden; background: rgba(0,0,0,.06); }
+.ib-seg { display: flex; align-items: center; justify-content: center; min-width: 3px; font-size: 12px; font-weight: 700; color: #fff; text-decoration: none; transition: filter .12s ease; white-space: nowrap; overflow: hidden; }
+a.ib-seg:hover { filter: brightness(1.12); color: #fff; }
+.ib-vazio { width: 100%; color: var(--text-400); font-weight: 500; }
+.ib-seg + .ib-seg { border-left: 2px solid var(--surface); }
+.ib-prod { background: #16a34a; } .ib-neut { background: #94a2b8; } .ib-impr { background: #dc2626; }
+.ib-ativ { background: #2f80ed; } .ib-ause { background: #8fb4e8; color: #1c3d6e; } .ib-bloq { background: #5c6b80; }
+.ib-semr { background: repeating-linear-gradient(45deg, #d9dce4, #d9dce4 6px, #eceef3 6px, #eceef3 12px); color: #4a5568; }
+.ib-legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px; }
+.ib-leg { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: inherit; text-decoration: none; }
+a.ib-leg:hover { text-decoration: underline; color: inherit; }
+.ib-dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; flex-shrink: 0; }
+.ib-leg-rot { color: var(--text-600); }
+.ib-leg-pct { color: var(--text-400); font-size: 11.5px; }
+.ib-eq { margin-top: 12px; padding: 8px 10px; border-radius: 8px; font-size: 12.5px; font-variant-numeric: tabular-nums; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.ib-eq.ok { background: rgba(22,163,74,.08); }
+.ib-eq.warn { background: rgba(234,179,8,.14); }
+.ib-check { font-size: 11.5px; font-weight: 600; display: inline-flex; align-items: center; gap: 5px; }
+.ib-eq.ok .ib-check { color: #15803d; } .ib-eq.warn .ib-check { color: #a16207; }
+.ib-integridade { padding: 14px 18px; }
+.ib-int-grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
+@media (min-width: 768px) { .ib-int-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 1200px) { .ib-int-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.ib-int-item { display: flex; gap: 10px; align-items: flex-start; font-size: 12.5px; line-height: 1.35; }
+.ib-int-item i { font-size: 16px; margin-top: 1px; flex-shrink: 0; }
+.ib-int-item.ok i { color: #16a34a; } .ib-int-item.warn i { color: #d97706; } .ib-int-item.info i { color: var(--primary); }
+.ib-int-item small { color: var(--text-400); font-size: 11.5px; }
+.ib-como { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; font-size: 12.5px; }
+.ib-como summary { cursor: pointer; font-weight: 600; color: var(--primary); }
+.ib-como ul { margin: 8px 0 0; padding-left: 18px; color: var(--text-600); }
+.ib-como li { margin-bottom: 4px; }
 
 /* Mapa de calor de produtividade */
 .hm-legend { display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: 13px; color: var(--text-600); margin-bottom: 18px; }

@@ -96,11 +96,17 @@ def main():
 
     smb = None
     dcom = None
+    # Etapa em andamento — entra na mensagem de erro pra um "timed out" cru (socket) dizer ONDE
+    # travou (conexão SMB, cópia do MSI de ~85MB, DCOM/WMI ou espera da instalação).
+    etapa = 'conexao SMB'
     try:
         # ---- SMB: copia o MSI e o .bat pro admin$ (C$) da maquina de destino ----
-        smb = SMBConnection(computer_name, computer_name)
+        # timeout maior que o padrão do impacket (60s): a cópia do MSI (~85MB) por SMB numa rede
+        # lenta/ocupada pode passar disso numa única operação de escrita.
+        smb = SMBConnection(computer_name, computer_name, timeout=300)
         smb.login(user, password, domain)
 
+        etapa = 'copia do MSI para C$\\Windows\\Temp (SMB)'
         with open(msi_path, 'rb') as f:
             conteudo_msi = f.read()
         smb.putFile('C$', 'Windows\\Temp\\ActivityWatch-Produtividade.msi', io.BytesIO(conteudo_msi).read)
@@ -122,6 +128,7 @@ def main():
         smb.putFile('C$', 'Windows\\Temp\\aw-install-cmd.bat', io.BytesIO(bat_conteudo.encode('ascii')).read)
 
         # ---- WMI/DCOM: Win32_Process.Create pra rodar o .bat remotamente ----
+        etapa = 'conexao DCOM/WMI (porta 135 + portas RPC dinamicas)'
         dcom = DCOMConnection(computer_name, user, password, domain, '', '', oxidResolver=True)
         iInterface = dcom.CoCreateInstanceEx(wmi.CLSID_WbemLevel1Login, wmi.IID_IWbemLevel1Login)
         iWbemLevel1Login = wmi.IWbemLevel1Login(iInterface)
@@ -139,6 +146,7 @@ def main():
             raise Exception(f'Nao foi possivel criar o processo remoto (Win32_Process.Create retornou codigo {criado.ReturnValue}).')
 
         remote_pid = criado.ProcessId
+        etapa = f'espera da instalacao (msiexec, PID {remote_pid})'
         decorrido = 0
         intervalo = 5
         while processo_ainda_existe(iWbemServices, remote_pid):
@@ -149,6 +157,7 @@ def main():
 
         time.sleep(2)  # da um instante para o SO liberar o handle do arquivo de log/exitcode
 
+        etapa = 'leitura do codigo de saida e do log'
         codigo_saida = None
         try:
             buf = io.BytesIO()
@@ -175,7 +184,7 @@ def main():
             resultado['mensagem'] = f'msiexec terminou com codigo de saida {codigo_saida} (ver log).'
 
     except Exception as e:
-        resultado['mensagem'] = str(e)
+        resultado['mensagem'] = f"Falha na etapa '{etapa}': {e}"
     finally:
         if dcom:
             try:

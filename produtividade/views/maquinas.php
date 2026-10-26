@@ -79,6 +79,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
 $instalacaoConfig = getInstalacaoConfig($db);
 
+// Erro de validacao do formulario da maquina aparece DENTRO do modal (que reabre sozinho); qualquer outro erro, no topo.
+$acaoPost = $_POST['action'] ?? '';
+$erroModal = in_array($acaoPost, ['add', 'update'], true) ? $formError : '';
+$erroTopo = $erroModal === '' ? $formError : '';
+
 // setor_efetivo: nome ATUAL da OU vinculada (se houver), senão o texto livre gravado na máquina —
 // é o valor que deve aparecer em qualquer lugar da tela, nunca m.setor puro.
 $editing = null;
@@ -163,13 +168,30 @@ foreach ($db->query("SELECT i1.maquina_id, i1.acao FROM instalacoes_remotas i1
                       WHERE i1.status = 'ok' AND i2.id IS NULL") as $row) {
     $maquinasInstaladas[$row['maquina_id']] = in_array($row['acao'], ['instalar', 'atualizar'], true);
 }
+
+// Versão do agente = versão do pacote MSI instalado (ex.: 0.13.3.0), lida do log do msiexec da última
+// instalação/atualização remota com sucesso ("ProductVersion = x.y.z.w"). É diferente da versão do
+// aw-server (ActivityWatch, ex.: v0.13.2), que o MSI embute e que quase nunca muda junto com ele.
+// Máquina sem instalação remota bem-sucedida (ou cujo log não traz a versão) fica sem valor.
+$versaoAgente = [];
+foreach ($db->query("SELECT i1.maquina_id, i1.log FROM instalacoes_remotas i1
+                      LEFT JOIN instalacoes_remotas i2 ON i2.maquina_id = i1.maquina_id AND i2.id > i1.id AND i2.status = 'ok'
+                      WHERE i1.status = 'ok' AND i1.acao IN ('instalar', 'atualizar') AND i2.id IS NULL") as $row) {
+    if (preg_match('/ProductVersion = ([0-9]+(?:\.[0-9]+){1,3})/', (string)$row['log'], $mm)
+        || preg_match('/Vers.o do Produto: ([0-9]+(?:\.[0-9]+){1,3})/u', (string)$row['log'], $mm)) {
+        $versaoAgente[$row['maquina_id']] = $mm[1];
+    }
+}
 ?>
 <div class="page-head">
     <div>
         <h1 class="page-title">Máquinas</h1>
         <div class="page-sub">Cadastre cada máquina com o aw-server (ActivityWatch) exposto na rede — por IP ou hostname</div>
     </div>
+    <button type="button" class="btn btn-outline-success" data-bs-toggle="modal" data-bs-target="#modalMaquina"><i class="bi bi-plus-lg"></i> Nova Máquina</button>
 </div>
+
+<?php if ($erroTopo): ?><div class="alert alert-danger py-2"><?= htmlspecialchars($erroTopo) ?></div><?php endif; ?>
 
 <div class="alert alert-warning">
     <strong>Segurança:</strong> a API do ActivityWatch não tem autenticação — qualquer host que alcançar a porta do aw-server
@@ -211,70 +233,7 @@ foreach ($db->query("SELECT i1.maquina_id, i1.acao FROM instalacoes_remotas i1
 </div>
 
 <div class="row g-3">
-    <div class="col-md-4">
-        <div class="card">
-            <div class="card-header"><?= $editing ? 'Editar Máquina' : 'Nova Máquina' ?></div>
-            <div class="card-body">
-                <?php if ($formError): ?><div class="alert alert-danger py-2"><?= htmlspecialchars($formError) ?></div><?php endif; ?>
-                <form method="POST" id="formMaquina">
-                    <?= csrfField() ?>
-                    <input type="hidden" name="action" value="<?= $editing ? 'update' : 'add' ?>">
-                    <?php if ($editing): ?><input type="hidden" name="id" value="<?= (int)$editing['id'] ?>"><?php endif; ?>
-                    <div class="mb-2">
-                        <label class="form-label">Nome</label>
-                        <input type="text" name="nome" class="form-control" placeholder="Ex: Recepção - PC01" value="<?= htmlspecialchars($editing['nome'] ?? '') ?>" required>
-                    </div>
-                    <div class="mb-2">
-                        <label class="form-label">Host (IP ou hostname)</label>
-                        <input type="text" name="host" id="campoHost" class="form-control" placeholder="192.168.1.50 ou pc-recepcao" value="<?= htmlspecialchars($editing['host'] ?? '') ?>" required>
-                    </div>
-                    <div class="mb-2">
-                        <label class="form-label">Porta</label>
-                        <input type="number" name="porta" id="campoPorta" class="form-control" value="<?= htmlspecialchars($editing['porta'] ?? AW_PORTA_PADRAO) ?>" required>
-                    </div>
-                    <div class="mb-2">
-                        <label class="form-label">Usuário responsável (opcional)</label>
-                        <input type="text" name="usuario_responsavel" class="form-control" value="<?= htmlspecialchars($editing['usuario_responsavel'] ?? '') ?>">
-                    </div>
-                    <div class="mb-2">
-                        <label class="form-label">Setor</label>
-                        <?php if ($editing && $editing['ou_id']): ?>
-                            <input type="text" name="setor" class="form-control" value="<?= htmlspecialchars($editing['ou_nome']) ?>" readonly>
-                            <div class="form-text">
-                                Vinculado à OU <code><?= htmlspecialchars($editing['ou_dn']) ?></code> — acompanha o nome dela automaticamente.
-                                Para digitar um setor livre aqui, <a href="#" onclick="if(confirm('Desvincular desta OU? O setor passa a ser um texto livre, editável nesta tela.')){document.getElementById('formDesvincularOu').submit();} return false;">desvincule</a> primeiro.
-                            </div>
-                        <?php else: ?>
-                            <input type="text" name="setor" class="form-control" list="listaSetores" placeholder="Ex: Núcleo de Tecnologia da Informação" value="<?= htmlspecialchars($editing['setor'] ?? '') ?>">
-                            <datalist id="listaSetores">
-                                <?php foreach ($setoresExistentes as $s): ?><option value="<?= htmlspecialchars($s) ?>"><?php endforeach; ?>
-                            </datalist>
-                        <?php endif; ?>
-                    </div>
-                    <div class="mb-2">
-                        <label class="form-label">Sincronizar a cada (minutos)</label>
-                        <input type="number" name="intervalo_sync_min" class="form-control" min="1" value="<?= htmlspecialchars($editing['intervalo_sync_min'] ?? 5) ?>">
-                    </div>
-                    <div class="form-check mb-3">
-                        <input class="form-check-input" type="checkbox" name="ativo" id="ativoCheck" <?= ($editing === null || !empty($editing['ativo'])) ? 'checked' : '' ?>>
-                        <label class="form-check-label" for="ativoCheck">Ativa (incluída na sincronização automática)</label>
-                    </div>
-                    <button type="button" id="btnTestar" class="btn btn-outline-info w-100 mb-2"><i class="bi bi-plug"></i> Testar Conexão</button>
-                    <div id="resultadoTeste" class="small mb-2"></div>
-                    <button class="btn btn-outline-success w-100"><?= $editing ? 'Salvar Alterações' : 'Criar Máquina' ?></button>
-                    <?php if ($editing): ?><a href="index.php?page=maquinas" class="btn btn-outline-secondary w-100 mt-2">Cancelar Edição</a><?php endif; ?>
-                </form>
-                <?php if ($editing && $editing['ou_id']): ?>
-                    <form method="POST" id="formDesvincularOu" class="d-none">
-                        <?= csrfField() ?>
-                        <input type="hidden" name="action" value="desvincular_ou">
-                        <input type="hidden" name="id" value="<?= (int)$editing['id'] ?>">
-                    </form>
-                <?php endif; ?>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-8">
+    <div class="col-12">
         <form method="GET" class="entity-list-toolbar mb-3">
             <input type="hidden" name="page" value="maquinas">
             <span class="elt-label">Filtros</span>
@@ -307,12 +266,35 @@ foreach ($db->query("SELECT i1.maquina_id, i1.acao FROM instalacoes_remotas i1
             <div class="topbar-spacer"></div>
             <span class="text-muted small"><?= count($maquinas) ?> máquina(s) encontrada(s)</span>
         </form>
+        <div class="bulk-bar d-flex flex-wrap align-items-center gap-2 mb-2">
+            <div class="dropdown">
+                <button type="button" class="btn btn-sm btn-outline-primary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false"><i class="bi bi-lightning-charge"></i> Ações em massa</button>
+                <ul class="dropdown-menu">
+                    <li><h6 class="dropdown-header">Coleta</h6></li>
+                    <li><button type="button" class="dropdown-item btn-acao-massa" data-acao="sincronizar" data-rotulo="Sincronizar agora" data-aviso="Busca os eventos novos de cada máquina agora. Máquinas desligadas ou fora da rede aparecem com erro de conexão."><i class="bi bi-arrow-repeat me-2"></i>Sincronizar agora</button></li>
+                    <li><hr class="dropdown-divider"></li>
+                    <li><h6 class="dropdown-header">Agente (ActivityWatch)</h6></li>
+                    <li><button type="button" class="dropdown-item btn-acao-massa" data-acao="atualizar" data-rotulo="Atualizar agora" data-aviso="Reinstala o MSI atual do agente (atualização) em cada máquina, agora, via WMI. Cada uma copia ~85 MB; máximo de 10 por vez — para lotes maiores use &quot;Atualizar na próxima vez online&quot;."><i class="bi bi-cloud-arrow-up me-2"></i>Atualizar agora</button></li>
+                    <li><button type="button" class="dropdown-item btn-acao-massa" data-acao="agendar" data-rotulo="Atualizar na próxima vez online" data-aviso="Agenda a atualização: ela dispara sozinha na próxima sincronização bem-sucedida de cada máquina (ligada e comunicável). Serve para qualquer quantidade."><i class="bi bi-clock-history me-2"></i>Atualizar na próxima vez online</button></li>
+                    <li><button type="button" class="dropdown-item btn-acao-massa" data-acao="cancelar_agendamento" data-rotulo="Cancelar atualização agendada" data-aviso="Remove o agendamento de atualização das máquinas que o tiverem."><i class="bi bi-x-circle me-2"></i>Cancelar atualização agendada</button></li>
+                    <li><button type="button" class="dropdown-item btn-acao-massa" data-acao="instalar" data-rotulo="Instalar agente" data-aviso="Instala o agente nas máquinas que ainda não o têm. Máximo de 10 por vez." ><i class="bi bi-cloud-download me-2"></i>Instalar agente</button></li>
+                    <li><button type="button" class="dropdown-item text-danger btn-acao-massa" data-acao="desinstalar" data-perigo="1" data-rotulo="Desinstalar agente" data-aviso="Remove o agente e PARA a coleta de dados em cada máquina. Máximo de 10 por vez."><i class="bi bi-cloud-minus me-2"></i>Desinstalar agente</button></li>
+                    <li><hr class="dropdown-divider"></li>
+                    <li><h6 class="dropdown-header">Cadastro</h6></li>
+                    <li><button type="button" class="dropdown-item btn-acao-massa" data-acao="ativar" data-rotulo="Ativar" data-aviso="Inclui as máquinas na sincronização automática."><i class="bi bi-toggle-on me-2"></i>Ativar</button></li>
+                    <li><button type="button" class="dropdown-item btn-acao-massa" data-acao="desativar" data-rotulo="Desativar" data-aviso="Tira as máquinas da sincronização automática (os dados já coletados continuam)."><i class="bi bi-toggle-off me-2"></i>Desativar</button></li>
+                </ul>
+            </div>
+            <span class="text-muted small" id="contadorSelecionadas">nenhuma selecionada</span>
+            <button type="button" class="btn btn-sm btn-link p-0" id="btnLimparSelecao" hidden>limpar seleção</button>
+        </div>
         <div class="table-responsive">
         <table class="table table-bordered bg-white align-middle table-actions-sticky">
-            <thead class="table-dark"><tr><th>Nome</th><th>Setor</th><th>Última Sync</th><th>Status</th><th>Ligada</th><th>Ações</th></tr></thead>
+            <thead class="table-dark"><tr><th style="width: 36px" class="text-center"><input type="checkbox" class="form-check-input" id="chkTodasMaq" title="Selecionar todas as máquinas listadas"></th><th>Nome</th><th>Setor</th><th>Última Sync</th><th>Status</th><th>Ligada</th><th>Ações</th></tr></thead>
             <tbody>
                 <?php foreach ($maquinas as $m): $inst = $ultimasInstalacoes[$m['id']] ?? null; ?>
                 <tr>
+                    <td class="text-center"><input type="checkbox" class="form-check-input chk-maq" value="<?= (int)$m['id'] ?>" aria-label="Selecionar <?= htmlspecialchars($m['nome']) ?>"></td>
                     <td>
                         <?= htmlspecialchars($m['nome']) ?>
                         <?php if (!$m['ativo']): ?><br><span class="badge bg-secondary">Inativa</span><?php endif; ?>
@@ -337,6 +319,9 @@ foreach ($db->query("SELECT i1.maquina_id, i1.acao FROM instalacoes_remotas i1
                         </span>
                     </td>
                     <td class="text-nowrap">
+                        <?php if (!empty($m['atualizar_pendente_em'])): ?>
+                            <span class="badge bg-info me-1" title="Atualização do agente agendada em <?= htmlspecialchars($m['atualizar_pendente_em']) ?> — dispara na próxima sincronização bem-sucedida"><i class="bi bi-clock-history"></i> agendada</span>
+                        <?php endif; ?>
                         <button type="button" class="btn btn-sm btn-outline-info btn-sync-now" data-id="<?= (int)$m['id'] ?>" title="Sincronizar agora"><i class="bi bi-arrow-repeat"></i></button>
                         <div class="btn-group">
                             <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle btn-acoes-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="Mais ações"><i class="bi bi-three-dots-vertical"></i></button>
@@ -345,6 +330,11 @@ foreach ($db->query("SELECT i1.maquina_id, i1.acao FROM instalacoes_remotas i1
                                 <li><hr class="dropdown-divider"></li>
                                 <?php if ($maquinasInstaladas[$m['id']] ?? false): ?>
                                     <li><button type="button" class="dropdown-item btn-install-action" data-id="<?= (int)$m['id'] ?>" data-acao="atualizar"><i class="bi bi-cloud-arrow-up me-2"></i>Atualizar ActivityWatch</button></li>
+                                    <?php if (!empty($m['atualizar_pendente_em'])): ?>
+                                        <li><button type="button" class="dropdown-item btn-agendar-atualizacao" data-id="<?= (int)$m['id'] ?>" data-agendar="0"><i class="bi bi-x-circle me-2"></i>Cancelar atualização agendada</button></li>
+                                    <?php else: ?>
+                                        <li><button type="button" class="dropdown-item btn-agendar-atualizacao" data-id="<?= (int)$m['id'] ?>" data-agendar="1" title="A atualização é disparada sozinha na próxima sincronização bem-sucedida, ou seja, quando a máquina estiver ligada e comunicável"><i class="bi bi-clock-history me-2"></i>Atualizar na próxima vez online</button></li>
+                                    <?php endif; ?>
                                     <li><button type="button" class="dropdown-item text-danger btn-install-action" data-id="<?= (int)$m['id'] ?>" data-acao="desinstalar"><i class="bi bi-cloud-minus me-2"></i>Desinstalar ActivityWatch</button></li>
                                 <?php else: ?>
                                     <li><button type="button" class="dropdown-item btn-install-action" data-id="<?= (int)$m['id'] ?>" data-acao="instalar"><i class="bi bi-cloud-download me-2"></i>Instalar ActivityWatch</button></li>
@@ -364,9 +354,135 @@ foreach ($db->query("SELECT i1.maquina_id, i1.acao FROM instalacoes_remotas i1
                     </td>
                 </tr>
                 <?php endforeach; ?>
-                <?php if (empty($maquinas)): ?><tr><td colspan="6" class="text-center text-muted py-3"><?= ($busca !== '' || $filtroSetor !== '' || $filtroAtivo !== '' || $filtroStatus !== '') ? 'Nenhuma máquina encontrada com esses filtros.' : 'Nenhuma máquina cadastrada.' ?></td></tr><?php endif; ?>
+                <?php if (empty($maquinas)): ?><tr><td colspan="7" class="text-center text-muted py-3"><?= ($busca !== '' || $filtroSetor !== '' || $filtroAtivo !== '' || $filtroStatus !== '') ? 'Nenhuma máquina encontrada com esses filtros.' : 'Nenhuma máquina cadastrada.' ?></td></tr><?php endif; ?>
             </tbody>
         </table>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="modalAcaoMassa" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="acaoMassaTitulo">Ação em massa</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+            </div>
+            <div class="modal-body">
+                <div id="acaoMassaEtapaConfirmar">
+                    <p class="text-muted small mb-3" id="acaoMassaAviso"></p>
+                    <div class="fw-semibold mb-2">Aplicar em:</div>
+                    <div class="form-check mb-1">
+                        <input class="form-check-input" type="radio" name="escopoMassa" id="escopoSel" value="sel">
+                        <label class="form-check-label" for="escopoSel">Apenas as <strong>selecionadas</strong> <span id="escopoSelQtd" class="text-muted"></span></label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="escopoMassa" id="escopoTodas" value="todas">
+                        <label class="form-check-label" for="escopoTodas"><strong>Todas</strong> as máquinas da lista <span id="escopoTodasQtd" class="text-muted"></span></label>
+                    </div>
+                    <div class="form-text ms-4">"Todas" respeita os filtros aplicados na tela (busca, setor, ativas/inativas e status).</div>
+                    <div id="acaoMassaErro" class="alert alert-danger py-2 mt-3" hidden></div>
+                </div>
+                <div id="acaoMassaEtapaResultado" hidden>
+                    <div id="acaoMassaResumo" class="mb-2"></div>
+                    <div class="table-responsive">
+                        <table class="table table-sm table-bordered align-middle mb-0">
+                            <thead class="table-dark"><tr><th>Máquina</th><th>Resultado</th><th>Detalhe</th></tr></thead>
+                            <tbody id="acaoMassaLinhas"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal" id="acaoMassaFechar">Cancelar</button>
+                <button type="button" class="btn btn-primary" id="acaoMassaConfirmar"><i class="bi bi-lightning-charge"></i> Executar</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<?php
+// Valor de cada campo do formulário: o que o usuário acabou de enviar (se o envio falhou), senão o da máquina
+// em edição, senão o padrão — assim um erro de validação não apaga o que foi digitado.
+$valForm = function ($campo, $padrao = '') use ($erroModal, $editing) {
+    if ($erroModal !== '' && isset($_POST[$campo])) return $_POST[$campo];
+    return $editing[$campo] ?? $padrao;
+};
+$abrirModalMaquina = ($editing !== null && $editing !== false) || $erroModal !== '';
+?>
+<div class="modal fade" id="modalMaquina" tabindex="-1" aria-labelledby="modalMaquinaTitulo" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <form method="POST" id="formMaquina">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="modalMaquinaTitulo"><?= $editing ? 'Editar Máquina' : 'Nova Máquina' ?></h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+                </div>
+                <div class="modal-body">
+                    <?php if ($erroModal): ?><div class="alert alert-danger py-2"><?= htmlspecialchars($erroModal) ?></div><?php endif; ?>
+                    <?= csrfField() ?>
+                    <input type="hidden" name="action" value="<?= $editing ? 'update' : 'add' ?>">
+                    <?php if ($editing): ?><input type="hidden" name="id" value="<?= (int)$editing['id'] ?>"><?php endif; ?>
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Nome</label>
+                            <input type="text" name="nome" class="form-control" placeholder="Ex: Recepção - PC01" value="<?= htmlspecialchars($valForm('nome')) ?>" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Host (IP ou hostname)</label>
+                            <input type="text" name="host" id="campoHost" class="form-control" placeholder="192.168.1.50 ou pc-recepcao" value="<?= htmlspecialchars($valForm('host')) ?>" required>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Porta</label>
+                            <input type="number" name="porta" id="campoPorta" class="form-control" value="<?= htmlspecialchars($valForm('porta', AW_PORTA_PADRAO)) ?>" required>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Sincronizar a cada (min)</label>
+                            <input type="number" name="intervalo_sync_min" class="form-control" min="1" value="<?= htmlspecialchars($valForm('intervalo_sync_min', 5)) ?>">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Usuário responsável (opcional)</label>
+                            <input type="text" name="usuario_responsavel" class="form-control" value="<?= htmlspecialchars($valForm('usuario_responsavel')) ?>">
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">Setor</label>
+                            <?php if ($editing && $editing['ou_id']): ?>
+                                <input type="text" name="setor" class="form-control" value="<?= htmlspecialchars($editing['ou_nome']) ?>" readonly>
+                                <div class="form-text">
+                                    Vinculado à OU <code><?= htmlspecialchars($editing['ou_dn']) ?></code> — acompanha o nome dela automaticamente.
+                                    Para digitar um setor livre aqui, <a href="#" onclick="if(confirm('Desvincular desta OU? O setor passa a ser um texto livre, editável nesta tela.')){document.getElementById('formDesvincularOu').submit();} return false;">desvincule</a> primeiro.
+                                </div>
+                            <?php else: ?>
+                                <input type="text" name="setor" class="form-control" list="listaSetores" placeholder="Ex: Núcleo de Tecnologia da Informação" value="<?= htmlspecialchars($valForm('setor')) ?>">
+                                <datalist id="listaSetores">
+                                    <?php foreach ($setoresExistentes as $s): ?><option value="<?= htmlspecialchars($s) ?>"><?php endforeach; ?>
+                                </datalist>
+                            <?php endif; ?>
+                        </div>
+                        <div class="col-12">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" name="ativo" id="ativoCheck" <?= ($erroModal !== '' ? isset($_POST['ativo']) : ($editing === null || !empty($editing['ativo']))) ? 'checked' : '' ?>>
+                                <label class="form-check-label" for="ativoCheck">Ativa (incluída na sincronização automática)</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="resultadoTeste" class="small mt-3"></div>
+                </div>
+                <div class="modal-footer justify-content-between">
+                    <button type="button" id="btnTestar" class="btn btn-outline-info"><i class="bi bi-plug"></i> Testar Conexão</button>
+                    <div class="d-flex gap-2">
+                        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+                        <button class="btn btn-outline-success"><?= $editing ? 'Salvar Alterações' : 'Criar Máquina' ?></button>
+                    </div>
+                </div>
+            </form>
+            <?php if ($editing && $editing['ou_id']): ?>
+                <form method="POST" id="formDesvincularOu" class="d-none">
+                    <?= csrfField() ?>
+                    <input type="hidden" name="action" value="desvincular_ou">
+                    <input type="hidden" name="id" value="<?= (int)$editing['id'] ?>">
+                </form>
+            <?php endif; ?>
         </div>
     </div>
 </div>
@@ -397,7 +513,14 @@ foreach ($db->query("SELECT i1.maquina_id, i1.acao FROM instalacoes_remotas i1
                         <div class="entity-field-value">a cada <?= (int)$m['intervalo_sync_min'] ?> min</div>
                     </div>
                     <div>
-                        <div class="entity-field-label">aw-server</div>
+                        <div class="entity-field-label">Agente (pacote MSI)</div>
+                        <div class="entity-field-value">
+                            <?= isset($versaoAgente[$m['id']]) ? '<code>' . htmlspecialchars($versaoAgente[$m['id']]) . '</code>' : '<span class="text-muted">—</span>' ?>
+                            <i class="bi bi-info-circle text-muted" title="Versão do pacote MSI instalado, lida do log da última instalação/atualização remota bem-sucedida"></i>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="entity-field-label">ActivityWatch (aw-server)</div>
                         <div class="entity-field-value"><?= $m['aw_hostname'] ? htmlspecialchars($m['aw_hostname']) . ' (' . htmlspecialchars($m['aw_versao']) . ')' : '—' ?></div>
                     </div>
                     <div>
@@ -594,6 +717,135 @@ document.querySelectorAll('.btn-install-action').forEach(function (btn) {
     });
 });
 
+// "Atualizar na próxima vez online": só marca/desmarca o agendamento; o disparo real acontece sozinho
+// na próxima sincronização bem-sucedida da máquina (ver dispararAtualizacaoAgendada em aw_client.php).
+document.querySelectorAll('.btn-agendar-atualizacao').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+        var agendar = btn.dataset.agendar === '1';
+        if (agendar && !confirm('Agendar a atualização do agente desta máquina? Ela será disparada automaticamente na próxima vez que a máquina estiver ligada e comunicável (próxima sincronização bem-sucedida).')) return;
+        var fd = new FormData();
+        fd.append('csrf_token', '<?= csrfToken() ?>');
+        fd.append('id', btn.dataset.id);
+        fd.append('agendar', agendar ? '1' : '0');
+        btn.disabled = true;
+        fetch('ajax_agendar_atualizacao.php', { method: 'POST', body: fd })
+            .then(r => r.json())
+            .then(function (data) {
+                if (!data.ok) { alert('Erro: ' + data.erro); btn.disabled = false; return; }
+                location.reload();
+            })
+            .catch(function () { alert('Falha ao agendar (erro de rede).'); btn.disabled = false; });
+    });
+});
+
+// ---- Ações em massa: seleção por linha ("selecionar todas" = as listadas) e execução sobre as selecionadas
+// ou sobre todas as da lista (já filtrada). O servidor devolve o resultado por máquina. ----
+(function () {
+    var chkTodos = document.getElementById('chkTodasMaq');
+    var contador = document.getElementById('contadorSelecionadas');
+    var btnLimpar = document.getElementById('btnLimparSelecao');
+    var linhas = function () { return Array.prototype.slice.call(document.querySelectorAll('.chk-maq')); };
+    var selecionados = function () { return linhas().filter(function (c) { return c.checked; }).map(function (c) { return c.value; }); };
+    var todosIds = function () { return linhas().map(function (c) { return c.value; }); };
+
+    function atualizarContador() {
+        var n = selecionados().length, total = linhas().length;
+        contador.textContent = n ? (n + ' de ' + total + ' selecionada(s)') : 'nenhuma selecionada';
+        btnLimpar.hidden = n === 0;
+        if (chkTodos) { chkTodos.checked = n > 0 && n === total; chkTodos.indeterminate = n > 0 && n < total; }
+        linhas().forEach(function (c) { var tr = c.closest('tr'); if (tr) tr.classList.toggle('table-active', c.checked); });
+    }
+    linhas().forEach(function (c) { c.addEventListener('change', atualizarContador); });
+    if (chkTodos) chkTodos.addEventListener('change', function () { linhas().forEach(function (c) { c.checked = chkTodos.checked; }); atualizarContador(); });
+    btnLimpar.addEventListener('click', function () { linhas().forEach(function (c) { c.checked = false; }); atualizarContador(); });
+    atualizarContador();
+
+    var acaoAtual = null;
+    var modalEl = document.getElementById('modalAcaoMassa');
+    var etapaConfirmar = document.getElementById('acaoMassaEtapaConfirmar');
+    var etapaResultado = document.getElementById('acaoMassaEtapaResultado');
+    var btnExecutar = document.getElementById('acaoMassaConfirmar');
+    var btnFechar = document.getElementById('acaoMassaFechar');
+    var erroEl = document.getElementById('acaoMassaErro');
+    var recarregarAoFechar = false;
+
+    document.querySelectorAll('.btn-acao-massa').forEach(function (item) {
+        item.addEventListener('click', function () {
+            acaoAtual = { acao: item.dataset.acao, rotulo: item.dataset.rotulo, perigo: item.dataset.perigo === '1' };
+            var nSel = selecionados().length, nTodas = todosIds().length;
+            document.getElementById('acaoMassaTitulo').textContent = acaoAtual.rotulo + ' — ação em massa';
+            document.getElementById('acaoMassaAviso').textContent = item.dataset.aviso || '';
+            document.getElementById('escopoSelQtd').textContent = '(' + nSel + ')';
+            document.getElementById('escopoTodasQtd').textContent = '(' + nTodas + ')';
+            document.getElementById('escopoSel').disabled = nSel === 0;
+            document.getElementById('escopoSel').checked = nSel > 0;
+            document.getElementById('escopoTodas').checked = nSel === 0;
+            erroEl.hidden = true;
+            etapaConfirmar.hidden = false; etapaResultado.hidden = true;
+            btnExecutar.hidden = false; btnExecutar.disabled = false;
+            btnExecutar.className = 'btn ' + (acaoAtual.perigo ? 'btn-danger' : 'btn-primary');
+            btnFechar.textContent = 'Cancelar';
+            recarregarAoFechar = false;
+            bootstrap.Modal.getOrCreateInstance(modalEl).show();
+        });
+    });
+
+    btnExecutar.addEventListener('click', function () {
+        if (!acaoAtual) return;
+        var escopo = document.querySelector('input[name="escopoMassa"]:checked');
+        var ids = escopo && escopo.value === 'sel' ? selecionados() : todosIds();
+        if (!ids.length) { erroEl.textContent = 'Nenhuma máquina no escopo escolhido.'; erroEl.hidden = false; return; }
+        var txt = acaoAtual.rotulo + ' em ' + ids.length + ' máquina(s)?';
+        if (acaoAtual.perigo && !confirm(txt + '\n\nIsto PARA a coleta de dados nelas. Confirma?')) return;
+        if (!acaoAtual.perigo && ids.length > 1 && !confirm(txt)) return;
+        btnExecutar.disabled = true;
+        btnExecutar.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Executando…';
+        erroEl.hidden = true;
+        var fd = new FormData();
+        fd.append('csrf_token', '<?= csrfToken() ?>');
+        fd.append('acao', acaoAtual.acao);
+        fd.append('ids', ids.join(','));
+        fetch('ajax_acao_massa.php', { method: 'POST', body: fd })
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                btnExecutar.innerHTML = '<i class="bi bi-lightning-charge"></i> Executar';
+                if (!d.ok) { erroEl.textContent = d.erro || 'Falha ao executar a ação.'; erroEl.hidden = false; btnExecutar.disabled = false; return; }
+                var cor = { ok: 'success', pulada: 'secondary', erro: 'danger' }, rot = { ok: 'OK', pulada: 'Pulada', erro: 'Erro' };
+                document.getElementById('acaoMassaResumo').innerHTML =
+                    '<span class="badge bg-success me-1">' + d.resumo.ok + ' ok</span><span class="badge bg-secondary me-1">' + d.resumo.puladas + ' pulada(s)</span><span class="badge bg-danger">' + d.resumo.erros + ' erro(s)</span>';
+                var tb = document.getElementById('acaoMassaLinhas'); tb.innerHTML = '';
+                d.resultados.forEach(function (r) {
+                    var tr = document.createElement('tr');
+                    var td1 = document.createElement('td'); td1.textContent = r.nome;
+                    var td2 = document.createElement('td'); td2.innerHTML = '<span class="badge bg-' + cor[r.status] + '">' + rot[r.status] + '</span>';
+                    var td3 = document.createElement('td'); td3.className = 'small'; td3.textContent = r.mensagem;
+                    tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3); tb.appendChild(tr);
+                });
+                etapaConfirmar.hidden = true; etapaResultado.hidden = false;
+                btnExecutar.hidden = true; btnFechar.textContent = 'Fechar';
+                recarregarAoFechar = true;
+            })
+            .catch(function () { erroEl.textContent = 'Falha de rede ao executar a ação.'; erroEl.hidden = false; btnExecutar.disabled = false; btnExecutar.innerHTML = '<i class="bi bi-lightning-charge"></i> Executar'; });
+    });
+    modalEl.addEventListener('hidden.bs.modal', function () { if (recarregarAoFechar) window.location.reload(); });
+})();
+
+// Modal "Nova/Editar Máquina": abre sozinho quando a página veio de "Editar" (?edit=ID) ou de um envio com erro.
+// Ao fechar uma EDIÇÃO, tira o ?edit da URL (senão um F5 reabriria o modal).
+(function () {
+    var el = document.getElementById('modalMaquina');
+    if (!el) return;
+    var editando = <?= ($editing !== null && $editing !== false) ? 'true' : 'false' ?>;
+    el.addEventListener('hidden.bs.modal', function () {
+        if (!editando) return;
+        var u = new URL(window.location.href);
+        u.searchParams.delete('edit');
+        window.location.href = u.toString();
+    });
+    <?php if ($abrirModalMaquina): ?>
+    document.addEventListener('DOMContentLoaded', function () { bootstrap.Modal.getOrCreateInstance(el).show(); });
+    <?php endif; ?>
+})();
 document.querySelectorAll('.btn-ver-log').forEach(function (btn) {
     btn.addEventListener('click', function () {
         // Instanciado só aqui (não no carregamento do script) porque este bloco roda dentro de

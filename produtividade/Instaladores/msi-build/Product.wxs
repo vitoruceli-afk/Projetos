@@ -17,7 +17,7 @@
   <Product Id="*"
            Name="ActivityWatch (Produtividade FAESA)"
            Language="1046"
-           Version="0.13.2.8"
+           Version="0.13.4.0"
            Manufacturer="FAESA - Nucleo de Tecnologia da Informacao"
            UpgradeCode="9F1B7C2A-4E3D-4B8A-9C6E-7A2F5D1B0E44">
 
@@ -25,6 +25,9 @@
              Description="Instala o ActivityWatch e configura a maquina para ser monitorada pela aplicacao de Produtividade"
              Comments="Gerado a partir do instalador oficial ActivityWatch v0.13.2" />
 
+    <!-- ATENCAO: o Windows Installer IGNORA o 4o campo de Version na comparacao de versoes
+         (0.13.2.8 == 0.13.2.9 para ele). Pra a atualizacao por cima funcionar (remover a versao
+         anterior), a mudanca precisa estar nos 3 primeiros campos - ex.: 0.13.2.x -> 0.13.3.0. -->
     <MajorUpgrade DowngradeErrorMessage="Ja existe uma versao mais nova deste pacote instalada." />
     <MediaTemplate EmbedCab="yes" />
 
@@ -315,6 +318,45 @@
                   Execute="deferred"
                   Return="ignore" />
 
+    <!-- Forca a instalacao da extensao "ActivityWatch Web Watcher" (aw-watcher-web) no Chrome e no
+         Edge para TODOS os usuarios da maquina, via politica de navegador (ExtensionInstallForcelist)
+         - e ela que envia a URL/titulo da aba ao aw-server local, o que o watcher de janela sozinho
+         nao consegue (tipo 'web' em eventos, ver aw_client.php). Sem isso seria preciso instalar a
+         extensao maquina por maquina.
+         Por que reg.exe /reg:64 em vez de <RegistryValue>: este pacote e x86 (Platform="x86") e o
+         Windows redireciona HKLM\SOFTWARE gravado por processo 32-bit para WOW6432Node, onde Chrome e
+         Edge (64-bit) NAO leem politicas. O /reg:64 grava na visao nativa. O nome do valor (9071) e
+         propositalmente alto pra nao sobrescrever entradas 1, 2, 3... que uma GPO do dominio ja
+         tenha criado nessa mesma lista. Id da extensao na Chrome Web Store:
+         nglaklhklhcoonedhgnpgddginnjdadi - o Edge instala a partir da mesma loja (URL
+         clients2.google.com), o que o Edge so permite em maquinas ingressadas no dominio (e o caso
+         aqui, usuarios FAESA\...). A extensao fala com http://localhost:5600 (mesmo aw-server local).
+         Firefox NAO e coberto (exige policies.json na pasta do Firefox, nao registro). -->
+    <CustomAction Id="ForcarExtensaoWebChrome"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[SystemFolder]reg.exe&quot; add &quot;HKLM\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist&quot; /v 9071 /t REG_SZ /d &quot;nglaklhklhcoonedhgnpgddginnjdadi;https://clients2.google.com/service/update2/crx&quot; /f /reg:64"
+                  Execute="deferred"
+                  Return="ignore" />
+
+    <CustomAction Id="ForcarExtensaoWebEdge"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[SystemFolder]reg.exe&quot; add &quot;HKLM\SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist&quot; /v 9071 /t REG_SZ /d &quot;nglaklhklhcoonedhgnpgddginnjdadi;https://clients2.google.com/service/update2/crx&quot; /f /reg:64"
+                  Execute="deferred"
+                  Return="ignore" />
+
+    <!-- Contraparte no uninstall: remove so o nosso valor (9071), sem mexer no resto da lista. -->
+    <CustomAction Id="RemoverExtensaoWebChrome"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[SystemFolder]reg.exe&quot; delete &quot;HKLM\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist&quot; /v 9071 /f /reg:64"
+                  Execute="deferred"
+                  Return="ignore" />
+
+    <CustomAction Id="RemoverExtensaoWebEdge"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[SystemFolder]reg.exe&quot; delete &quot;HKLM\SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist&quot; /v 9071 /f /reg:64"
+                  Execute="deferred"
+                  Return="ignore" />
+
     <InstallExecuteSequence>
       <Custom Action="PararActivityWatch" Before="InstallActivityWatch">NOT Installed</Custom>
       <Custom Action="InstallActivityWatch" After="InstallFiles">NOT Installed</Custom>
@@ -325,6 +367,10 @@
       <Custom Action="RegistrarTarefaReligar" After="RegistrarTarefaSessaoUnlock">NOT Installed</Custom>
       <Custom Action="ReligarActivityWatch" After="RegistrarTarefaReligar">NOT Installed</Custom>
       <Custom Action="ReligarAgenteUsuario" After="ReligarActivityWatch">NOT Installed</Custom>
+      <Custom Action="ForcarExtensaoWebChrome" After="ReligarAgenteUsuario">NOT Installed</Custom>
+      <Custom Action="ForcarExtensaoWebEdge" After="ForcarExtensaoWebChrome">NOT Installed</Custom>
+      <Custom Action="RemoverExtensaoWebEdge" Before="RemoverTarefaSessaoLogin">REMOVE="ALL"</Custom>
+      <Custom Action="RemoverExtensaoWebChrome" Before="RemoverExtensaoWebEdge">REMOVE="ALL"</Custom>
       <Custom Action="RemoverTarefaReligar" Before="RemoverTarefaAgente">REMOVE="ALL"</Custom>
       <Custom Action="RemoverTarefaSessaoUnlock" Before="RemoverTarefaReligar">REMOVE="ALL"</Custom>
       <Custom Action="RemoverTarefaSessaoLock" Before="RemoverTarefaSessaoUnlock">REMOVE="ALL"</Custom>

@@ -74,7 +74,7 @@ define('AW_SERVIDOR_IP', '10.10.140.17');
 
 // Incrementar sempre que uma migração (CREATE TABLE/ALTER TABLE) for adicionada em getDB() — é o
 // que faz o bloco de migração rodar de novo (uma única vez) na próxima requisição após o deploy.
-define('SCHEMA_VERSION', 11);
+define('SCHEMA_VERSION', 27);
 
 function getDB() {
     // Conexão + schema cacheados numa estática por requisição (mesmo motivo documentado em
@@ -384,6 +384,13 @@ function getDB() {
                     ['url', 'contem', 'microsoft365.com'], ['url', 'contem', 'office365.com'], ['url', 'contem', 'officeapps.live.com'],
                     ['url', 'contem', 'onedrive.live.com'], ['url', 'contem', '1drv.ms'], ['url', 'contem', 'outlook.office'],
                     ['url', 'contem', 'acrobat.adobe.com'], ['url', 'contem', 'documentcloud.adobe.com'], ['url', 'contem', 'adobe.com/acrobat'],
+                    ['url', 'regex', '^(blob:)?[a-z]+://([^/?#]*\\.)?faesa\\.br([:/?#]|$)'],
+                    ['url', 'regex', '^(blob:)?[a-z]+://([^/?#]*\\.)?microsoftonline\\.com([:/?#]|$)'],
+                    ['url', 'regex', '^(blob:)?[a-z]+://([^/?#]*\\.)?worka\\.love([:/?#]|$)'],
+                    ['url', 'regex', '^(blob:)?[a-z]+://([^/?#]*\\.)?lyceum\\.com\\.br([:/?#]|$)'],
+                    ['url', 'regex', '^(blob:)?[a-z]+://([^/?#]*\\.)?powerapps\\.com([:/?#]|$)'],
+                    ['url', 'regex', '^(blob:)?[a-z]+://([^/?#]*\\.)?clicksign\\.com([:/?#]|$)'],
+                    ['url', 'regex', '^(blob:)?[a-z]+://([^/?#]*\\.)?ilovepdf\\.com([:/?#]|$)'],
                     ['url', 'contem', 'office.com'], ['url', 'contem', 'sharepoint.com'],
                     // Regras por título: sem a extensão de navegador do ActivityWatch instalada, o
                     // campo url nunca vem preenchido — abas de Office/Google Workspace só dão pra
@@ -425,6 +432,11 @@ function getDB() {
             }
         }
 
+        // Regras de domínio por URL passam a aceitar o prefixo "blob:" (URLs como
+        // blob:https://workability.worka.love/<uuid> não casavam com o padrão antigo). Converte as
+        // regras já gravadas — só as que ainda começam com o padrão antigo.
+        $db->exec("UPDATE categoria_regras SET padrao = CONCAT('^(blob:)?', SUBSTRING(padrao, 2))
+                    WHERE campo = 'url' AND tipo = 'regex' AND padrao LIKE '^[a-z]+://%'");
         // Acrobat/PDF na categoria "Produtivo · Escritório" (junto de Word/Excel/PowerPoint) — vale
         // pra instalações já existentes, onde a semeadura acima não roda mais. Idempotente: só insere
         // a regra se ainda não existir nessa categoria.
@@ -438,10 +450,238 @@ function getDB() {
                       ['titulo', 'regex', '\\.(docx?|xlsx?|xlsm|xlsb|pptx?|pps[xm]?|pdf)(\\s|$)'],
                       ['url', 'contem', 'microsoft365.com'], ['url', 'contem', 'office365.com'], ['url', 'contem', 'officeapps.live.com'],
                       ['url', 'contem', 'onedrive.live.com'], ['url', 'contem', '1drv.ms'], ['url', 'contem', 'outlook.office'],
-                      ['url', 'contem', 'acrobat.adobe.com'], ['url', 'contem', 'documentcloud.adobe.com'], ['url', 'contem', 'adobe.com/acrobat']] as [$campo, $tipo, $padrao]) {
+                      ['url', 'contem', 'acrobat.adobe.com'], ['url', 'contem', 'documentcloud.adobe.com'], ['url', 'contem', 'adobe.com/acrobat'],
+                    ['url', 'regex', '^(blob:)?[a-z]+://([^/?#]*\\.)?faesa\\.br([:/?#]|$)'],
+                    ['url', 'regex', '^(blob:)?[a-z]+://([^/?#]*\\.)?microsoftonline\\.com([:/?#]|$)'],
+                    ['url', 'regex', '^(blob:)?[a-z]+://([^/?#]*\\.)?worka\\.love([:/?#]|$)'],
+                    ['url', 'regex', '^(blob:)?[a-z]+://([^/?#]*\\.)?lyceum\\.com\\.br([:/?#]|$)'],
+                    ['url', 'regex', '^(blob:)?[a-z]+://([^/?#]*\\.)?powerapps\\.com([:/?#]|$)'],
+                    ['url', 'regex', '^(blob:)?[a-z]+://([^/?#]*\\.)?clicksign\\.com([:/?#]|$)'],
+                    ['url', 'regex', '^(blob:)?[a-z]+://([^/?#]*\\.)?ilovepdf\\.com([:/?#]|$)']] as [$campo, $tipo, $padrao]) {
                 $p = [':cat' => $catEscritorio, ':campo' => $campo, ':tipo' => $tipo, ':padrao' => $padrao];
                 $existeRegra->execute($p);
                 if (!$existeRegra->fetchColumn()) $novaRegra->execute($p);
+            }
+        }
+
+        // Redes sociais e streaming (por URL) na categoria "Improdutivo · Entretenimento". Cada regra
+        // casa quando o HOST da URL é o domínio ou um subdomínio dele (não casa o texto no meio de um
+        // caminho/consulta). Idempotente: só insere a regra se ainda não existir nessa categoria.
+        $catEntret = $db->query("SELECT id FROM categorias WHERE nome = 'Improdutivo · Entretenimento' LIMIT 1")->fetchColumn();
+        if ($catEntret) {
+            $dominiosEntret = [
+                // redes sociais e mensageiros de uso pessoal
+                'facebook.com', 'instagram.com', 'tiktok.com', 'twitter.com', 'x.com', 'threads.net', 'pinterest.com',
+                'reddit.com', 'snapchat.com', 'tumblr.com', 'kwai.com', 'discord.com', 'web.whatsapp.com', 'web.telegram.org',
+                // streaming de vídeo, música e transmissões ao vivo
+                'youtube.com', 'youtu.be', 'netflix.com', 'primevideo.com', 'disneyplus.com', 'hbomax.com', 'max.com',
+                'globoplay.globo.com', 'paramountplus.com', 'crunchyroll.com', 'tv.apple.com', 'pluto.tv',
+                'twitch.tv', 'kick.com', 'spotify.com', 'deezer.com', 'soundcloud.com',
+                // portais e sites de notícias (nacionais, internacionais e do Espírito Santo)
+                'g1.globo.com', 'ge.globo.com', 'oglobo.globo.com', 'extra.globo.com', 'uol.com.br', 'terra.com.br',
+                'r7.com', 'cnnbrasil.com.br', 'estadao.com.br', 'metropoles.com', 'ig.com.br', 'msn.com',
+                'correiobraziliense.com.br', 'gazetadopovo.com.br', 'oantagonista.com.br', 'brasil247.com', 'poder360.com.br',
+                'veja.abril.com.br', 'istoe.com.br', 'cartacapital.com.br', 'lance.com.br',
+                'agazeta.com.br', 'folhavitoria.com.br', 'tribunaonline.com.br', 'eshoje.com.br', 'seculodiario.com.br',
+                'news.google.com', 'bbc.com', 'cnn.com', 'nytimes.com', 'theguardian.com', 'reuters.com', 'elpais.com',
+            ];
+            $existeRegraEnt = $db->prepare("SELECT 1 FROM categoria_regras WHERE categoria_id = :cat AND campo = 'url' AND tipo = 'regex' AND padrao = :padrao LIMIT 1");
+            $novaRegraEnt = $db->prepare("INSERT INTO categoria_regras (categoria_id, campo, tipo, padrao, prioridade) VALUES (:cat, 'url', 'regex', :padrao, 30)");
+            foreach ($dominiosEntret as $dom) {
+                $p = [':cat' => $catEntret, ':padrao' => '^(blob:)?[a-z]+://([^/?#]*\\.)?' . str_replace('.', '\\.', $dom) . '([:/?#]|$)'];
+                $existeRegraEnt->execute($p);
+                if (!$existeRegraEnt->fetchColumn()) $novaRegraEnt->execute($p);
+            }
+        }
+
+        // Atualização agendada do agente ("atualizar na próxima vez que a máquina estiver comunicável"):
+        // data/hora em que alguém agendou; NULL = sem agendamento. Ver dispararAtualizacaoAgendada()
+        // em aw_client.php e ajax_agendar_atualizacao.php.
+        $temAtualizarPendente = (bool)$db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'maquinas' AND COLUMN_NAME = 'atualizar_pendente_em'")->fetchColumn();
+        if (!$temAtualizarPendente) {
+            $db->exec("ALTER TABLE maquinas ADD COLUMN atualizar_pendente_em DATETIME DEFAULT NULL");
+        }
+        // Limpeza de regras (auditoria de categorias). Idempotente — cada passo só age se ainda houver o que corrigir.
+        $catEntretL = $db->query("SELECT id FROM categorias WHERE nome = 'Improdutivo · Entretenimento' LIMIT 1")->fetchColumn();
+        $catEscritorioL = $db->query("SELECT id FROM categorias WHERE nome = 'Produtivo · Escritório' LIMIT 1")->fetchColumn();
+        $catTiL = $db->query("SELECT id FROM categorias WHERE nome = 'Produtivo · TI/Suporte' LIMIT 1")->fetchColumn();
+        $catSistemaL = $db->query("SELECT id FROM categorias WHERE nome = 'Neutro · Sistema' LIMIT 1")->fetchColumn();
+        // 1) Regras "contém" de URL redundantes: cada uma já tem a regra de domínio (por host) correspondente na
+        //    mesma categoria, e "contém" casa o texto em qualquer lugar da URL (ex.: "x.com" pegava dropbox.com).
+        if ($catEntretL) {
+            $db->prepare("DELETE FROM categoria_regras WHERE categoria_id = :c AND campo = 'url' AND tipo = 'contem'
+                            AND padrao IN ('youtube.com', 'netflix.com', 'twitch.tv', 'facebook.com', 'instagram.com', 'tiktok.com', 'twitter.com', 'x.com')")
+               ->execute([':c' => $catEntretL]);
+        }
+        // 2) "Acrobat" (aplicativo) em Neutro · Sistema nunca vencia: a mesma regra em Escritório vem antes.
+        if ($catSistemaL) {
+            $db->prepare("DELETE FROM categoria_regras WHERE categoria_id = :c AND campo = 'app' AND tipo = 'contem' AND padrao = 'Acrobat'")
+               ->execute([':c' => $catSistemaL]);
+        }
+        // 3) Outlook novo (olk.exe) estava em TI/Suporte e vencia a regra de título "Outlook" de Escritório;
+        //    passa para Escritório e deixa de ser um trecho curto ("olk") que casava qualquer app com essas letras.
+        if ($catTiL && $catEscritorioL) {
+            $jaExiste = $db->prepare("SELECT COUNT(*) FROM categoria_regras WHERE categoria_id = :c AND campo = 'app' AND tipo = 'contem' AND padrao = 'olk.exe'");
+            $jaExiste->execute([':c' => $catEscritorioL]);
+            if ((int)$jaExiste->fetchColumn() > 0) {
+                $db->prepare("DELETE FROM categoria_regras WHERE categoria_id = :t AND campo = 'app' AND tipo = 'contem' AND padrao = 'olk'")->execute([':t' => $catTiL]);
+            } else {
+                $db->prepare("UPDATE categoria_regras SET categoria_id = :e, padrao = 'olk.exe', prioridade = 20
+                                WHERE categoria_id = :t AND campo = 'app' AND tipo = 'contem' AND padrao = 'olk'")
+                   ->execute([':e' => $catEscritorioL, ':t' => $catTiL]);
+            }
+        }
+
+        // Título "iLovePDF" em Produtivo · Escritório: rede de segurança pra janelas de navegador sem aba
+        // correspondente (máquina sem a extensão, ou janela sem evento de aba) — o título da janela carrega o
+        // nome do site ("Baixar o arquivo | iLovePDF - Google Chrome").
+        if ($catEscritorioL) {
+            $jaTemTitulo = $db->prepare("SELECT COUNT(*) FROM categoria_regras WHERE categoria_id = :c AND campo = 'titulo' AND tipo = 'contem' AND padrao = 'iLovePDF'");
+            $jaTemTitulo->execute([':c' => $catEscritorioL]);
+            if ((int)$jaTemTitulo->fetchColumn() === 0) {
+                $db->prepare("INSERT INTO categoria_regras (categoria_id, campo, tipo, padrao, prioridade) VALUES (:c, 'titulo', 'contem', 'iLovePDF', 20)")
+                   ->execute([':c' => $catEscritorioL]);
+            }
+        }
+
+        // Consolidação em 3 categorias: Produtivo (prioridade 10), Improdutivo (50) e Neutro (90). Une as
+        // categorias por tipo — Escritório + Desenvolvimento + TI/Suporte -> Produtivo; Entretenimento ->
+        // Improdutivo; Navegação + Sistema -> Neutro — movendo regras (todas passam a ter a prioridade do
+        // grupo) e eventos para a categoria de destino e apagando as antigas. Idempotente: depois de rodar,
+        // as categorias de origem não existem mais e nada é refeito. As migrações acima que procuram as
+        // categorias antigas pelo nome simplesmente não as encontram mais e não fazem nada.
+        $gruposConsolidar = [
+            ['Produtivo',   '#16a34a',  1, 10, 10, ['Produtivo · Escritório', 'Produtivo · Desenvolvimento', 'Produtivo · TI/Suporte']],
+            ['Improdutivo', '#dc2626', -1, 50, 50, ['Improdutivo · Entretenimento']],
+            ['Neutro',      '#94a2b8',  0, 90, 90, ['Neutro · Navegação', 'Neutro · Sistema']],
+        ];
+        $buscaCat = $db->prepare("SELECT id FROM categorias WHERE nome = :n LIMIT 1");
+        $moveEventos = $db->prepare("UPDATE eventos SET categoria_id = :alvo WHERE categoria_id = :orig");
+        $moveRegras = $db->prepare("UPDATE categoria_regras SET categoria_id = :alvo WHERE categoria_id = :orig");
+        $apagaCat = $db->prepare("DELETE FROM categorias WHERE id = :id");
+        foreach ($gruposConsolidar as [$alvoNome, $alvoCor, $alvoPont, $alvoOrdem, $alvoPrio, $origensNomes]) {
+            $buscaCat->execute([':n' => $alvoNome]);
+            $alvoId = $buscaCat->fetchColumn();
+            $origensIds = [];
+            foreach ($origensNomes as $nomeOrigem) {
+                $buscaCat->execute([':n' => $nomeOrigem]);
+                $idOrigem = $buscaCat->fetchColumn();
+                if ($idOrigem) $origensIds[] = (int)$idOrigem;
+            }
+            if (!$alvoId && !$origensIds) continue; // nada a consolidar neste grupo
+            if (!$alvoId) $alvoId = array_shift($origensIds); // reaproveita a primeira origem como destino (mantém o id dos eventos dela)
+            $alvoId = (int)$alvoId;
+            $db->prepare("UPDATE categorias SET nome = :n, cor = :c, pontuacao = :p, ordem = :o WHERE id = :id")
+               ->execute([':n' => $alvoNome, ':c' => $alvoCor, ':p' => $alvoPont, ':o' => $alvoOrdem, ':id' => $alvoId]);
+            foreach ($origensIds as $idOrigem) {
+                if ($idOrigem === $alvoId) continue;
+                $moveEventos->execute([':alvo' => $alvoId, ':orig' => $idOrigem]);
+                $moveRegras->execute([':alvo' => $alvoId, ':orig' => $idOrigem]);
+                $apagaCat->execute([':id' => $idOrigem]);
+            }
+            $db->prepare("UPDATE categoria_regras SET prioridade = :p WHERE categoria_id = :c")->execute([':p' => $alvoPrio, ':c' => $alvoId]);
+        }
+        // Regras repetidas que a união pode ter criado (mesmo campo, tipo e padrão na mesma categoria).
+        $db->exec("DELETE r1 FROM categoria_regras r1
+                    JOIN categoria_regras r2 ON r2.categoria_id = r1.categoria_id AND r2.campo = r1.campo AND r2.tipo = r1.tipo
+                                            AND r2.padrao = r1.padrao AND r2.id < r1.id");
+
+        // Domínios de trabalho na categoria "Produtivo" (por URL). Cada regra casa quando o HOST da URL é o
+        // domínio ou um subdomínio dele (aceita o prefixo "blob:"). Idempotente: só insere o que ainda não existe.
+        $catProdutivoD = $db->query("SELECT id FROM categorias WHERE nome = 'Produtivo' LIMIT 1")->fetchColumn();
+        if ($catProdutivoD) {
+            $existeRegraProd = $db->prepare("SELECT 1 FROM categoria_regras WHERE categoria_id = :cat AND campo = 'url' AND tipo = 'regex' AND padrao = :padrao LIMIT 1");
+            $novaRegraProd = $db->prepare("INSERT INTO categoria_regras (categoria_id, campo, tipo, padrao, prioridade) VALUES (:cat, 'url', 'regex', :padrao, 10)");
+            foreach (['crmeducacional.com', 'techcert.com.br', 'cloud.microsoft', 'static.microsoft'] as $dominioProd) {
+                $pProd = [':cat' => $catProdutivoD, ':padrao' => '^(blob:)?[a-z]+://([^/?#]*\\.)?' . str_replace('.', '\\.', $dominioProd) . '([:/?#]|$)'];
+                $existeRegraProd->execute($pProd);
+                if (!$existeRegraProd->fetchColumn()) $novaRegraProd->execute($pProd);
+            }
+        }
+
+        // Aplicativos de design na categoria "Produtivo" (por aplicativo da janela). Idempotente.
+        $catProdutivoA = $db->query("SELECT id FROM categorias WHERE nome = 'Produtivo' LIMIT 1")->fetchColumn();
+        if ($catProdutivoA) {
+            $existeAppProd = $db->prepare("SELECT 1 FROM categoria_regras WHERE categoria_id = :cat AND campo = 'app' AND tipo = 'contem' AND padrao = :padrao LIMIT 1");
+            $novaAppProd = $db->prepare("INSERT INTO categoria_regras (categoria_id, campo, tipo, padrao, prioridade) VALUES (:cat, 'app', 'contem', :padrao, 10)");
+            foreach (['Photoshop.exe', 'Illustrator.exe'] as $appProd) {
+                $existeAppProd->execute([':cat' => $catProdutivoA, ':padrao' => $appProd]);
+                if (!$existeAppProd->fetchColumn()) $novaAppProd->execute([':cat' => $catProdutivoA, ':padrao' => $appProd]);
+            }
+        }
+
+        // Aplicativos web do Google Workspace e da Microsoft 365/Azure na categoria "Produtivo" (por URL). São
+        // hosts ESPECÍFICOS de cada aplicativo (docs.google.com, teams.microsoft.com, ...) e não os domínios
+        // inteiros — google.com e microsoft.com também servem busca, publicidade e notícias. Cada regra casa o
+        // host exato ou um subdomínio dele (aceita "blob:"). Idempotente: só insere o que ainda não existe.
+        $catProdutivoG = $db->query("SELECT id FROM categorias WHERE nome = 'Produtivo' LIMIT 1")->fetchColumn();
+        if ($catProdutivoG) {
+            $dominiosGoogleMs = [
+                // Google Workspace
+                'docs.google.com', 'drive.google.com', 'sheets.google.com', 'slides.google.com', 'mail.google.com',
+                'calendar.google.com', 'meet.google.com', 'chat.google.com', 'forms.google.com', 'sites.google.com',
+                'keep.google.com', 'classroom.google.com', 'contacts.google.com', 'groups.google.com', 'script.google.com',
+                'admin.google.com', 'lookerstudio.google.com', 'datastudio.google.com', 'analytics.google.com',
+                'tagmanager.google.com', 'colab.research.google.com', 'console.cloud.google.com', 'workspace.google.com',
+                // Microsoft 365, Power Platform e Azure
+                'outlook.office.com', 'outlook.office365.com', 'outlook.live.com', 'teams.microsoft.com', 'teams.live.com',
+                'onedrive.live.com', '1drv.ms', 'office.live.com', 'powerbi.com', 'make.powerautomate.com', 'flow.microsoft.com',
+                'forms.microsoft.com', 'to-do.microsoft.com', 'onenote.com', 'admin.microsoft.com', 'intune.microsoft.com',
+                'entra.microsoft.com', 'security.microsoft.com', 'compliance.microsoft.com', 'learn.microsoft.com',
+                'support.microsoft.com', 'azure.com', 'dev.azure.com', 'visualstudio.com',
+            ];
+            $existeRegraGms = $db->prepare("SELECT 1 FROM categoria_regras WHERE categoria_id = :cat AND campo = 'url' AND tipo = 'regex' AND padrao = :padrao LIMIT 1");
+            $novaRegraGms = $db->prepare("INSERT INTO categoria_regras (categoria_id, campo, tipo, padrao, prioridade) VALUES (:cat, 'url', 'regex', :padrao, 10)");
+            foreach ($dominiosGoogleMs as $dominioGms) {
+                $pGms = [':cat' => $catProdutivoG, ':padrao' => '^(blob:)?[a-z]+://([^/?#]*\\.)?' . str_replace('.', '\\.', $dominioGms) . '([:/?#]|$)'];
+                $existeRegraGms->execute($pGms);
+                if (!$existeRegraGms->fetchColumn()) $novaRegraGms->execute($pGms);
+            }
+        }
+
+        // Assistentes de IA (ChatGPT, Claude e Copilot) na categoria "Produtivo": os sites (regras de domínio por
+        // host, aceitam "blob:") e os aplicativos de desktop (regras por aplicativo da janela). Idempotente.
+        $catProdutivoIA = $db->query("SELECT id FROM categorias WHERE nome = 'Produtivo' LIMIT 1")->fetchColumn();
+        if ($catProdutivoIA) {
+            $existeRegraIA = $db->prepare("SELECT 1 FROM categoria_regras WHERE categoria_id = :cat AND campo = :campo AND tipo = :tipo AND padrao = :padrao LIMIT 1");
+            $novaRegraIA = $db->prepare("INSERT INTO categoria_regras (categoria_id, campo, tipo, padrao, prioridade) VALUES (:cat, :campo, :tipo, :padrao, 10)");
+            $regrasIA = [];
+            foreach (['chatgpt.com', 'openai.com', 'claude.ai', 'anthropic.com', 'copilot.microsoft.com', 'contraktor.com.br', 'gov.br'] as $dominioIA) {
+                $regrasIA[] = ['url', 'regex', '^(blob:)?[a-z]+://([^/?#]*\\.)?' . str_replace('.', '\\.', $dominioIA) . '([:/?#]|$)'];
+            }
+            foreach (['ChatGPT.exe', 'Claude.exe', 'Copilot'] as $appIA) $regrasIA[] = ['app', 'contem', $appIA];
+            foreach ($regrasIA as [$campoIA, $tipoIA, $padraoIA]) {
+                $pIA = [':cat' => $catProdutivoIA, ':campo' => $campoIA, ':tipo' => $tipoIA, ':padrao' => $padraoIA];
+                $existeRegraIA->execute($pIA);
+                if (!$existeRegraIA->fetchColumn()) $novaRegraIA->execute($pIA);
+            }
+        }
+
+        // WhatsApp passa de Improdutivo para Neutro: move para "Neutro" (prioridade 90) as regras de WhatsApp que
+        // estavam em "Improdutivo" (aplicativo, título e o domínio web.whatsapp.com) e remove repetições que a
+        // mudança possa criar. Idempotente: depois de rodar, não resta regra de WhatsApp em Improdutivo.
+        $catImprodutivoW = $db->query("SELECT id FROM categorias WHERE nome = 'Improdutivo' LIMIT 1")->fetchColumn();
+        $catNeutroW = $db->query("SELECT id FROM categorias WHERE nome = 'Neutro' LIMIT 1")->fetchColumn();
+        if ($catImprodutivoW && $catNeutroW) {
+            $db->prepare("UPDATE categoria_regras SET categoria_id = :neutro, prioridade = 90
+                            WHERE categoria_id = :improdutivo AND LOWER(padrao) LIKE '%whatsapp%'")
+               ->execute([':neutro' => $catNeutroW, ':improdutivo' => $catImprodutivoW]);
+            $db->exec("DELETE r1 FROM categoria_regras r1
+                        JOIN categoria_regras r2 ON r2.categoria_id = r1.categoria_id AND r2.campo = r1.campo AND r2.tipo = r1.tipo
+                                                AND r2.padrao = r1.padrao AND r2.id < r1.id");
+        }
+
+        // rdstation.com.br (RD Station: app.rdstation.com.br, etc.) na categoria "Produtivo" — regra de domínio por host
+        // (aceita "blob:"). Idempotente.
+        $catProdutivoRD = $db->query("SELECT id FROM categorias WHERE nome = 'Produtivo' LIMIT 1")->fetchColumn();
+        if ($catProdutivoRD) {
+            $padraoRD = '^(blob:)?[a-z]+://([^/?#]*\\.)?rdstation\\.com\\.br([:/?#]|$)';
+            $existeRD = $db->prepare("SELECT 1 FROM categoria_regras WHERE categoria_id = :cat AND campo = 'url' AND tipo = 'regex' AND padrao = :padrao LIMIT 1");
+            $existeRD->execute([':cat' => $catProdutivoRD, ':padrao' => $padraoRD]);
+            if (!$existeRD->fetchColumn()) {
+                $db->prepare("INSERT INTO categoria_regras (categoria_id, campo, tipo, padrao, prioridade) VALUES (:cat, 'url', 'regex', :padrao, 10)")
+                   ->execute([':cat' => $catProdutivoRD, ':padrao' => $padraoRD]);
             }
         }
 
