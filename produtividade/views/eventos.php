@@ -35,6 +35,7 @@ $grupos = [
     'produtivo'   => 'Produtivo',
     'neutro'      => 'Neutro (inclui sem categoria)',
     'improdutivo' => 'Improdutivo',
+    'prod_improd' => 'Produtivo + Improdutivo (base do índice)',
     'ativo'       => 'Ativo (teclado/mouse)',
     'ausente'     => 'Ausente (AFK)',
     'bloqueada'   => 'Tela Bloqueada',
@@ -59,6 +60,7 @@ if ($grupo !== '') {
     }
     if ($grupo === 'produtivo') $where[] = 'e.categoria_id IN (SELECT id FROM categorias WHERE pontuacao = 1)';
     elseif ($grupo === 'improdutivo') $where[] = 'e.categoria_id IN (SELECT id FROM categorias WHERE pontuacao = -1)';
+    elseif ($grupo === 'prod_improd') $where[] = 'e.categoria_id IN (SELECT id FROM categorias WHERE pontuacao IN (1, -1))';
     elseif ($grupo === 'neutro') $where[] = '(e.categoria_id IS NULL OR e.categoria_id IN (SELECT id FROM categorias WHERE pontuacao = 0))';
     // Mesmo horário comercial do Dashboard (06:00-22:30, horário de Brasília).
     $where[] = "TIME(CONVERT_TZ(e.ts, '+00:00', '-03:00')) BETWEEN '06:00:00' AND '22:30:00'";

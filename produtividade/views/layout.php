@@ -78,7 +78,15 @@ function navLink($targetPage, $currentPage, $label, $iconPath) {
         </div>
 
         <div class="main-content">
-            <?php include "views/{$page}.php"; ?>
+            <?php
+            if ($page === 'dashboard') {
+                // Dashboard: cache de 2 min por tela (ver cache_pagina.php) — as demais telas são leves e vão direto.
+                require_once __DIR__ . '/../cache_pagina.php';
+                paginaComCache('dashboard', 300, function () use ($page) { include "views/{$page}.php"; });
+            } else {
+                include "views/{$page}.php";
+            }
+            ?>
         </div>
     </div>
 </div>

@@ -21,4 +21,8 @@ if ($page === 'eventos' && ($_GET['format'] ?? '') === 'csv') {
     exit;
 }
 
+// Respostas JSON sob demanda do dashboard (detalhe=...): o layout imprime HTML antes de chegar à view, então
+// tudo fica em buffer até a view descartá-lo e responder só o JSON (ver renderPainelProdutividade).
+if ($page === 'dashboard' && isset($_GET['detalhe'])) ob_start();
+
 include 'views/layout.php';

@@ -74,7 +74,7 @@ define('AW_SERVIDOR_IP', '10.10.140.17');
 
 // Incrementar sempre que uma migração (CREATE TABLE/ALTER TABLE) for adicionada em getDB() — é o
 // que faz o bloco de migração rodar de novo (uma única vez) na próxima requisição após o deploy.
-define('SCHEMA_VERSION', 27);
+define('SCHEMA_VERSION', 28);
 
 function getDB() {
     // Conexão + schema cacheados numa estática por requisição (mesmo motivo documentado em
@@ -683,6 +683,16 @@ function getDB() {
                 $db->prepare("INSERT INTO categoria_regras (categoria_id, campo, tipo, padrao, prioridade) VALUES (:cat, 'url', 'regex', :padrao, 10)")
                    ->execute([':cat' => $catProdutivoRD, ':padrao' => $padraoRD]);
             }
+        }
+
+        // Índice (tipo, ts) em eventos: as consultas do dashboard somam "tipo = 'window' AND ts BETWEEN ..." sobre
+        // TODAS as máquinas, e o único índice que começava por tipo era (maquina_id, tipo, ts) — que o MariaDB não
+        // usa sem filtrar maquina_id. Resultado: varredura completa da tabela (centenas de milhares de linhas) a cada
+        // consulta, ~11 s por soma. Com este índice a mesma consulta lê só o período pedido.
+        $temIdxTipoTs = (int)$db->query("SELECT COUNT(*) FROM information_schema.STATISTICS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'eventos' AND INDEX_NAME = 'idx_tipo_ts'")->fetchColumn();
+        if ($temIdxTipoTs === 0) {
+            $db->exec("ALTER TABLE eventos ADD INDEX idx_tipo_ts (tipo, ts), ALGORITHM=INPLACE, LOCK=NONE");
         }
 
         $db->exec("DELETE FROM schema_migrations");

@@ -223,6 +223,16 @@ function sincronizarMaquina(PDO $db, array $maquina, $origem = 'manual') {
             continue;
         }
 
+        // Bucket que a aplicação conhece de antes mas que o aw-server da máquina NÃO lista mais (a extensão
+        // do navegador cria "aw-watcher-web-chrome" sem hostname antes de descobrir o nome da máquina e
+        // depois passa a usar "aw-watcher-web-chrome_<host>"; o do agente de sessão some se o aw-server é
+        // recriado e só volta no próximo evento). Pedir os eventos dele dava HTTP 404 a cada sincronização e
+        // deixava a máquina eternamente em "parcial", sem nada de errado de fato. Os eventos já gravados
+        // continuam; o bucket só é puxado de novo se voltar a aparecer na lista.
+        if (!isset($bucketsAw[$bucketIdAw])) {
+            continue;
+        }
+
         if (!empty($bucket['ultimo_evento_ts'])) {
             // Retrocede 5 min sobre o cursor: o último evento de uma sessão do ActivityWatch tem a
             // duração atualizada a cada heartbeat enquanto a mesma janela/aba continua ativa, então
@@ -346,27 +356,62 @@ function sincronizarMaquina(PDO $db, array $maquina, $origem = 'manual') {
 function herdarCategoriaDasAbas(PDO $db, $maquinaId = null, $desdeUtc = null) {
     // Categoria "de reserva" = a neutra (pontuação 0): é onde a janela do navegador cai quando só o aplicativo
     // casou. A categoria da aba só é herdada quando é específica (produtiva/improdutiva), nunca a neutra.
-    $reserva = array_column($db->query("SELECT id FROM categorias WHERE pontuacao = 0")->fetchAll(), 'id');
-    $reservaSql = $reserva ? implode(',', array_map('intval', $reserva)) : '0';
-    $filtro = ''; $params = [];
-    if ($maquinaId !== null) { $filtro .= ' AND w.maquina_id = :m'; $params[':m'] = $maquinaId; }
-    if ($desdeUtc !== null)  { $filtro .= ' AND w.ts >= :d'; $params[':d'] = $desdeUtc; }
+    $reserva = array_flip(array_map('intval', array_column($db->query("SELECT id FROM categorias WHERE pontuacao = 0")->fetchAll(), 'id')));
+    $filtroW = ''; $filtroB = ''; $paramsW = []; $paramsB = [];
+    if ($maquinaId !== null) { $filtroW .= ' AND w.maquina_id = :m'; $paramsW[':m'] = $maquinaId; $filtroB .= ' AND b.maquina_id = :m'; $paramsB[':m'] = $maquinaId; }
+    if ($desdeUtc !== null) {
+        $filtroW .= ' AND w.ts >= :d'; $paramsW[':d'] = $desdeUtc;
+        // as abas começam até 2 s antes da janela — uma folga de 1 min na borda inicial cobre qualquer arredondamento
+        $filtroB .= ' AND b.ts >= :d'; $paramsB[':d'] = gmdate('Y-m-d H:i:s', strtotime($desdeUtc . ' UTC') - 60);
+    }
 
-    $stmt = $db->prepare("SELECT w.id, w.categoria_id AS atual,
-            (SELECT b.categoria_id FROM eventos b
-              WHERE b.maquina_id = w.maquina_id AND b.tipo = 'web'
-                AND b.ts >= w.ts - INTERVAL 2 SECOND AND b.ts <= w.ts + INTERVAL (CEIL(w.duracao) + 3) SECOND
-              ORDER BY (b.titulo IS NOT NULL AND b.titulo <> '' AND LOCATE(b.titulo, w.titulo) > 0) DESC,
-                       ABS(TIMESTAMPDIFF(MICROSECOND, w.ts, b.ts)) LIMIT 1) AS nova
-        FROM eventos w
-        WHERE w.tipo = 'window' AND LOWER(w.app) IN ('chrome.exe', 'msedge.exe', 'firefox.exe', 'brave.exe', 'opera.exe') {$filtro}
-        HAVING nova IS NOT NULL AND nova NOT IN ({$reservaSql}) AND (atual IS NULL OR atual <> nova)");
-    $stmt->execute($params);
+    // O casamento é feito em MEMÓRIA, por máquina, com busca binária pelo horário. A versão anterior usava uma
+    // subconsulta correlacionada por janela: o MariaDB não aproveitava o intervalo de ts dela e relia TODAS as abas
+    // da máquina para cada janela (~2,7 milhões de leituras por sincronização, 11 a 19 s por máquina).
+    $stW = $db->prepare("SELECT w.id, w.maquina_id, w.ts, w.duracao, w.titulo, w.categoria_id FROM eventos w
+        WHERE w.tipo = 'window' AND LOWER(w.app) IN ('chrome.exe', 'msedge.exe', 'firefox.exe', 'brave.exe', 'opera.exe') {$filtroW}");
+    $stW->execute($paramsW);
+    $janelasPorMaq = [];
+    while ($r = $stW->fetch(PDO::FETCH_ASSOC)) $janelasPorMaq[$r['maquina_id']][] = $r;
+    if (!$janelasPorMaq) return 0;
+
+    $stB = $db->prepare("SELECT b.maquina_id, b.ts, b.titulo, b.categoria_id FROM eventos b WHERE b.tipo = 'web' {$filtroB}
+        AND b.maquina_id IN (" . implode(',', array_map('intval', array_keys($janelasPorMaq))) . ") ORDER BY b.maquina_id, b.ts");
+    $stB->execute($paramsB);
+    $epoch = fn($ts) => strtotime(substr($ts, 0, 19) . ' UTC') + (float)('0' . substr($ts, 19));
+    $abasPorMaq = [];
+    while ($r = $stB->fetch(PDO::FETCH_ASSOC)) $abasPorMaq[$r['maquina_id']][] = [$epoch($r['ts']), (string)$r['titulo'], $r['categoria_id']];
+
     $update = $db->prepare("UPDATE eventos SET categoria_id = :c WHERE id = :id");
     $n = 0;
-    foreach ($stmt->fetchAll() as $r) {
-        $update->execute([':c' => $r['nova'], ':id' => $r['id']]);
-        $n++;
+    foreach ($janelasPorMaq as $mid => $janelas) {
+        $abas = $abasPorMaq[$mid] ?? [];
+        $na = count($abas);
+        if ($na === 0) continue;
+        foreach ($janelas as $w) {
+            $t = $epoch($w['ts']);
+            $lo = $t - 2; $hi = $t + ceil((float)$w['duracao']) + 3;
+            // primeira aba com horário >= lo (busca binária)
+            $a = 0; $b = $na;
+            while ($a < $b) { $meio = ($a + $b) >> 1; if ($abas[$meio][0] < $lo) $a = $meio + 1; else $b = $meio; }
+            $melhor = null; $melhorTitulo = false; $melhorDif = INF;
+            $tituloJanela = (string)$w['titulo'];
+            for ($i = $a; $i < $na && $abas[$i][0] <= $hi; $i++) {
+                $tituloOk = $abas[$i][1] !== '' && $tituloJanela !== '' && mb_stripos($tituloJanela, $abas[$i][1]) !== false;
+                $dif = abs($abas[$i][0] - $t);
+                // título contido na janela vale primeiro; depois, a de início mais próximo
+                if ($melhor === null || ($tituloOk && !$melhorTitulo) || ($tituloOk === $melhorTitulo && $dif < $melhorDif)) {
+                    $melhor = $i; $melhorTitulo = $tituloOk; $melhorDif = $dif;
+                }
+            }
+            if ($melhor === null) continue;
+            $nova = $abas[$melhor][2];
+            if ($nova === null || isset($reserva[(int)$nova])) continue;   // aba sem categoria ou neutra: a janela fica como está
+            if ($w['categoria_id'] === null || (int)$w['categoria_id'] !== (int)$nova) {
+                $update->execute([':c' => $nova, ':id' => $w['id']]);
+                $n++;
+            }
+        }
     }
     return $n;
 }

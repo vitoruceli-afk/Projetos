@@ -2,8 +2,8 @@
 $db = getDB();
 
 // ---- Filtros de período (compartilhado pelas 3 visões) ----
-$periodo = $_GET['periodo'] ?? '7d';
-if (!in_array($periodo, ['hoje', '7d', '30d', 'custom'], true)) $periodo = '7d';
+$periodo = $_GET['periodo'] ?? 'hoje';
+if (!in_array($periodo, ['hoje', '7d', '30d', 'custom'], true)) $periodo = 'hoje';
 
 $tz = new DateTimeZone('America/Sao_Paulo');
 $agoraLocal = new DateTime('now', $tz);
@@ -1003,6 +1003,74 @@ function resumoIntegridadeColeta(PDO $db, array $maquinaIds, $usuarioFiltro, $in
     return ['total' => $total, 'ok' => $ok, 'ultima' => $ultima, 'atrasadas' => $atrasadas];
 }
 
+// Respostas sob demanda do painel (ver o bloco "$detalheReq" em renderPainelProdutividade). Mesmos recortes
+// (máquina, usuário, período, horário comercial, tela desbloqueada) dos KPIs, restritos ao que foi pedido.
+function detalheDashboardSobDemanda(PDO $db, $tipo, array $params, $filtroMaquinaSql, $filtroHorario, $filtroNaoBloqueado) {
+    if ($tipo === 'tooltip') {
+        // Top 5 apps/sites por categoria, já formatados "Nome: 1h30" (tooltip da pizza).
+        $detalhe = [];
+        $stmt = $db->prepare("SELECT COALESCE(c.nome, 'Sem categoria') AS categoria_key, e.app AS item, SUM(e.duracao) AS total
+            FROM eventos e LEFT JOIN categorias c ON c.id = e.categoria_id
+            WHERE e.tipo = 'window' AND e.app IS NOT NULL AND e.app <> '' AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
+            GROUP BY categoria_key, item");
+        $stmt->execute($params);
+        foreach ($stmt->fetchAll() as $row) {
+            $detalhe[$row['categoria_key']][$row['item']] = ($detalhe[$row['categoria_key']][$row['item']] ?? 0) + (float)$row['total'];
+        }
+        $stmt = $db->prepare("SELECT COALESCE(c.nome, 'Sem categoria') AS categoria_key, e.url AS url, SUM(e.duracao) AS total
+            FROM eventos e LEFT JOIN categorias c ON c.id = e.categoria_id
+            WHERE e.tipo = 'web' AND e.url IS NOT NULL AND e.url <> '' AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario}
+            GROUP BY categoria_key, url");
+        $stmt->execute($params);
+        foreach ($stmt->fetchAll() as $row) {
+            $host = parse_url($row['url'], PHP_URL_HOST) ?: $row['url'];
+            $host = preg_replace('/^www\./', '', $host);
+            $detalhe[$row['categoria_key']][$host] = ($detalhe[$row['categoria_key']][$host] ?? 0) + (float)$row['total'];
+        }
+        $top = [];
+        foreach ($detalhe as $catKey => $itens) {
+            arsort($itens);
+            $linhas = [];
+            foreach (array_slice($itens, 0, 5, true) as $nome => $total) $linhas[] = $nome . ': ' . formatarDuracao($total);
+            $top[$catKey] = $linhas;
+        }
+        return $top;
+    }
+    if ($tipo === 'titulos') {
+        // Popup de categoria: 20 títulos (título > app > url > "(sem título)") com o app de cada um.
+        $params[':cat'] = (string)($_GET['cat'] ?? '');
+        $stmt = $db->prepare("SELECT COALESCE(NULLIF(e.titulo, ''), NULLIF(e.app, ''), NULLIF(e.url, ''), '(sem título)') AS item,
+                e.app AS app, SUM(e.duracao) AS total
+            FROM eventos e LEFT JOIN categorias c ON c.id = e.categoria_id
+            WHERE e.tipo = 'window' AND COALESCE(c.nome, 'Sem categoria') = :cat AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
+            GROUP BY item, app");
+        $stmt->execute($params);
+        $totais = []; $appDe = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $totais[$row['item']] = ($totais[$row['item']] ?? 0) + (float)$row['total'];
+            // título que vem de mais de um app: fica o app com mais tempo
+            if (!isset($appDe[$row['item']]) || (float)$row['total'] > $appDe[$row['item']][1]) $appDe[$row['item']] = [$row['app'] ?: '', (float)$row['total']];
+        }
+        arsort($totais);
+        $linhas = [];
+        foreach (array_slice($totais, 0, 20, true) as $item => $total) $linhas[] = [(string)$item, $appDe[$item][0], $total];
+        return $linhas;
+    }
+    if ($tipo === 'apptitulos') {
+        // Card "Top 10" ao escolher um aplicativo: seus 10 títulos mais vistos, em minutos.
+        $params[':app'] = (string)($_GET['app'] ?? '');
+        $stmt = $db->prepare("SELECT COALESCE(NULLIF(titulo, ''), '(sem título)') AS item, SUM(duracao) AS total
+            FROM eventos e
+            WHERE tipo = 'window' AND app = :app AND ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
+            GROUP BY item ORDER BY total DESC LIMIT 10");
+        $stmt->execute($params);
+        $labels = []; $data = [];
+        foreach ($stmt->fetchAll() as $row) { $labels[] = (string)$row['item']; $data[] = round($row['total'] / 60); }
+        return ['labels' => $labels, 'data' => $data];
+    }
+    return [];
+}
+
 function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inicioLocal, DateTime $fimLocal, array $maquinaIds, $exibirTendenciaPontos = false, $tendenciaDiasForcado = null, $usuarioFiltro = null, callable $entreStatsECharts = null, $mapaCalor = false) {
     $filtroMaquinaSql = '';
     $params = [':ini' => $inicioUtc, ':fim' => $fimUtc];
@@ -1031,6 +1099,21 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
     $filtroHorario = filtroHorarioComercialSql();
     $filtroNaoBloqueado = filtroNaoBloqueadoSql();
 
+    $idSufixo = 'p' . substr(md5(implode(',', $maquinaIds) . '|' . ($usuarioFiltro ?? '')), 0, 6);
+
+    // Detalhes pesados (tooltip da pizza, lista do popup de categoria, títulos por app) NÃO são calculados
+    // na abertura da tela: o JS os busca sob demanda com a mesma query string + "detalhe=...&painel=<id>".
+    // Aqui a requisição é respondida em JSON antes de qualquer outra consulta do painel.
+    $detalheReq = $_GET['detalhe'] ?? '';
+    if ($detalheReq !== '') {
+        if (($_GET['painel'] ?? '') !== $idSufixo) return;   // outro painel da mesma página
+        $resp = detalheDashboardSobDemanda($db, $detalheReq, $params, $filtroMaquinaSql, $filtroHorario, $filtroNaoBloqueado);
+        while (ob_get_level() > 0) ob_end_clean();
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode($resp, JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
     // ---- KPIs: distribuição por categoria (janelas + navegador) ----
     $stmt = $db->prepare("SELECT
             c.id AS categoria_id,
@@ -1056,77 +1139,6 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
     }
     $pctProdutivo = $totalMonitorado > 0 ? round($produtivo / $totalMonitorado * 100) : 0;
 
-    // ---- Detalhe por categoria: quais apps/sites compõem cada fatia do gráfico de pizza acima ----
-    // Mesma chave de agrupamento (COALESCE ... 'Sem categoria') usada no label do gráfico, para casar
-    // os dois lados na hora de montar o tooltip no JS.
-    $detalheCategoria = [];
-    $stmt = $db->prepare("SELECT COALESCE(c.nome, 'Sem categoria') AS categoria_key, e.app AS item, SUM(e.duracao) AS total
-        FROM eventos e LEFT JOIN categorias c ON c.id = e.categoria_id
-        WHERE e.tipo = 'window' AND e.app IS NOT NULL AND e.app <> '' AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
-        GROUP BY categoria_key, item");
-    $stmt->execute($params);
-    foreach ($stmt->fetchAll() as $row) {
-        $detalheCategoria[$row['categoria_key']][$row['item']] = ($detalheCategoria[$row['categoria_key']][$row['item']] ?? 0) + (float)$row['total'];
-    }
-    $stmt = $db->prepare("SELECT COALESCE(c.nome, 'Sem categoria') AS categoria_key, e.url AS url, SUM(e.duracao) AS total
-        FROM eventos e LEFT JOIN categorias c ON c.id = e.categoria_id
-        WHERE e.tipo = 'web' AND e.url IS NOT NULL AND e.url <> '' AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario}
-        GROUP BY categoria_key, url");
-    $stmt->execute($params);
-    foreach ($stmt->fetchAll() as $row) {
-        $host = parse_url($row['url'], PHP_URL_HOST) ?: $row['url'];
-        $host = preg_replace('/^www\./', '', $host);
-        $detalheCategoria[$row['categoria_key']][$host] = ($detalheCategoria[$row['categoria_key']][$host] ?? 0) + (float)$row['total'];
-    }
-    // Top 5 itens por categoria, já formatados como "Nome: 1h30" para exibir direto no tooltip.
-    $detalheCategoriaTop = [];
-    foreach ($detalheCategoria as $catKey => $itens) {
-        arsort($itens);
-        $top = array_slice($itens, 0, 5, true);
-        $linhas = [];
-        foreach ($top as $nome => $total) $linhas[] = $nome . ': ' . formatarDuracao($total);
-        $detalheCategoriaTop[$catKey] = $linhas;
-    }
-
-    // ---- Detalhe por categoria, agora por título de janela/aba — usado no "explodir" (popup) do
-    // gráfico de pizza ao clicar numa fatia. COALESCE encadeado: título > app > domínio da URL >
-    // "(sem título)", pra sempre ter algo pra mostrar mesmo num evento sem e.titulo preenchido.
-    // Também guarda o app de cada título (mostrado numa coluna própria no popup) — é o que revela,
-    // por exemplo, que "Senior | Gestão de Pessoas..." roda dentro do processo genérico "WA.exe",
-    // informação que o usuário precisa pra saber se a regra de categorização deve casar por
-    // "Aplicativo" (WA.exe) ou por "Título da janela" (Senior).
-    $detalheCategoriaTitulos = [];
-    $appPorTitulo = [];
-    $stmt = $db->prepare("SELECT COALESCE(c.nome, 'Sem categoria') AS categoria_key,
-            COALESCE(NULLIF(e.titulo, ''), NULLIF(e.app, ''), NULLIF(e.url, ''), '(sem título)') AS item,
-            e.app AS app,
-            SUM(e.duracao) AS total
-        FROM eventos e LEFT JOIN categorias c ON c.id = e.categoria_id
-        WHERE e.tipo = 'window' AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
-        GROUP BY categoria_key, item, app");
-    $stmt->execute($params);
-    foreach ($stmt->fetchAll() as $row) {
-        $chave = $row['categoria_key'] . '|' . $row['item'];
-        $detalheCategoriaTitulos[$row['categoria_key']][$row['item']] = ($detalheCategoriaTitulos[$row['categoria_key']][$row['item']] ?? 0) + (float)$row['total'];
-        // Um título pode, raramente, vir de mais de um app (título genérico) — fica o app com mais
-        // tempo acumulado pra esse título.
-        if (!isset($appPorTitulo[$chave]) || (float)$row['total'] > $appPorTitulo[$chave]['total']) {
-            $appPorTitulo[$chave] = ['app' => $row['app'] ?: '', 'total' => (float)$row['total']];
-        }
-    }
-    foreach ($detalheCategoriaTitulos as $catKey => &$itens) {
-        arsort($itens);
-        $itens = array_slice($itens, 0, 20, true);
-    }
-    unset($itens);
-    // Achata pra [categoria][titulo] => nomeDoApp, no mesmo formato simples de $detalheCategoriaTitulos,
-    // só com os títulos que sobreviveram ao corte de top 20 acima.
-    $detalheCategoriaApps = [];
-    foreach ($detalheCategoriaTitulos as $catKey => $itens) {
-        foreach ($itens as $item => $total) {
-            $detalheCategoriaApps[$catKey][$item] = $appPorTitulo[$catKey . '|' . $item]['app'] ?? '';
-        }
-    }
 
     // ---- Tempo do dispositivo como PARTIÇÃO (Ativo / Ausente / Tela bloqueada / Sem registro) — ver
     // calcularParticaoDispositivo(): cada segundo cai em um único balde e a soma fecha com a referência. ----
@@ -1137,62 +1149,31 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
     // títulos de janela mais vistos de UM app específico, escolhido pelo usuário (pedido explícito).
     // $todosApps traz TODOS os apps do período (não só 10) pra popular essa caixa de seleção —
     // $topApps continua sendo só os 10 primeiros, pro gráfico no modo padrão.
-    $stmt = $db->prepare("SELECT app, SUM(duracao) AS total FROM eventos e
-        WHERE tipo = 'window' AND app IS NOT NULL AND app <> '' AND ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
-        GROUP BY app ORDER BY total DESC");
+    // Uma só consulta (app × categoria) alimenta o Top 10, a lista do seletor E a cor de cada app. A cor de
+    // cada app = cor da categoria que mais contribuiu pro tempo dele (um app pode, raramente, ter migrado de
+    // categoria se as regras mudaram); sem categoria cai no cinza padrão. Calculado pra TODOS os apps porque o
+    // seletor deixa escolher qualquer um, e as barras de título reaproveitam a cor do app selecionado.
+    // A junção por app ignora maiúsculas/minúsculas, como o GROUP BY do banco.
+    $stmt = $db->prepare("SELECT e.app, c.cor AS categoria_cor, SUM(e.duracao) AS total
+        FROM eventos e LEFT JOIN categorias c ON c.id = e.categoria_id
+        WHERE e.tipo = 'window' AND e.app IS NOT NULL AND e.app <> '' AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
+        GROUP BY e.app, c.id, c.cor");
     $stmt->execute($params);
-    $todosApps = $stmt->fetchAll();
-    $topApps = array_slice($todosApps, 0, 10);
-
-    // Cor de cada app = cor da categoria que mais contribuiu pro tempo dele (um app pode, raramente,
-    // ter migrado de categoria ao longo do tempo se as regras mudaram — fica a que tem mais tempo
-    // acumulado). Sem categoria cai no cinza padrão, igual ao resto do dashboard. Calculado pra
-    // TODOS os apps (não só os 10 do gráfico padrão) porque a caixa de seleção deixa escolher
-    // qualquer um, e as barras de título reaproveitam a cor do próprio app selecionado.
-    $corPorApp = [];
-    if (!empty($todosApps)) {
-        $stmt = $db->prepare("SELECT e.app, c.cor AS categoria_cor, SUM(e.duracao) AS total
-            FROM eventos e LEFT JOIN categorias c ON c.id = e.categoria_id
-            WHERE e.tipo = 'window' AND e.app IS NOT NULL AND e.app <> '' AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
-            GROUP BY e.app, c.id, c.cor");
-        $stmt->execute($params);
-        $melhorPorApp = [];
-        foreach ($stmt->fetchAll() as $row) {
-            if (!isset($melhorPorApp[$row['app']]) || (float)$row['total'] > $melhorPorApp[$row['app']]['total']) {
-                $melhorPorApp[$row['app']] = ['cor' => $row['categoria_cor'] ?? '#c7c5da', 'total' => (float)$row['total']];
-            }
-        }
-        foreach ($todosApps as $r) {
-            $corPorApp[$r['app']] = $melhorPorApp[$r['app']]['cor'] ?? '#c7c5da';
-        }
-    }
-
-    // Top 10 títulos de janela de CADA app (não só os que aparecem no Top 10 padrão) — mesmo padrão
-    // de agregação de $detalheCategoriaTitulos mais abaixo, só que agrupando por app em vez de
-    // categoria. $dadosTopPorApp já sai pronto no formato que o gráfico Chart.js espera (labels +
-    // dados em minutos), indexado por app, pra trocar o gráfico inteiro no cliente sem ida ao
-    // servidor quando a caixa de seleção muda.
-    $titulosPorApp = [];
-    $stmt = $db->prepare("SELECT app, COALESCE(NULLIF(titulo, ''), '(sem título)') AS item, SUM(duracao) AS total
-        FROM eventos e
-        WHERE tipo = 'window' AND app IS NOT NULL AND app <> '' AND ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
-        GROUP BY app, item");
-    $stmt->execute($params);
+    $totalPorApp = []; $nomePorApp = []; $melhorPorApp = [];
     foreach ($stmt->fetchAll() as $row) {
-        $titulosPorApp[$row['app']][$row['item']] = ($titulosPorApp[$row['app']][$row['item']] ?? 0) + (float)$row['total'];
+        $k = mb_strtolower($row['app']);
+        $t = (float)$row['total'];
+        $nomePorApp[$k] = $nomePorApp[$k] ?? $row['app'];
+        $totalPorApp[$k] = ($totalPorApp[$k] ?? 0.0) + $t;
+        if (!isset($melhorPorApp[$k]) || $t > $melhorPorApp[$k]['total']) $melhorPorApp[$k] = ['cor' => $row['categoria_cor'] ?? '#c7c5da', 'total' => $t];
     }
-    $dadosTopPorApp = [];
-    foreach ($todosApps as $r) {
-        $app = $r['app'];
-        $titulos = $titulosPorApp[$app] ?? [];
-        arsort($titulos);
-        $titulos = array_slice($titulos, 0, 10, true);
-        $dadosTopPorApp[$app] = [
-            'labels' => array_keys($titulos),
-            'data' => array_values(array_map(fn($t) => round($t / 60), $titulos)),
-            'cor' => $corPorApp[$app] ?? '#c7c5da',
-        ];
+    arsort($totalPorApp);
+    $todosApps = []; $corPorApp = [];
+    foreach ($totalPorApp as $k => $t) {
+        $todosApps[] = ['app' => $nomePorApp[$k], 'total' => $t];
+        $corPorApp[$nomePorApp[$k]] = $melhorPorApp[$k]['cor'];
     }
+    $topApps = array_slice($todosApps, 0, 10);
 
     // ---- Tendência diária (produtivo/neutro/improdutivo) — data local via offset fixo de Brasília.
     // Janela própria (independente do recorte "hoje"/período dos KPIs acima): sempre 7 ou 30 dias
@@ -1368,14 +1349,14 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
             <div><div class="stat-label">Improdutivo</div><div class="stat-value critical-c"><?= formatarDuracao($improdutivo) ?></div><div class="stat-note"><?= $fmtPct($pctDe($improdutivo, $totalMonitorado)) ?> do monitorado</div></div>
             <div class="stat-icon red"><i class="bi bi-graph-down-arrow"></i></div>
         </a>
-        <div class="stat-tile" title="Produtivo ÷ (Produtivo + Improdutivo): compara só os dois extremos, sem o tempo neutro, então é comparável entre pessoas e períodos.">
+        <a class="stat-tile" href="<?= htmlspecialchars($linkCard('prod_improd')) ?>" title="Produtivo ÷ (Produtivo + Improdutivo): compara só os dois extremos, sem o tempo neutro, então é comparável entre pessoas e períodos. Clique para ver os eventos (produtivos e improdutivos).">
             <div><div class="stat-label">Índice de Produtividade</div><div class="stat-value"><?= $indiceProd === null ? '—' : $fmtPct($indiceProd) ?></div><div class="stat-note">produtivo ÷ (produtivo + improdutivo)</div></div>
             <div class="stat-icon purple"><i class="bi bi-speedometer2"></i></div>
-        </div>
-        <div class="stat-tile" title="Tempo monitorado ÷ dias com atividade (fins de semana, feriados e máquinas desligadas ficam fora do divisor).">
+        </a>
+        <a class="stat-tile" href="<?= htmlspecialchars($linkCard('monitorado')) ?>" title="Tempo monitorado ÷ dias com atividade (fins de semana, feriados e máquinas desligadas ficam fora do divisor). Clique para ver os eventos do período.">
             <div><div class="stat-label">Média por Dia Útil</div><div class="stat-value"><?= formatarDuracao($mediaDia) ?></div><div class="stat-note"><?= (int)$part['diasUteis'] ?> dia(s) com atividade</div></div>
             <div class="stat-icon orange"><i class="bi bi-calendar-check"></i></div>
-        </div>
+        </a>
     </div>
 
     <div class="row g-3 mb-3">
@@ -1556,9 +1537,22 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
         Chart.defaults.color = corTexto || '#5f5d78';
         Chart.defaults.font.family = "'Segoe UI', sans-serif";
 
-        var detalheCategoria<?= $idSufixo ?> = <?= json_encode($detalheCategoriaTop, JSON_UNESCAPED_UNICODE) ?>;
-        var detalheTitulos<?= $idSufixo ?> = <?= json_encode($detalheCategoriaTitulos, JSON_UNESCAPED_UNICODE) ?>;
-        var detalheApps<?= $idSufixo ?> = <?= json_encode($detalheCategoriaApps, JSON_UNESCAPED_UNICODE) ?>;
+        // Detalhes pesados vêm sob demanda (mesma query string + detalhe=...&painel=...): ver detalheDashboardSobDemanda().
+        function urlDetalhe<?= $idSufixo ?>(tipo, extra) {
+            var p = new URLSearchParams(window.location.search);
+            p.delete("nocache");
+            p.set("detalhe", tipo); p.set("painel", "<?= $idSufixo ?>");
+            Object.keys(extra || {}).forEach(function (k) { p.set(k, extra[k]); });
+            return "index.php?" + p.toString();
+        }
+        function buscarDetalhe<?= $idSufixo ?>(tipo, extra) {
+            return fetch(urlDetalhe<?= $idSufixo ?>(tipo, extra), { credentials: "same-origin" })
+                .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); });
+        }
+        var detalheCategoria<?= $idSufixo ?> = {};
+        var cacheTitulos<?= $idSufixo ?> = {};
+        // tooltip da pizza (top 5 apps/sites por categoria): carrega em segundo plano, sem travar a tela
+        buscarDetalhe<?= $idSufixo ?>("tooltip").then(function (d) { detalheCategoria<?= $idSufixo ?> = d || {}; }).catch(function () {});
         var categoriasBase<?= $idSufixo ?> = {
             labels: <?= json_encode(array_map(fn($r) => $r['categoria_nome'] ?? 'Sem categoria', $porCategoria)) ?>,
             data: <?= json_encode(array_map(fn($r) => round($r['total']), $porCategoria)) ?>,
@@ -1617,39 +1611,50 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
         // primeira versão, que "explodia" o próprio doughnut trocando as fatias por títulos.
         function abrirModalCategoria<?= $idSufixo ?>(idx) {
             var label = categoriasBase<?= $idSufixo ?>.labels[idx];
-            var titulos = detalheTitulos<?= $idSufixo ?>[label] || {};
-            var apps = detalheApps<?= $idSufixo ?>[label] || {};
-            var nomes = Object.keys(titulos);
-
             document.getElementById('modalCategoriaTitulo<?= $idSufixo ?>').textContent = label;
             var lista = document.getElementById('modalCategoriaLista<?= $idSufixo ?>');
-            lista.innerHTML = '';
-            if (!nomes.length) {
-                lista.innerHTML = '<tr><td colspan="3" class="text-muted text-center">Sem detalhamento disponível.</td></tr>';
-            } else {
-                nomes.forEach(function (nome) {
+
+            function desenhar(linhas) {
+                lista.innerHTML = '';
+                if (!linhas.length) {
+                    lista.innerHTML = '<tr><td colspan="3" class="text-muted text-center">Sem detalhamento disponível.</td></tr>';
+                    return;
+                }
+                linhas.forEach(function (l) {
                     var tr = document.createElement('tr');
 
                     var tdApp = document.createElement('td');
                     tdApp.className = 'text-truncate mono small';
                     tdApp.style.maxWidth = '160px';
-                    tdApp.textContent = apps[nome] || '—';
-                    tdApp.title = apps[nome] || '';
+                    tdApp.textContent = l[1] || '—';
+                    tdApp.title = l[1] || '';
 
                     var tdTitulo = document.createElement('td');
                     tdTitulo.className = 'text-truncate';
                     tdTitulo.style.maxWidth = '320px';
-                    tdTitulo.textContent = nome;
-                    tdTitulo.title = nome;
+                    tdTitulo.textContent = l[0];
+                    tdTitulo.title = l[0];
 
                     var tdTempo = document.createElement('td');
                     tdTempo.className = 'text-end text-nowrap';
-                    tdTempo.textContent = formatarDuracaoJs<?= $idSufixo ?>(titulos[nome]);
+                    tdTempo.textContent = formatarDuracaoJs<?= $idSufixo ?>(l[2]);
 
                     tr.appendChild(tdApp);
                     tr.appendChild(tdTitulo);
                     tr.appendChild(tdTempo);
                     lista.appendChild(tr);
+                });
+            }
+
+            if (cacheTitulos<?= $idSufixo ?>[label]) {
+                desenhar(cacheTitulos<?= $idSufixo ?>[label]);
+            } else {
+                lista.innerHTML = '<tr><td colspan="3" class="text-muted text-center">Carregando…</td></tr>';
+                buscarDetalhe<?= $idSufixo ?>("titulos", { cat: label }).then(function (linhas) {
+                    cacheTitulos<?= $idSufixo ?>[label] = linhas;
+                    desenhar(linhas);
+                }).catch(function () {
+                    lista.innerHTML = '<tr><td colspan="3" class="text-danger text-center">Não foi possível carregar o detalhamento. Tente novamente.</td></tr>';
                 });
             }
 
@@ -1732,7 +1737,8 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
         // Dados por app (10 títulos de janela mais vistos de cada um, já em minutos) pra trocar o
         // gráfico no cliente quando a caixa de seleção do card "Top 10" muda, sem ida ao servidor —
         // mesmo princípio de detalheCategoria<?= $idSufixo ?> acima.
-        var dadosTopPorApp<?= $idSufixo ?> = <?= json_encode($dadosTopPorApp, JSON_UNESCAPED_UNICODE) ?>;
+        var dadosTopPorApp<?= $idSufixo ?> = {};
+        var corPorApp<?= $idSufixo ?> = <?= json_encode($corPorApp, JSON_UNESCAPED_UNICODE) ?>;
         var topAppsPadrao<?= $idSufixo ?> = {
             labels: <?= json_encode(array_map(fn($r) => nomeAmigavelApp($r['app']), $topApps), JSON_UNESCAPED_UNICODE) ?>,
             data: <?= json_encode(array_map(fn($r) => round($r['total']/60), $topApps)) ?>,
@@ -1756,22 +1762,28 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
         });
 
         document.getElementById('seletorTopApp<?= $idSufixo ?>').addEventListener('change', function () {
-            var app = this.value;
-            var dados = app && dadosTopPorApp<?= $idSufixo ?>[app]
-                ? dadosTopPorApp<?= $idSufixo ?>[app]
-                : null;
-            if (dados) {
-                chartApps<?= $idSufixo ?>.data.labels = dados.labels;
-                chartApps<?= $idSufixo ?>.data.datasets[0].data = dados.data;
-                chartApps<?= $idSufixo ?>.data.datasets[0].backgroundColor = dados.labels.map(() => dados.cor);
-            } else {
-                chartApps<?= $idSufixo ?>.data.labels = topAppsPadrao<?= $idSufixo ?>.labels;
-                chartApps<?= $idSufixo ?>.data.datasets[0].data = topAppsPadrao<?= $idSufixo ?>.data;
-                chartApps<?= $idSufixo ?>.data.datasets[0].backgroundColor = topAppsPadrao<?= $idSufixo ?>.cores;
+            var sel = this, app = sel.value;
+            function aplicar(dados) {
+                if (sel.value !== app) return;   // a pessoa já trocou de opção enquanto carregava
+                if (dados) {
+                    chartApps<?= $idSufixo ?>.data.labels = dados.labels;
+                    chartApps<?= $idSufixo ?>.data.datasets[0].data = dados.data;
+                    chartApps<?= $idSufixo ?>.data.datasets[0].backgroundColor = dados.labels.map(function () { return corPorApp<?= $idSufixo ?>[app] || '#c7c5da'; });
+                } else {
+                    chartApps<?= $idSufixo ?>.data.labels = topAppsPadrao<?= $idSufixo ?>.labels;
+                    chartApps<?= $idSufixo ?>.data.datasets[0].data = topAppsPadrao<?= $idSufixo ?>.data;
+                    chartApps<?= $idSufixo ?>.data.datasets[0].backgroundColor = topAppsPadrao<?= $idSufixo ?>.cores;
+                }
+                chartApps<?= $idSufixo ?>.update();
             }
-            chartApps<?= $idSufixo ?>.update();
+            if (!app) return aplicar(null);
+            if (dadosTopPorApp<?= $idSufixo ?>[app]) return aplicar(dadosTopPorApp<?= $idSufixo ?>[app]);
+            sel.disabled = true;
+            buscarDetalhe<?= $idSufixo ?>("apptitulos", { app: app }).then(function (d) {
+                dadosTopPorApp<?= $idSufixo ?>[app] = d;
+                sel.disabled = false; aplicar(d);
+            }).catch(function () { sel.disabled = false; alert('Não foi possível carregar os títulos deste aplicativo. Tente novamente.'); });
         });
-
     })();
     </script>
     <?php
@@ -1781,41 +1793,62 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
 // Agrega produtividade por colaborador (usuário do Windows detectado), departamento (setor/OU) ou
 // máquina, no mesmo recorte de horário/bloqueio dos KPIs. $maquinaIds restringe às máquinas dadas
 // (null = todas). Devolve [chave => ['total','produtivo','improdutivo','maquinas'(lista de nomes)]].
+// Leitura única de eventos por período, agrupada por máquina × usuário (static: vale só dentro da requisição).
+// Alimenta os rankings, o comparativo de setores e o de usuários — antes cada um varria a tabela de eventos
+// por conta própria (com JOINs), 1 a 2 s cada em períodos longos. Mesmo recorte dos KPIs (horário comercial,
+// sem tela bloqueada). Linhas: maquina_id, usuario, total, produtivo, improdutivo.
+function leituraMaquinaUsuario(PDO $db, $iniUtc, $fimUtc) {
+    static $porPeriodo = [];
+    $chave = $iniUtc . '|' . $fimUtc;
+    if (!isset($porPeriodo[$chave])) {
+        $stmt = $db->prepare("SELECT e.maquina_id, e.usuario_detectado AS usuario,
+                SUM(e.duracao) AS total,
+                SUM(CASE WHEN c.pontuacao = 1 THEN e.duracao ELSE 0 END) AS produtivo,
+                SUM(CASE WHEN c.pontuacao = -1 THEN e.duracao ELSE 0 END) AS improdutivo
+            FROM eventos e
+            LEFT JOIN categorias c ON c.id = e.categoria_id
+            WHERE e.tipo = 'window' AND e.ts BETWEEN :ini AND :fim " . filtroHorarioComercialSql() . " " . filtroNaoBloqueadoSql() . "
+            GROUP BY e.maquina_id, e.usuario_detectado");
+        $stmt->execute([':ini' => $iniUtc, ':fim' => $fimUtc]);
+        $porPeriodo[$chave] = $stmt->fetchAll();
+    }
+    return $porPeriodo[$chave];
+}
+
+// Todas as máquinas: id => [id, nome, setor] (setor = nome da OU vinculada, senão o texto livre, senão 'Sem setor').
+function cadastroMaquinasSetor(PDO $db) {
+    static $cadastro = null;
+    if ($cadastro === null) {
+        $cadastro = [];
+        foreach ($db->query("SELECT m.id, m.nome, COALESCE(ou.nome, NULLIF(m.setor, ''), 'Sem setor') AS setor
+                FROM maquinas m LEFT JOIN ad_ous ou ON ou.id = m.ou_id")->fetchAll() as $m) $cadastro[(int)$m['id']] = $m;
+    }
+    return $cadastro;
+}
+
 function agregarRanking(PDO $db, $iniUtc, $fimUtc, $dimensao, ?array $maquinaIds = null) {
     if ($maquinaIds !== null && empty($maquinaIds)) return [];
-    $chaveSql = [
-        'usuario' => "e.usuario_detectado",
-        'setor'   => "COALESCE(ou.nome, NULLIF(m.setor, ''), 'Sem setor')",
-        'maquina' => "m.nome",
-    ][$dimensao];
-    $filtroIds = $maquinaIds !== null ? ' AND e.maquina_id IN (' . implode(',', array_map('intval', $maquinaIds)) . ')' : '';
-    $filtroUsuario = $dimensao === 'usuario' ? " AND e.usuario_detectado IS NOT NULL AND e.usuario_detectado <> ''" : '';
-    $stmt = $db->prepare("SELECT {$chaveSql} AS chave, m.nome AS maquina,
-            SUM(e.duracao) AS total,
-            SUM(CASE WHEN c.pontuacao = 1 THEN e.duracao ELSE 0 END) AS produtivo,
-            SUM(CASE WHEN c.pontuacao = -1 THEN e.duracao ELSE 0 END) AS improdutivo
-        FROM eventos e
-        JOIN maquinas m ON m.id = e.maquina_id
-        LEFT JOIN ad_ous ou ON ou.id = m.ou_id
-        LEFT JOIN categorias c ON c.id = e.categoria_id
-        WHERE e.tipo = 'window' AND e.ts BETWEEN :ini AND :fim {$filtroIds} {$filtroUsuario} " . filtroHorarioComercialSql() . " " . filtroNaoBloqueadoSql() . "
-        GROUP BY chave, m.nome");
-    $stmt->execute([':ini' => $iniUtc, ':fim' => $fimUtc]);
+    $linhas = leituraMaquinaUsuario($db, $iniUtc, $fimUtc);
+    $cadastro = cadastroMaquinasSetor($db);    $permitidas = $maquinaIds !== null ? array_flip(array_map('intval', $maquinaIds)) : null;
     $dados = [];
-    foreach ($stmt->fetchAll() as $r) {
-        $k = $r['chave'];
+    foreach ($linhas as $r) {
+        $mid = (int)$r['maquina_id'];
+        if (!isset($cadastro[$mid])) continue;                       // (JOIN maquinas da versão anterior)
+        if ($permitidas !== null && !isset($permitidas[$mid])) continue;
+        if ($dimensao === 'usuario') { if ($r['usuario'] === null || $r['usuario'] === '') continue; $k = $r['usuario']; }
+        elseif ($dimensao === 'setor') $k = $cadastro[$mid]['setor'];
+        else $k = $cadastro[$mid]['nome'];
         if ($k === null || $k === '') continue;
         if (!isset($dados[$k])) $dados[$k] = ['total' => 0.0, 'produtivo' => 0.0, 'improdutivo' => 0.0, 'maquinas' => []];
         $dados[$k]['total'] += (float)$r['total'];
         $dados[$k]['produtivo'] += (float)$r['produtivo'];
         $dados[$k]['improdutivo'] += (float)$r['improdutivo'];
-        $dados[$k]['maquinas'][$r['maquina']] = true;
+        $dados[$k]['maquinas'][$cadastro[$mid]['nome']] = true;
     }
     foreach ($dados as &$d) $d['maquinas'] = array_keys($d['maquinas']);
     unset($d);
     return $dados;
 }
-
 function formatarPctRanking($v) { return number_format($v, 1, ',', '.') . '%'; }
 
 // Um card "Ranking por atividade produtiva/improdutiva": duas abas (Colaboradores + Departamentos
@@ -2196,21 +2229,24 @@ function renderRankings(PDO $db, $iniUtc, $fimUtc, ?array $maquinaIds = null) {
 
     <?php
     // ---- Comparativo entre setores: uma linha por setor, agregando todas as suas máquinas ----
-    $stmt = $db->prepare("SELECT
-            COALESCE(ou.nome, NULLIF(m.setor, ''), 'Sem setor') AS setor,
-            COUNT(DISTINCT m.id) AS num_maquinas,
-            SUM(e.duracao) AS total,
-            SUM(CASE WHEN c.pontuacao = 1 THEN e.duracao ELSE 0 END) AS produtivo,
-            SUM(CASE WHEN c.pontuacao = -1 THEN e.duracao ELSE 0 END) AS improdutivo
-        FROM maquinas m
-        LEFT JOIN ad_ous ou ON ou.id = m.ou_id
-        LEFT JOIN eventos e ON e.maquina_id = m.id AND e.tipo = 'window' AND e.ts BETWEEN :ini AND :fim " . filtroHorarioComercialSql() . " " . filtroNaoBloqueadoSql() . "
-        LEFT JOIN categorias c ON c.id = e.categoria_id
-        GROUP BY COALESCE(ou.nome, NULLIF(m.setor, ''), 'Sem setor')
-        ORDER BY total DESC");
-    $stmt->execute([':ini' => $inicioUtc, ':fim' => $fimUtc]);
-    $porSetor = $stmt->fetchAll();
-
+    // Derivado da leitura compartilhada (máquina × usuário) + cadastro: máquinas sem evento no período entram com 0.
+    $porSetorMap = [];
+    foreach (cadastroMaquinasSetor($db) as $m) {
+        $s = $m['setor'];
+        if (!isset($porSetorMap[$s])) $porSetorMap[$s] = ['setor' => $s, 'num_maquinas' => 0, 'total' => 0.0, 'produtivo' => 0.0, 'improdutivo' => 0.0];
+        $porSetorMap[$s]['num_maquinas']++;
+    }
+    $cadSetor = cadastroMaquinasSetor($db);
+    foreach (leituraMaquinaUsuario($db, $inicioUtc, $fimUtc) as $r) {
+        $mid = (int)$r['maquina_id'];
+        if (!isset($cadSetor[$mid])) continue;
+        $s = $cadSetor[$mid]['setor'];
+        $porSetorMap[$s]['total'] += (float)$r['total'];
+        $porSetorMap[$s]['produtivo'] += (float)$r['produtivo'];
+        $porSetorMap[$s]['improdutivo'] += (float)$r['improdutivo'];
+    }
+    $porSetor = array_values($porSetorMap);
+    usort($porSetor, fn($a, $b) => $b['total'] <=> $a['total']);
     // ---- Produtividade por setor (mosaico de hexágonos) — reaproveita $porSetor (a mesma agregação
     // da tabela acima); renderHexGrid() só espera itens com 'id'/'nome'/'total'/'produtivo', então
     // usamos o próprio nome do setor como "id" (não há um id numérico de setor de verdade — setor
@@ -2355,20 +2391,20 @@ elseif ($visao === 'usuarios'):
     // loga em mais de uma máquina aparece uma única vez aqui, com o tempo somado de todas elas.
     // eventos.usuario_detectado já vem pré-calculado da sincronização (ver comentário em
     // renderPainelProdutividade sobre por que isso não é cruzado em tempo de consulta).
-    $stmt = $db->prepare("SELECT e.usuario_detectado AS usuario,
-               COUNT(DISTINCT e.maquina_id) AS num_maquinas,
-               SUM(e.duracao) AS total,
-               SUM(CASE WHEN c.pontuacao = 1 THEN e.duracao ELSE 0 END) AS produtivo,
-               SUM(CASE WHEN c.pontuacao = -1 THEN e.duracao ELSE 0 END) AS improdutivo
-        FROM eventos e
-        LEFT JOIN categorias c ON c.id = e.categoria_id
-        WHERE e.tipo = 'window' AND e.ts BETWEEN :ini AND :fim
-              AND e.usuario_detectado IS NOT NULL AND e.usuario_detectado <> '' " . filtroHorarioComercialSql() . " " . filtroNaoBloqueadoSql() . "
-        GROUP BY e.usuario_detectado
-        ORDER BY total DESC");
-    $stmt->execute([':ini' => $inicioUtc, ':fim' => $fimUtc]);
-    $porUsuario = $stmt->fetchAll();
-
+    // Derivado da leitura compartilhada (máquina × usuário): uma varredura de eventos, em vez de uma por comparativo.
+    $porUsuarioMap = [];
+    foreach (leituraMaquinaUsuario($db, $inicioUtc, $fimUtc) as $r) {
+        if ($r['usuario'] === null || $r['usuario'] === '') continue;
+        $k = $r['usuario'];
+        if (!isset($porUsuarioMap[$k])) $porUsuarioMap[$k] = ['usuario' => $k, 'maquinas' => [], 'total' => 0.0, 'produtivo' => 0.0, 'improdutivo' => 0.0];
+        $porUsuarioMap[$k]['maquinas'][$r['maquina_id']] = true;
+        $porUsuarioMap[$k]['total'] += (float)$r['total'];
+        $porUsuarioMap[$k]['produtivo'] += (float)$r['produtivo'];
+        $porUsuarioMap[$k]['improdutivo'] += (float)$r['improdutivo'];
+    }
+    $porUsuario = [];
+    foreach ($porUsuarioMap as $u) { $u['num_maquinas'] = count($u['maquinas']); unset($u['maquinas']); $porUsuario[] = $u; }
+    usort($porUsuario, fn($a, $b) => $b['total'] <=> $a['total']);
     $produtividadePorUsuario = array_map(fn($u) => [
         'id' => $u['usuario'],
         'nome' => $u['usuario'],
