@@ -50,6 +50,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         } elseif ($acao === 'excluir') {
             $n = iaExcluirClassificacao($db, (int)($_POST['id'] ?? 0), $usuarioAtual);
             iaRedirecionar('aprovadas', "Classificação excluída. {$n} evento(s) voltaram ao que as demais regras decidem.");
+        } elseif (in_array($acao, ['lote_aprovar', 'lote_aprovar_cat', 'lote_rejeitar', 'lote_alterar', 'lote_excluir'], true)) {
+            set_time_limit(600);
+            $ids = $_POST['ids'] ?? [];
+            $catLote = (int)($_POST['categoria_lote'] ?? 0);
+            if ($acao === 'lote_aprovar') { $r = iaLoteAprovar($db, $ids, $usuarioAtual, $cfg); $aba = 'revisao'; $verbo = 'aprovada(s)'; }
+            elseif ($acao === 'lote_aprovar_cat') { if ($catLote <= 0) throw new RuntimeException('Escolha a categoria.'); $r = iaLoteAprovar($db, $ids, $usuarioAtual, $cfg, $catLote); $aba = 'revisao'; $verbo = 'aprovada(s)'; }
+            elseif ($acao === 'lote_rejeitar') { $r = iaLoteRejeitar($db, $ids, $usuarioAtual); $aba = 'revisao'; $verbo = 'rejeitada(s)'; }
+            elseif ($acao === 'lote_alterar') { if ($catLote <= 0) throw new RuntimeException('Escolha a categoria.'); $r = iaLoteAlterar($db, $ids, $catLote, $usuarioAtual); $aba = 'aprovadas'; $verbo = 'alterada(s)'; }
+            else { $r = iaLoteExcluir($db, $ids, $usuarioAtual); $aba = 'aprovadas'; $verbo = 'excluída(s)'; }
+            $msg = "{$r['ok']} {$verbo}" . ($r['eventos'] ? ", {$r['eventos']} evento(s) atualizado(s)" : '') . '.';
+            if ($r['falhas']) {
+                $msg .= ' ' . count($r['falhas']) . ' não processada(s): ' . implode('; ', array_map(fn($x) => "{$x[0]} ({$x[1]})", array_slice($r['falhas'], 0, 3))) . (count($r['falhas']) > 3 ? '…' : '');
+            }
+            iaRedirecionar($aba, $msg, $r['falhas'] ? ($r['ok'] ? 'warning' : 'danger') : 'success');
         } elseif ($acao === 'reanalisar') {
             iaRedirecionar('revisao', iaReanalisarSugestoes($db) . ' sugestão(ões) voltaram para a fila e serão refeitas com o prompt/política atuais (decisões já tomadas não são tocadas).');
         } elseif ($acao === 'reprocessar_falhas') {
@@ -162,20 +176,54 @@ function iaSelectCategoria($categorias, $sel) {
     </div>
 
 <?php elseif ($aba === 'revisao'):
-    $fila = $db->query("SELECT * FROM ia_sugestoes WHERE estado IN ('sugerida', 'revisao') ORDER BY horas_sem_categoria DESC, id LIMIT 200")->fetchAll(PDO::FETCH_ASSOC);
+    $f_q = trim($_GET['q'] ?? '');
+    $f_t = in_array($_GET['t'] ?? '', ['dominio', 'app'], true) ? $_GET['t'] : '';
+    $f_s = isset(IA_CATEGORIAS[$_GET['s'] ?? '']) ? $_GET['s'] : '';
+    $f_r = in_array($_GET['r'] ?? '', ['0', '1'], true) ? $_GET['r'] : '';
+    $onde = ["estado IN ('sugerida', 'revisao')"]; $pf = [];
+    if ($f_q !== '') { $onde[] = 'valor LIKE :q'; $pf[':q'] = '%' . addcslashes($f_q, '%_\\') . '%'; }
+    if ($f_t !== '') { $onde[] = 'tipo = :t'; $pf[':t'] = $f_t; }
+    if ($f_s !== '') { $onde[] = 'categoria_sugerida = :s'; $pf[':s'] = $f_s; }
+    if ($f_r !== '') { $onde[] = 'revisao = :r'; $pf[':r'] = (int)$f_r; }
+    $cnt = $db->prepare('SELECT COUNT(*) FROM ia_sugestoes WHERE ' . implode(' AND ', $onde)); $cnt->execute($pf);
+    $totalFila = (int)$cnt->fetchColumn();
+    $st = $db->prepare('SELECT * FROM ia_sugestoes WHERE ' . implode(' AND ', $onde) . ' ORDER BY horas_sem_categoria DESC, id LIMIT ' . IA_LOTE_MAX); $st->execute($pf);
+    $fila = $st->fetchAll(PDO::FETCH_ASSOC);
     $podeAprovar = in_array($cfg['modo'], ['revisao', 'auto'], true); ?>
     <?php if (!$podeAprovar): ?><div class="alert alert-info">Modo <strong>observação</strong>: as sugestões aparecem aqui só para análise; aprovar fica desabilitado. Passe para "revisão" em Configuração quando a avaliação mostrar boa concordância.</div><?php endif; ?>
-    <form method="POST" class="mb-2" onsubmit="return confirm('Refazer todas as sugestões ainda não decididas com o prompt e a política atuais?')"><?= csrfField() ?>
-        <button name="action" value="reanalisar" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-repeat"></i> Reanalisar sugestões</button>
-        <span class="small text-muted ms-2">use depois de mudar a política ou o modelo; aprovadas e rejeitadas não são tocadas</span></form>
-    <div class="card"><div class="card-header">Sugestões aguardando revisão (<?= count($fila) ?>)</div>
-    <?php if (!$fila): ?><div class="card-body text-muted">Nada aguardando revisão.</div><?php else: ?>
+    <div class="d-flex flex-wrap gap-2 justify-content-between align-items-start mb-2">
+        <form method="GET" class="d-flex flex-wrap gap-2 align-items-center">
+            <input type="hidden" name="page" value="ia"><input type="hidden" name="aba" value="revisao">
+            <input name="q" value="<?= htmlspecialchars($f_q) ?>" placeholder="Buscar chave…" class="form-control form-control-sm" style="width:170px">
+            <select name="t" class="form-select form-select-sm" style="width:auto"><option value="">Site e aplicativo</option><option value="dominio" <?= $f_t === 'dominio' ? 'selected' : '' ?>>Só sites</option><option value="app" <?= $f_t === 'app' ? 'selected' : '' ?>>Só aplicativos</option></select>
+            <select name="s" class="form-select form-select-sm" style="width:auto"><option value="">Qualquer sugestão</option><?php foreach (array_keys(IA_CATEGORIAS) as $k): ?><option value="<?= $k ?>" <?= $f_s === $k ? 'selected' : '' ?>><?= $k ?></option><?php endforeach; ?></select>
+            <select name="r" class="form-select form-select-sm" style="width:auto"><option value="">Com ou sem "revisar"</option><option value="0" <?= $f_r === '0' ? 'selected' : '' ?>>Sem "revisar"</option><option value="1" <?= $f_r === '1' ? 'selected' : '' ?>>Só "revisar"</option></select>
+            <button class="btn btn-outline-primary btn-sm">Filtrar</button>
+            <?php if ($f_q !== '' || $f_t !== '' || $f_s !== '' || $f_r !== ''): ?><a class="btn btn-link btn-sm" href="index.php?page=ia&aba=revisao">limpar</a><?php endif; ?>
+        </form>
+        <form method="POST" onsubmit="return confirm('Refazer todas as sugestões ainda não decididas com o prompt e a política atuais?')"><?= csrfField() ?>
+            <button name="action" value="reanalisar" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-repeat"></i> Reanalisar sugestões</button></form>
+    </div>
+
+    <form method="POST" id="formLoteRevisao" class="card card-body py-2 mb-2 d-flex flex-row flex-wrap gap-2 align-items-center">
+        <?= csrfField() ?>
+        <span class="small fw-semibold"><span class="contagem-ia">0</span> selecionada(s)</span>
+        <button name="action" value="lote_aprovar" class="btn btn-success btn-sm btn-lote-ia" <?= $podeAprovar ? '' : 'disabled' ?> data-confirm="Aprovar as selecionadas na categoria que a IA sugeriu? Cada uma vira uma regra e classifica os eventos sem categoria da chave. Itens marcados &quot;revisar&quot; também serão aprovados.">Aprovar com a sugestão da IA</button>
+        <span class="small text-muted">ou</span>
+        <?= str_replace('name="categoria_id"', 'name="categoria_lote"', iaSelectCategoria($categorias, $catPorPont[1]['id'] ?? null)) ?>
+        <button name="action" value="lote_aprovar_cat" class="btn btn-outline-success btn-sm btn-lote-ia" <?= $podeAprovar ? '' : 'disabled' ?> data-confirm="Aprovar TODAS as selecionadas na categoria escolhida, ignorando a sugestão da IA?">Aprovar todas como…</button>
+        <button name="action" value="lote_rejeitar" class="btn btn-outline-secondary btn-sm btn-lote-ia ms-auto" data-confirm="Rejeitar as selecionadas? As chaves não voltam para a fila.">Rejeitar selecionadas</button>
+    </form>
+
+    <div class="card"><div class="card-header">Sugestões aguardando revisão — mostrando <?= count($fila) ?> de <?= $totalFila ?><?= $totalFila > count($fila) ? ' (use os filtros para ver o restante; lote máximo de ' . IA_LOTE_MAX . ')' : '' ?></div>
+    <?php if (!$fila): ?><div class="card-body text-muted">Nada aguardando revisão<?= $totalFila === 0 && ($f_q . $f_t . $f_s . $f_r) !== '' ? ' com estes filtros' : '' ?>.</div><?php else: ?>
     <div class="table-responsive"><table class="table table-sm align-middle mb-0">
-        <thead class="table-light"><tr><th>Chave</th><th>Contexto</th><th>Sugestão</th><th>Justificativa</th><th>Ação</th></tr></thead><tbody>
+        <thead class="table-light"><tr><th style="width:34px"><input type="checkbox" class="form-check-input chk-todos-ia" title="Selecionar todas as exibidas"></th><th>Chave</th><th>Contexto</th><th>Sugestão</th><th>Justificativa</th><th>Ação</th></tr></thead><tbody>
         <?php foreach ($fila as $s):
             $ctx = json_decode($s['contexto'] ?? '[]', true) ?: [];
             $sug = iaCategoriaIdPorNome($db, $s['categoria_sugerida'] ?? 'neutro'); ?>
         <tr>
+            <td><input type="checkbox" class="form-check-input chk-ia" name="ids[]" value="<?= (int)$s['id'] ?>" form="formLoteRevisao"></td>
             <td><span class="badge bg-secondary"><?= $s['tipo'] === 'dominio' ? 'site' : 'aplicativo' ?></span> <strong><?= htmlspecialchars($s['valor']) ?></strong></td>
             <td class="small text-muted"><?= (int)($ctx['eventos'] ?? 0) ?> evento(s) · <?= htmlspecialchars((string)$s['horas_sem_categoria']) ?> h
                 <?php foreach ((array)($ctx['titulos'] ?? []) as $t): ?><div class="text-truncate" style="max-width:260px" title="<?= htmlspecialchars($t) ?>">“<?= htmlspecialchars(iaSanitizarTexto($t, 70)) ?>”</div><?php endforeach; ?></td>
@@ -191,13 +239,41 @@ function iaSelectCategoria($categorias, $sel) {
         <?php endforeach; ?></tbody></table></div><?php endif; ?></div>
 
 <?php elseif ($aba === 'aprovadas'):
-    $apr = $db->query("SELECT s.*, r.categoria_id AS regra_cat FROM ia_sugestoes s JOIN categoria_regras r ON r.id = s.regra_id AND r.origem = 'ia' WHERE s.estado = 'aprovada' ORDER BY s.decidido_em DESC LIMIT 300")->fetchAll(PDO::FETCH_ASSOC); ?>
-    <div class="card"><div class="card-header">Classificações criadas pela IA e aprovadas (<?= count($apr) ?>) — se alguma estiver errada, altere a categoria ou exclua</div>
-    <?php if (!$apr): ?><div class="card-body text-muted">Nenhuma classificação da IA aprovada ainda.</div><?php else: ?>
+    $g_q = trim($_GET['q'] ?? '');
+    $g_t = in_array($_GET['t'] ?? '', ['dominio', 'app'], true) ? $_GET['t'] : '';
+    $g_c = (int)($_GET['c'] ?? 0);
+    $onde = ["s.estado = 'aprovada'"]; $pf = [];
+    if ($g_q !== '') { $onde[] = 's.valor LIKE :q'; $pf[':q'] = '%' . addcslashes($g_q, '%_\\') . '%'; }
+    if ($g_t !== '') { $onde[] = 's.tipo = :t'; $pf[':t'] = $g_t; }
+    if ($g_c > 0) { $onde[] = 'r.categoria_id = :c'; $pf[':c'] = $g_c; }
+    $base = ' FROM ia_sugestoes s JOIN categoria_regras r ON r.id = s.regra_id AND r.origem = \'ia\' WHERE ' . implode(' AND ', $onde);
+    $cnt = $db->prepare('SELECT COUNT(*)' . $base); $cnt->execute($pf); $totalApr = (int)$cnt->fetchColumn();
+    $st = $db->prepare('SELECT s.*, r.categoria_id AS regra_cat' . $base . ' ORDER BY s.decidido_em DESC LIMIT ' . IA_LOTE_MAX); $st->execute($pf);
+    $apr = $st->fetchAll(PDO::FETCH_ASSOC); ?>
+    <form method="GET" class="d-flex flex-wrap gap-2 align-items-center mb-2">
+        <input type="hidden" name="page" value="ia"><input type="hidden" name="aba" value="aprovadas">
+        <input name="q" value="<?= htmlspecialchars($g_q) ?>" placeholder="Buscar chave…" class="form-control form-control-sm" style="width:170px">
+        <select name="t" class="form-select form-select-sm" style="width:auto"><option value="">Site e aplicativo</option><option value="dominio" <?= $g_t === 'dominio' ? 'selected' : '' ?>>Só sites</option><option value="app" <?= $g_t === 'app' ? 'selected' : '' ?>>Só aplicativos</option></select>
+        <select name="c" class="form-select form-select-sm" style="width:auto"><option value="0">Qualquer categoria</option><?php foreach ($categorias as $c): ?><option value="<?= (int)$c['id'] ?>" <?= $g_c === (int)$c['id'] ? 'selected' : '' ?>><?= htmlspecialchars($c['nome']) ?></option><?php endforeach; ?></select>
+        <button class="btn btn-outline-primary btn-sm">Filtrar</button>
+        <?php if ($g_q !== '' || $g_t !== '' || $g_c > 0): ?><a class="btn btn-link btn-sm" href="index.php?page=ia&aba=aprovadas">limpar</a><?php endif; ?>
+    </form>
+
+    <form method="POST" id="formLoteAprovadas" class="card card-body py-2 mb-2 d-flex flex-row flex-wrap gap-2 align-items-center">
+        <?= csrfField() ?>
+        <span class="small fw-semibold"><span class="contagem-ia">0</span> selecionada(s)</span>
+        <?= str_replace('name="categoria_id"', 'name="categoria_lote"', iaSelectCategoria($categorias, null)) ?>
+        <button name="action" value="lote_alterar" class="btn btn-outline-primary btn-sm btn-lote-ia" data-confirm="Alterar a categoria de TODAS as selecionadas? Os eventos dessas chaves que estavam na categoria anterior serão atualizados.">Alterar categoria das selecionadas</button>
+        <button name="action" value="lote_excluir" class="btn btn-outline-danger btn-sm btn-lote-ia ms-auto" data-confirm="Excluir as classificações selecionadas? As regras são apagadas e os eventos voltam ao que as demais regras decidirem (sem categoria, se nenhuma casar).">Excluir selecionadas</button>
+    </form>
+
+    <div class="card"><div class="card-header">Classificações criadas pela IA e aprovadas — mostrando <?= count($apr) ?> de <?= $totalApr ?> — se alguma estiver errada, altere a categoria ou exclua</div>
+    <?php if (!$apr): ?><div class="card-body text-muted">Nenhuma classificação da IA aprovada<?= ($g_q . $g_t) !== '' || $g_c > 0 ? ' com estes filtros' : ' ainda' ?>.</div><?php else: ?>
     <div class="table-responsive"><table class="table table-sm align-middle mb-0">
-        <thead class="table-light"><tr><th>Chave</th><th>Categoria atual</th><th>Eventos</th><th>Aprovada por</th><th>Ação</th></tr></thead><tbody>
+        <thead class="table-light"><tr><th style="width:34px"><input type="checkbox" class="form-check-input chk-todos-ia" title="Selecionar todas as exibidas"></th><th>Chave</th><th>Categoria atual</th><th>Eventos</th><th>Aprovada por</th><th>Ação</th></tr></thead><tbody>
         <?php foreach ($apr as $s): $c = $catPorId[$s['regra_cat']] ?? null; ?>
         <tr>
+            <td><input type="checkbox" class="form-check-input chk-ia" name="ids[]" value="<?= (int)$s['id'] ?>" form="formLoteAprovadas"></td>
             <td><span class="badge bg-secondary"><?= $s['tipo'] === 'dominio' ? 'site' : 'aplicativo' ?></span> <strong><?= htmlspecialchars($s['valor']) ?></strong>
                 <div class="small text-muted"><?= htmlspecialchars($s['justificativa'] ?? '') ?></div></td>
             <td><span class="badge" style="background:<?= htmlspecialchars($c['cor'] ?? '#94a2b8') ?>"><?= htmlspecialchars($c['nome'] ?? '?') ?></span></td>
@@ -268,3 +344,27 @@ function iaSelectCategoria($categorias, $sel) {
         </div>
     </form></div></div>
 <?php endif; ?>
+<script>
+(function () {
+    document.querySelectorAll('form[id^="formLote"]').forEach(function (form) {
+        var chks = function () { return document.querySelectorAll('.chk-ia[form="' + form.id + '"]'); };
+        var cont = form.querySelector('.contagem-ia');
+        var botoes = form.querySelectorAll('.btn-lote-ia');
+        var todos = document.querySelector('.chk-todos-ia');
+        function atualizar() {
+            var n = 0; chks().forEach(function (c) { if (c.checked) n++; });
+            cont.textContent = n;
+            botoes.forEach(function (b) { b.dataset.n = n; });
+            if (todos) todos.checked = n > 0 && n === chks().length;
+        }
+        if (todos) todos.addEventListener('change', function () { chks().forEach(function (c) { c.checked = todos.checked; }); atualizar(); });
+        chks().forEach(function (c) { c.addEventListener('change', atualizar); });
+        form.addEventListener('submit', function (e) {
+            var b = e.submitter; var n = parseInt(cont.textContent, 10);
+            if (!n) { e.preventDefault(); alert('Selecione ao menos um item.'); return; }
+            if (b && b.dataset.confirm && !confirm(n + ' item(ns) selecionado(s).\n\n' + b.dataset.confirm)) e.preventDefault();
+        });
+        atualizar();
+    });
+})();
+</script>

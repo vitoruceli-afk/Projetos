@@ -204,7 +204,7 @@ function iaExigirModoRevisao(array $cfg) {
     }
 }
 
-function iaAplicarSugestao(PDO $db, $id, $categoriaId, $usuario, ?array $cfg = null) {
+function iaAplicarSugestao(PDO $db, $id, $categoriaId, $usuario, ?array $cfg = null, $realinhar = true) {
     $cfg = $cfg ?? iaConfig($db);
     iaExigirModoRevisao($cfg);
     $cat = $db->prepare("SELECT id FROM categorias WHERE id = :i");
@@ -239,7 +239,7 @@ function iaAplicarSugestao(PDO $db, $id, $categoriaId, $usuario, ?array $cfg = n
     } catch (Throwable $e) { if ($db->inTransaction()) $db->rollBack(); throw $e; }
 
     $n = iaReclassificarChave($db, $sug['tipo'], $sug['valor'], null);
-    if ($sug['tipo'] === 'dominio') iaRealinharJanelas($db, null);
+    if ($realinhar && $sug['tipo'] === 'dominio') iaRealinharJanelas($db, null);
     $db->prepare("UPDATE ia_sugestoes SET eventos_aplicados = :n WHERE id = :i")->execute([':n' => $n, ':i' => $id]);
     iaLog($db, $id, 'aprovada', 0, "{$usuario}: {$n} evento(s)");
     return $n;
@@ -262,7 +262,7 @@ function iaClassificacaoAprovada(PDO $db, $id) {
 
 // Corrige uma classificação da IA que o administrador considera errada: troca a categoria da regra e refaz os eventos que
 // estavam na categoria antiga (só os dessa chave).
-function iaAlterarClassificacao(PDO $db, $id, $novaCategoriaId, $usuario) {
+function iaAlterarClassificacao(PDO $db, $id, $novaCategoriaId, $usuario, $realinhar = true) {
     $sug = iaClassificacaoAprovada($db, $id);
     $velha = (int)$sug['regra_categoria'];
     $novaCategoriaId = (int)$novaCategoriaId;
@@ -278,14 +278,14 @@ function iaAlterarClassificacao(PDO $db, $id, $novaCategoriaId, $usuario) {
         $db->commit();
     } catch (Throwable $e) { if ($db->inTransaction()) $db->rollBack(); throw $e; }
     $n = iaReclassificarChave($db, $sug['tipo'], $sug['valor'], [$velha]);
-    if ($sug['tipo'] === 'dominio') iaRealinharJanelas($db, [$velha]);
+    if ($realinhar && $sug['tipo'] === 'dominio') iaRealinharJanelas($db, [$velha]);
     iaLog($db, $id, 'alterada', 0, "{$usuario}: {$velha} -> {$novaCategoriaId}, {$n} evento(s)");
     return $n;
 }
 
 // Exclui uma classificação da IA: apaga a regra, marca a sugestão como rejeitada (a chave não volta para a fila) e devolve os
 // eventos dessa chave ao que as demais regras decidirem (sem categoria, se nenhuma casar).
-function iaExcluirClassificacao(PDO $db, $id, $usuario) {
+function iaExcluirClassificacao(PDO $db, $id, $usuario, $realinhar = true) {
     $sug = iaClassificacaoAprovada($db, $id);
     $velha = (int)$sug['regra_categoria'];
     $db->beginTransaction();
@@ -296,11 +296,84 @@ function iaExcluirClassificacao(PDO $db, $id, $usuario) {
         $db->commit();
     } catch (Throwable $e) { if ($db->inTransaction()) $db->rollBack(); throw $e; }
     $n = iaReclassificarChave($db, $sug['tipo'], $sug['valor'], [$velha]);
-    if ($sug['tipo'] === 'dominio') iaRealinharJanelas($db, [$velha]);
+    if ($realinhar && $sug['tipo'] === 'dominio') iaRealinharJanelas($db, [$velha]);
     iaLog($db, $id, 'excluida', 0, "{$usuario}: {$n} evento(s)");
     return $n;
 }
 
+// ---------- ações em lote ----------
+// Cada item é tratado isoladamente: um que falha (regra do administrador em conflito, já decidido por outra pessoa, etc.) NÃO
+// aborta os demais; o resumo diz quantos deram certo e por que os outros não. As janelas do navegador são realinhadas UMA vez
+// no fim (e não a cada item), que é o que mais pesa. O tamanho do lote é limitado para caber no tempo de uma requisição.
+const IA_LOTE_MAX = 200;
+
+function iaIdsDoLote($ids) {
+    $ids = array_values(array_unique(array_filter(array_map('intval', (array)$ids), fn($v) => $v > 0)));
+    if (count($ids) > IA_LOTE_MAX) throw new RuntimeException('Selecione no máximo ' . IA_LOTE_MAX . ' itens por vez (selecionados: ' . count($ids) . ').');
+    if (!$ids) throw new RuntimeException('Nenhum item selecionado.');
+    return $ids;
+}
+
+// $categoriaForcada = null: cada item vai para a categoria que a IA sugeriu; senão, todos vão para a categoria escolhida.
+function iaLoteAprovar(PDO $db, array $ids, $usuario, ?array $cfg = null, $categoriaForcada = null) {
+    $cfg = $cfg ?? iaConfig($db);
+    iaExigirModoRevisao($cfg);
+    $ids = iaIdsDoLote($ids);
+    $res = ['ok' => 0, 'falhas' => [], 'eventos' => 0];
+    $temDominio = false;
+    $busca = $db->prepare("SELECT tipo, valor, categoria_sugerida FROM ia_sugestoes WHERE id = :i");
+    foreach ($ids as $id) {
+        $busca->execute([':i' => $id]);
+        $s = $busca->fetch(PDO::FETCH_ASSOC);
+        if (!$s) { $res['falhas'][] = ["#{$id}", 'sugestão não encontrada']; continue; }
+        $cat = $categoriaForcada ? (int)$categoriaForcada : iaCategoriaIdPorNome($db, (string)$s['categoria_sugerida']);
+        try {
+            $res['eventos'] += iaAplicarSugestao($db, $id, $cat, $usuario, $cfg, false);
+            $res['ok']++;
+            if ($s['tipo'] === 'dominio') $temDominio = true;
+        } catch (RuntimeException $e) { $res['falhas'][] = [$s['valor'], $e->getMessage()]; }
+    }
+    if ($temDominio) iaRealinharJanelas($db, null);
+    return $res;
+}
+
+function iaLoteRejeitar(PDO $db, array $ids, $usuario) {
+    $ids = iaIdsDoLote($ids);
+    foreach ($ids as $id) iaRejeitarSugestao($db, $id, $usuario);
+    return ['ok' => count($ids), 'falhas' => [], 'eventos' => 0];
+}
+
+function iaLoteAlterar(PDO $db, array $ids, $novaCategoriaId, $usuario) {
+    $ids = iaIdsDoLote($ids);
+    $res = ['ok' => 0, 'falhas' => [], 'eventos' => 0];
+    $velhas = []; $temDominio = false;
+    foreach ($ids as $id) {
+        try {
+            $sug = iaClassificacaoAprovada($db, $id);
+            $res['eventos'] += iaAlterarClassificacao($db, $id, $novaCategoriaId, $usuario, false);
+            $res['ok']++; $velhas[(int)$sug['regra_categoria']] = true;
+            if ($sug['tipo'] === 'dominio') $temDominio = true;
+        } catch (RuntimeException $e) { $res['falhas'][] = ["#{$id}", $e->getMessage()]; }
+    }
+    if ($temDominio) iaRealinharJanelas($db, array_keys($velhas));
+    return $res;
+}
+
+function iaLoteExcluir(PDO $db, array $ids, $usuario) {
+    $ids = iaIdsDoLote($ids);
+    $res = ['ok' => 0, 'falhas' => [], 'eventos' => 0];
+    $velhas = []; $temDominio = false;
+    foreach ($ids as $id) {
+        try {
+            $sug = iaClassificacaoAprovada($db, $id);
+            $res['eventos'] += iaExcluirClassificacao($db, $id, $usuario, false);
+            $res['ok']++; $velhas[(int)$sug['regra_categoria']] = true;
+            if ($sug['tipo'] === 'dominio') $temDominio = true;
+        } catch (RuntimeException $e) { $res['falhas'][] = ["#{$id}", $e->getMessage()]; }
+    }
+    if ($temDominio) iaRealinharJanelas($db, array_keys($velhas));
+    return $res;
+}
 // Item em erro/falha volta para a fila (reprocessamento administrativo).
 function iaReprocessarFalhas(PDO $db) {
     $st = $db->prepare("UPDATE ia_sugestoes SET estado = 'pendente', tentativas = 0, proxima_tentativa = NOW(), ultimo_erro = NULL, claim = NULL WHERE estado IN ('erro', 'falha')");
