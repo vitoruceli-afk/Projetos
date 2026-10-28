@@ -1,6 +1,6 @@
 <IfModule mod_rewrite.c>
     RewriteEngine On
-    RewriteBase /manutencao/public/
+    RewriteBase /
     
     # Redirecionar requisições diretas para arquivos que não existem para index.php
     RewriteCond %{REQUEST_FILENAME} !-f

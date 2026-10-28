@@ -16,7 +16,7 @@ namespace App\Models;
 final class Pep extends BaseModel
 {
     protected static string $tabela = 'peps';
-    protected static array $colunasBusca = ['pep', 'projeto'];
+    protected static array $colunasBusca = ['pep', 'projeto', 'centro_custo', 'responsavel_nome', 'responsavel_cpf'];
 
     public static function listar(string $busca = ''): array
     {
@@ -33,17 +33,82 @@ final class Pep extends BaseModel
         return $stmt->fetchAll();
     }
 
-    public static function criar(string $pep, string $projeto): int
-    {
-        $stmt = self::pdo()->prepare('INSERT INTO peps (pep, projeto) VALUES (?, ?)');
-        $stmt->execute([$pep, $projeto]);
+    public static function criar(
+        string $pep,
+        string $projeto,
+        string $centro_custo = '',
+        int $periodo_meses = 12,
+        ?string $data_inicio = null,
+        string $responsavel_nome = '',
+        string $responsavel_cpf = ''
+    ): int {
+        $data_termino = self::calcularDataTermino($data_inicio, $periodo_meses);
+
+        $stmt = self::pdo()->prepare(
+            'INSERT INTO peps (pep, projeto, centro_custo, periodo_meses, data_inicio, data_termino, responsavel_nome, responsavel_cpf) '
+            . 'VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        );
+        $stmt->execute([
+            $pep,
+            $projeto,
+            $centro_custo,
+            $periodo_meses,
+            $data_inicio,
+            $data_termino,
+            $responsavel_nome,
+            $responsavel_cpf
+        ]);
         return (int) self::pdo()->lastInsertId();
     }
 
-    public static function atualizar(int $id, string $pep, string $projeto): void
+    public static function atualizar(
+        int $id,
+        string $pep,
+        string $projeto,
+        string $centro_custo = '',
+        int $periodo_meses = 12,
+        ?string $data_inicio = null,
+        string $responsavel_nome = '',
+        string $responsavel_cpf = ''
+    ): void {
+        $data_termino = self::calcularDataTermino($data_inicio, $periodo_meses);
+
+        $stmt = self::pdo()->prepare(
+            'UPDATE peps SET pep = ?, projeto = ?, centro_custo = ?, periodo_meses = ?, '
+            . 'data_inicio = ?, data_termino = ?, responsavel_nome = ?, responsavel_cpf = ? WHERE id = ?'
+        );
+        $stmt->execute([
+            $pep,
+            $projeto,
+            $centro_custo,
+            $periodo_meses,
+            $data_inicio,
+            $data_termino,
+            $responsavel_nome,
+            $responsavel_cpf,
+            $id
+        ]);
+    }
+
+    /**
+     * Calcula a data de término baseado na data de início e período em meses
+     */
+    public static function calcularDataTermino(?string $data_inicio, int $periodo_meses): ?string
     {
-        $stmt = self::pdo()->prepare('UPDATE peps SET pep = ?, projeto = ? WHERE id = ?');
-        $stmt->execute([$pep, $projeto, $id]);
+        if ($data_inicio === null || $data_inicio === '') {
+            return null;
+        }
+
+        try {
+            $date = \DateTime::createFromFormat('Y-m-d', $data_inicio);
+            if ($date === false) {
+                return null;
+            }
+            $date->add(new \DateInterval('P' . $periodo_meses . 'M'));
+            return $date->format('Y-m-d');
+        } catch (\Exception $e) {
+            return null;
+        }
     }
 
     public static function porCodigo(string $pep): ?array

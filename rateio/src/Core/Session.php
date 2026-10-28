@@ -22,13 +22,23 @@ final class Session
                 'lifetime' => 0,
                 'path'     => '/',
                 'domain'   => '',
-                'secure'   => false,
+                'secure'   => self::conexaoSegura(),
                 'httponly' => true,
                 'samesite' => 'Lax',
             ]);
 
             session_start();
         }
+    }
+
+    /**
+     * Indica se a requisição chegou via HTTPS. Em produção o cookie de
+     * sessão só trafega cifrado; no ambiente local (HTTP) continua funcionando.
+     */
+    private static function conexaoSegura(): bool
+    {
+        return (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+            || (int) ($_SERVER['SERVER_PORT'] ?? 0) === 443;
     }
 
     public static function set(string $chave, mixed $valor): void

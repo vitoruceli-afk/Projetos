@@ -1,0 +1,199 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Models;
+
+/*
+|--------------------------------------------------------------------------
+| Pep
+|--------------------------------------------------------------------------
+|
+| Cadastro central de PEP + Projeto, compartilhado entre os rateios
+| Microsoft e Telefonia.
+|
+*/
+final class Pep extends BaseModel
+{
+    protected static string $tabela = 'peps';
+    protected static array $colunasBusca = ['pep', 'projeto', 'centro_custo', 'responsavel_nome', 'responsavel_cpf'];
+
+    public static function listar(string $busca = ''): array
+    {
+        [$where, $params] = self::clausulaBusca($busca, self::$colunasBusca);
+
+        $sql = 'SELECT * FROM peps';
+        if ($where !== '') {
+            $sql .= ' WHERE ' . $where;
+        }
+        $sql .= ' ORDER BY pep';
+
+        $stmt = self::pdo()->prepare($sql);
+        $stmt->execute($params);
+        return $stmt->fetchAll();
+    }
+
+    public static function criar(
+        string $pep,
+        string $projeto,
+        string $centro_custo = '',
+        int $periodo_meses = 12,
+        ?string $data_inicio = null,
+        string $responsavel_nome = '',
+        string $responsavel_cpf = ''
+    ): int {
+        $data_termino = self::calcularDataTermino($data_inicio, $periodo_meses);
+
+        $stmt = self::pdo()->prepare(
+            'INSERT INTO peps (pep, projeto, centro_custo, periodo_meses, data_inicio, data_termino, responsavel_nome, responsavel_cpf) '
+            . 'VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        );
+        $stmt->execute([
+            $pep,
+            $projeto,
+            $centro_custo,
+            $periodo_meses,
+            $data_inicio,
+            $data_termino,
+            $responsavel_nome,
+            $responsavel_cpf
+        ]);
+        return (int) self::pdo()->lastInsertId();
+    }
+
+    public static function atualizar(
+        int $id,
+        string $pep,
+        string $projeto,
+        string $centro_custo = '',
+        int $periodo_meses = 12,
+        ?string $data_inicio = null,
+        string $responsavel_nome = '',
+        string $responsavel_cpf = ''
+    ): void {
+        $data_termino = self::calcularDataTermino($data_inicio, $periodo_meses);
+
+        $stmt = self::pdo()->prepare(
+            'UPDATE peps SET pep = ?, projeto = ?, centro_custo = ?, periodo_meses = ?, '
+            . 'data_inicio = ?, data_termino = ?, responsavel_nome = ?, responsavel_cpf = ? WHERE id = ?'
+        );
+        $stmt->execute([
+            $pep,
+            $projeto,
+            $centro_custo,
+            $periodo_meses,
+            $data_inicio,
+            $data_termino,
+            $responsavel_nome,
+            $responsavel_cpf,
+            $id
+        ]);
+    }
+
+    /**
+     * Todos os PEPs com a quantidade de dispositivos vinculados e o status
+     * do prazo (ativo / a_vencer / vencido), usado no relatório de dispositivos.
+     *
+     * @return array<int,array> cada item tem as colunas de peps + qtd_dispositivos + status_pep
+     */
+    public static function comContagemDispositivos(): array
+    {
+        $sql = 'SELECT p.*, COUNT(d.id) as qtd_dispositivos '
+             . 'FROM peps p '
+             . 'LEFT JOIN dispositivos d ON d.pep_id = p.id '
+             . 'GROUP BY p.id '
+             . 'ORDER BY p.pep';
+
+        $stmt = self::pdo()->prepare($sql);
+        $stmt->execute();
+        $peps = $stmt->fetchAll();
+
+        foreach ($peps as &$p) {
+            $p['qtd_dispositivos'] = (int) $p['qtd_dispositivos'];
+            $p['status_pep'] = self::statusPrazo($p['data_termino']);
+        }
+
+        return $peps;
+    }
+
+    /**
+     * Classifica o prazo de um PEP: 'vencido' (já passou), 'a_vencer'
+     * (nos próximos 30 dias) ou 'ativo' (sem data de término, ou vencimento
+     * além de 30 dias).
+     */
+    public static function statusPrazo(?string $dataTermino): string
+    {
+        if ($dataTermino === null || $dataTermino === '') {
+            return 'ativo';
+        }
+
+        $termino = \DateTime::createFromFormat('Y-m-d', $dataTermino) ?: new \DateTime($dataTermino);
+        $hoje = new \DateTime('today');
+
+        if ($termino < $hoje) {
+            return 'vencido';
+        }
+
+        $limite = (clone $hoje)->modify('+30 days');
+        if ($termino <= $limite) {
+            return 'a_vencer';
+        }
+
+        return 'ativo';
+    }
+
+    /**
+     * Calcula a data de término baseado na data de início e período em meses
+     */
+    public static function calcularDataTermino(?string $data_inicio, int $periodo_meses): ?string
+    {
+        if ($data_inicio === null || $data_inicio === '') {
+            return null;
+        }
+
+        try {
+            $date = \DateTime::createFromFormat('Y-m-d', $data_inicio);
+            if ($date === false) {
+                return null;
+            }
+            $date->add(new \DateInterval('P' . $periodo_meses . 'M'));
+            return $date->format('Y-m-d');
+        } catch (\Exception $e) {
+            return null;
+        }
+    }
+
+    public static function porCodigo(string $pep): ?array
+    {
+        $stmt = self::pdo()->prepare('SELECT * FROM peps WHERE pep = ? LIMIT 1');
+        $stmt->execute([trim($pep)]);
+        $row = $stmt->fetch();
+        return $row ?: null;
+    }
+
+    /**
+     * Retorna o id do PEP com esse código, criando-o (com o projeto informado)
+     * caso ainda não exista. Usado pela importação de dispositivos via CSV.
+     */
+    public static function localizarOuCriar(string $pep, string $projeto = ''): int
+    {
+        $existente = self::porCodigo($pep);
+        if ($existente !== null) {
+            return (int) $existente['id'];
+        }
+        return self::criar($pep, $projeto);
+    }
+
+    public static function pepEmUso(string $pep, ?int $ignorarId = null): bool
+    {
+        $sql = 'SELECT id FROM peps WHERE pep = ?';
+        $params = [$pep];
+        if ($ignorarId !== null) {
+            $sql .= ' AND id <> ?';
+            $params[] = $ignorarId;
+        }
+        $stmt = self::pdo()->prepare($sql);
+        $stmt->execute($params);
+        return (bool) $stmt->fetch();
+    }
+}
