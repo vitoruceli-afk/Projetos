@@ -68,6 +68,9 @@ if ($semUsuarios) {
 <body>
     <div class="login-stage">
         <div class="login-card">
+            <div class="login-institution">
+                <img src="https://www.faesa.br/wp-content/uploads/2024/08/Camada_1.svg" alt="FAESA Centro Universitário" class="login-institution-logo">
+            </div>
             <div class="brand">
                 <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
                     <circle cx="12" cy="12" r="9"/>

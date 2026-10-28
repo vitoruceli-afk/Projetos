@@ -1429,27 +1429,11 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
         </details>
     </div>
 
-    <?php if ($entreStatsECharts !== null) $entreStatsECharts(); ?>
-
-    <?php if ($mapaCalor && $exibirTendenciaPontos): ?>
-    <div class="row g-3 mb-1">
-        <div class="col-12"><?php renderMapaCalorProdutividade($db, $inicioLocal, $fimLocal, $maquinaIds ?: null, $usuarioFiltro); ?></div>
-    </div>
-    <?php endif; ?>
-
-    <?php if ($exibirTendenciaPontos): ?>
-    <div class="row g-3">
-        <div class="col-12">
-            <div class="card">
-                <div class="card-header">Produtividade <?= $pontosPorHora ? 'por Hora' : 'por Dia' ?></div>
-                <div class="card-body chart-card-body">
-                    <div class="chart-wrap" style="height: 130px;"><canvas id="chartPontos<?= $idSufixo ?>"></canvas></div>
-                </div>
-            </div>
-        </div>
-    </div>
-    <?php endif; ?>
-
+    <?php
+    // Distribuição por Categoria + Top 10: nas telas Máquinas por Setor e Usuário (mapa de calor + tendência por hora/dia)
+    // vêm logo abaixo do resumo de integridade; nas demais, no lugar de sempre (abaixo dos gráficos de tendência).
+    $categoriaAntes = $mapaCalor && $exibirTendenciaPontos;
+    $renderCategoriaTop = function () use ($idSufixo, $porCategoria, $todosApps) { ?>
     <div class="row g-3 mt-1">
         <div class="col-lg-5">
             <div class="card h-100">
@@ -1485,6 +1469,32 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
             </div>
         </div>
     </div>
+    <?php };
+    if ($categoriaAntes) $renderCategoriaTop();
+    ?>
+
+    <?php if ($entreStatsECharts !== null) $entreStatsECharts(); ?>
+
+    <?php if ($mapaCalor && $exibirTendenciaPontos): ?>
+    <div class="row g-3 mb-1">
+        <div class="col-12"><?php renderMapaCalorProdutividade($db, $inicioLocal, $fimLocal, $maquinaIds ?: null, $usuarioFiltro); ?></div>
+    </div>
+    <?php endif; ?>
+
+    <?php if ($exibirTendenciaPontos): ?>
+    <div class="row g-3">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">Produtividade <?= $pontosPorHora ? 'por Hora' : 'por Dia' ?></div>
+                <div class="card-body chart-card-body">
+                    <div class="chart-wrap" style="height: 130px;"><canvas id="chartPontos<?= $idSufixo ?>"></canvas></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+
+    <?php if (!$categoriaAntes) $renderCategoriaTop(); ?>
 
     <?php if ($mapaCalor && !$exibirTendenciaPontos): ?>
     <div class="row g-3 mt-1">

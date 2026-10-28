@@ -74,7 +74,7 @@ define('AW_SERVIDOR_IP', '10.10.140.17');
 
 // Incrementar sempre que uma migração (CREATE TABLE/ALTER TABLE) for adicionada em getDB() — é o
 // que faz o bloco de migração rodar de novo (uma única vez) na próxima requisição após o deploy.
-define('SCHEMA_VERSION', 28);
+define('SCHEMA_VERSION', 32);
 
 function getDB() {
     // Conexão + schema cacheados numa estática por requisição (mesmo motivo documentado em
@@ -647,10 +647,12 @@ function getDB() {
             $existeRegraIA = $db->prepare("SELECT 1 FROM categoria_regras WHERE categoria_id = :cat AND campo = :campo AND tipo = :tipo AND padrao = :padrao LIMIT 1");
             $novaRegraIA = $db->prepare("INSERT INTO categoria_regras (categoria_id, campo, tipo, padrao, prioridade) VALUES (:cat, :campo, :tipo, :padrao, 10)");
             $regrasIA = [];
-            foreach (['chatgpt.com', 'openai.com', 'claude.ai', 'anthropic.com', 'copilot.microsoft.com', 'contraktor.com.br', 'gov.br'] as $dominioIA) {
+            foreach (['chatgpt.com', 'openai.com', 'claude.ai', 'anthropic.com', 'copilot.microsoft.com', 'contraktor.com.br', 'gov.br', 'gemini.google.com', 'canva.com', 'colegiofaesa.com.br'] as $dominioIA) {
                 $regrasIA[] = ['url', 'regex', '^(blob:)?[a-z]+://([^/?#]*\\.)?' . str_replace('.', '\\.', $dominioIA) . '([:/?#]|$)'];
             }
             foreach (['ChatGPT.exe', 'Claude.exe', 'Copilot'] as $appIA) $regrasIA[] = ['app', 'contem', $appIA];
+            // janelas do navegador no Gemini quando não há aba casada (sem extensão / aba fora da janela de tempo)
+            $regrasIA[] = ['titulo', 'contem', 'Google Gemini'];
             foreach ($regrasIA as [$campoIA, $tipoIA, $padraoIA]) {
                 $pIA = [':cat' => $catProdutivoIA, ':campo' => $campoIA, ':tipo' => $tipoIA, ':padrao' => $padraoIA];
                 $existeRegraIA->execute($pIA);
@@ -685,6 +687,18 @@ function getDB() {
             }
         }
 
+        // opera.exe (navegador Opera) na categoria "Neutro" — regra por aplicativo da janela (prioridade 90). A janela
+        // do Opera continua herdando a categoria específica da aba (produtiva/improdutiva) quando há extensão.
+        // Idempotente.
+        $catNeutroOpera = $db->query("SELECT id FROM categorias WHERE nome = 'Neutro' LIMIT 1")->fetchColumn();
+        if ($catNeutroOpera) {
+            $existeOpera = $db->prepare("SELECT 1 FROM categoria_regras WHERE campo = 'app' AND tipo = 'contem' AND LOWER(padrao) = 'opera.exe' LIMIT 1");
+            $existeOpera->execute();
+            if (!$existeOpera->fetchColumn()) {
+                $db->prepare("INSERT INTO categoria_regras (categoria_id, campo, tipo, padrao, prioridade) VALUES (:cat, 'app', 'contem', 'opera.exe', 90)")
+                   ->execute([':cat' => $catNeutroOpera]);
+            }
+        }
         // Índice (tipo, ts) em eventos: as consultas do dashboard somam "tipo = 'window' AND ts BETWEEN ..." sobre
         // TODAS as máquinas, e o único índice que começava por tipo era (maquina_id, tipo, ts) — que o MariaDB não
         // usa sem filtrar maquina_id. Resultado: varredura completa da tabela (centenas de milhares de linhas) a cada
