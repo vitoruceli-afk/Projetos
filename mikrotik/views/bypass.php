@@ -80,8 +80,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         }
     } elseif ($_POST['action'] === 'delete') {
         $targetId = $_POST['id'];
+        $targetLabel = resolveItemLabels($api, 'binding', [$targetId])[$targetId];
         $api->comm('/ip/hotspot/ip-binding/remove', ['.id' => $targetId], $writeMaxWait);
-        logActivity('bypass', $api->lastReadTimedOut ? 'Excluiu bypass (IP Binding) — sem confirmação a tempo' : 'Excluiu bypass (IP Binding)', "{$routerLabel} — item {$targetId}");
+        logActivity('bypass', $api->lastReadTimedOut ? 'Excluiu bypass (IP Binding) — sem confirmação a tempo' : 'Excluiu bypass (IP Binding)', "{$routerLabel} — {$targetLabel}");
         header("Location: index.php?page=bypass" . ($api->lastReadTimedOut ? '&pending=1' : ''));
         exit;
     }

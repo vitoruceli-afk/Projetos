@@ -390,6 +390,74 @@ function iaReanalisarSugestoes(PDO $db) {
     return $st->rowCount();
 }
 
+// ---------- detalhes de uso (apoio à revisão humana) ----------
+// De onde veio o uso de uma chave: máquina, IP, departamento (setor/OU) e usuário detectado, com quantidade de eventos, tempo,
+// último acesso e até 2 títulos de exemplo. Só leitura; é o que o administrador precisa para decidir se a categoria está certa
+// (um mesmo site pode ser trabalho na Biblioteca e distração em outro setor). Janela: últimos $dias dias.
+function iaDetalhesChave(PDO $db, $sugestaoId, $dias = 30, $limite = 100) {
+    $s = $db->prepare("SELECT tipo, valor FROM ia_sugestoes WHERE id = :i");
+    $s->execute([':i' => $sugestaoId]);
+    $sug = $s->fetch(PDO::FETCH_ASSOC);
+    if (!$sug) throw new RuntimeException('Sugestão não encontrada.');
+    $desde = gmdate('Y-m-d H:i:s', time() - 86400 * max(1, (int)$dias));
+    $grupos = [];   // "maquina|usuario" => linha
+    if ($sug['tipo'] === 'dominio') {
+        $st = $db->prepare("SELECT e.maquina_id, e.usuario_detectado AS usuario,
+                SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(e.url, '://', -1), '/', 1), '?', 1) AS h,
+                COUNT(*) AS n, SUM(e.duracao) AS seg, MAX(e.ts) AS ultimo,
+                SUBSTRING_INDEX(GROUP_CONCAT(DISTINCT LEFT(e.titulo, 80) SEPARATOR '\n'), '\n', 2) AS titulos
+            FROM eventos e WHERE e.tipo = 'web' AND e.ts > :d AND e.url LIKE :like
+            GROUP BY e.maquina_id, e.usuario_detectado, h");
+        $st->execute([':d' => $desde, ':like' => '%' . addcslashes($sug['valor'], '%_\\') . '%']);
+        foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) {
+            $h = iaNormalizarHost($r['h']);
+            // o LIKE é só um pré-filtro: confere o host de verdade (não confunde "xexemplo.com" com "exemplo.com")
+            if ($h === null || ($h !== $sug['valor'] && substr($h, -strlen($sug['valor']) - 1) !== '.' . $sug['valor'])) continue;
+            iaDetalhesAcumular($grupos, $r);
+        }
+    } else {
+        $st = $db->prepare("SELECT e.maquina_id, e.usuario_detectado AS usuario, COUNT(*) AS n, SUM(e.duracao) AS seg, MAX(e.ts) AS ultimo,
+                SUBSTRING_INDEX(GROUP_CONCAT(DISTINCT LEFT(e.titulo, 80) SEPARATOR '\n'), '\n', 2) AS titulos
+            FROM eventos e WHERE e.tipo = 'window' AND e.ts > :d AND e.app = :a GROUP BY e.maquina_id, e.usuario_detectado");
+        $st->execute([':d' => $desde, ':a' => $sug['valor']]);
+        foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) iaDetalhesAcumular($grupos, $r);
+    }
+    $maqs = [];
+    if ($grupos) {
+        $ids = implode(',', array_unique(array_map(fn($g) => (int)$g['maquina_id'], $grupos)));
+        foreach ($db->query("SELECT m.id, m.nome, m.ip_local, m.usuario_responsavel, COALESCE(ou.nome, NULLIF(m.setor, ''), '') AS setor
+                             FROM maquinas m LEFT JOIN ad_ous ou ON ou.id = m.ou_id WHERE m.id IN ({$ids})")->fetchAll(PDO::FETCH_ASSOC) as $m) $maqs[(int)$m['id']] = $m;
+    }
+    $tz = new DateTimeZone('America/Sao_Paulo');
+    $linhas = [];
+    foreach ($grupos as $g) {
+        $m = $maqs[(int)$g['maquina_id']] ?? ['nome' => '(máquina removida)', 'ip_local' => null, 'usuario_responsavel' => '', 'setor' => ''];
+        $usuario = $g['usuario'] !== null && $g['usuario'] !== '' ? $g['usuario'] : null;
+        $linhas[] = [
+            'maquina' => $m['nome'], 'ip' => $m['ip_local'] ?: null, 'departamento' => $m['setor'] !== '' ? $m['setor'] : null,
+            'usuario' => $usuario ?? ($m['usuario_responsavel'] ?: null), 'usuario_origem' => $usuario !== null ? 'detectado' : ($m['usuario_responsavel'] ? 'responsavel' : null),
+            'eventos' => (int)$g['n'], 'horas' => round($g['seg'] / 3600, 2),
+            'ultimo' => (new DateTime($g['ultimo'], new DateTimeZone('UTC')))->setTimezone($tz)->format('d/m/Y H:i'),
+            'titulos' => array_values(array_filter(array_map('trim', explode("\n", (string)$g['titulos'])), fn($t) => $t !== '')),
+        ];
+    }
+    usort($linhas, fn($a, $b) => $b['horas'] <=> $a['horas']);
+    return [
+        'chave' => $sug['valor'], 'tipo' => $sug['tipo'], 'dias' => (int)$dias,
+        'resumo' => ['maquinas' => count(array_unique(array_column($linhas, 'maquina'))), 'usuarios' => count(array_unique(array_filter(array_column($linhas, 'usuario')))),
+                     'departamentos' => count(array_unique(array_filter(array_column($linhas, 'departamento')))), 'eventos' => array_sum(array_column($linhas, 'eventos')),
+                     'horas' => round(array_sum(array_column($linhas, 'horas')), 2)],
+        'linhas' => array_slice($linhas, 0, $limite), 'total_linhas' => count($linhas),
+    ];
+}
+
+function iaDetalhesAcumular(array &$grupos, array $r) {
+    $k = $r['maquina_id'] . '|' . ($r['usuario'] ?? '');
+    if (!isset($grupos[$k])) { $grupos[$k] = ['maquina_id' => $r['maquina_id'], 'usuario' => $r['usuario'], 'n' => 0, 'seg' => 0.0, 'ultimo' => $r['ultimo'], 'titulos' => '']; }
+    $grupos[$k]['n'] += (int)$r['n']; $grupos[$k]['seg'] += (float)$r['seg'];
+    if ($r['ultimo'] > $grupos[$k]['ultimo']) $grupos[$k]['ultimo'] = $r['ultimo'];
+    $grupos[$k]['titulos'] = trim($grupos[$k]['titulos'] . "\n" . $r['titulos']);
+}
 // ---------- monitoramento ----------
 function iaMetricas(PDO $db) {
     $m = ['estados' => []];

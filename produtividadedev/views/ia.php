@@ -234,6 +234,7 @@ function iaSelectCategoria($categorias, $sel) {
                 <?= iaSelectCategoria($categorias, $sug) ?>
                 <button name="action" value="aprovar" class="btn btn-success btn-sm" <?= $podeAprovar ? '' : 'disabled' ?> title="Grava uma regra e classifica os eventos sem categoria desta chave">Aprovar</button>
                 <button name="action" value="rejeitar" class="btn btn-outline-secondary btn-sm" onclick="return confirm('Rejeitar esta sugestão? A chave não volta para a fila.')">Rejeitar</button>
+                <button type="button" class="btn btn-outline-info btn-sm btn-detalhes-ia" data-id="<?= (int)$s['id'] ?>" title="Quem acessou: máquina, IP, departamento e usuário"><i class="bi bi-search"></i>Detalhes</button>
             </form></td>
         </tr>
         <?php endforeach; ?></tbody></table></div><?php endif; ?></div>
@@ -284,6 +285,7 @@ function iaSelectCategoria($categorias, $sel) {
                 <?= iaSelectCategoria($categorias, $s['regra_cat']) ?>
                 <button name="action" value="alterar" class="btn btn-outline-primary btn-sm" onclick="return confirm('Alterar a categoria? Os eventos desta chave que estavam na categoria anterior serão atualizados.')">Alterar</button>
                 <button name="action" value="excluir" class="btn btn-outline-danger btn-sm" onclick="return confirm('Excluir esta classificação? A regra é apagada e os eventos desta chave voltam ao que as demais regras decidirem (sem categoria, se nenhuma casar).')">Excluir</button>
+                <button type="button" class="btn btn-outline-info btn-sm btn-detalhes-ia" data-id="<?= (int)$s['id'] ?>" title="Quem acessou: máquina, IP, departamento e usuário"><i class="bi bi-search"></i>Detalhes</button>
             </form></td>
         </tr>
         <?php endforeach; ?></tbody></table></div><?php endif; ?></div>
@@ -365,6 +367,62 @@ function iaSelectCategoria($categorias, $sel) {
             if (b && b.dataset.confirm && !confirm(n + ' item(ns) selecionado(s).\n\n' + b.dataset.confirm)) e.preventDefault();
         });
         atualizar();
+    });
+})();
+</script>
+
+<style>
+/* botões de ação das tabelas: nunca quebram o texto em duas linhas (o Detalhes ficava mais alto que os outros) nem encolhem */
+.table form.d-flex .btn { white-space: nowrap; flex: 0 0 auto; }
+.table form.d-flex .btn .bi { margin-right: .25rem; }
+</style>
+
+<div class="modal fade" id="modalDetalhesIa" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable"><div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title">Quem acessou: <span id="detIaChave" class="fw-bold"></span></h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button></div>
+        <div class="modal-body">
+            <div id="detIaResumo" class="small text-muted mb-2"></div>
+            <div id="detIaMsg" class="text-muted"></div>
+            <div class="table-responsive"><table class="table table-sm align-middle" id="detIaTabela" hidden>
+                <thead class="table-light"><tr><th>Máquina</th><th>IP</th><th>Departamento</th><th>Usuário</th><th class="text-end">Eventos</th><th class="text-end">Tempo</th><th>Último acesso</th><th>Exemplos</th></tr></thead>
+                <tbody></tbody></table></div>
+        </div>
+        <div class="modal-footer"><span class="small text-muted me-auto">Últimos 30 dias, a partir dos eventos já coletados. Usuário "(responsável)" = a máquina não tem usuário detectado e usa o responsável cadastrado.</span><button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Fechar</button></div>
+    </div></div>
+</div>
+<script>
+(function () {
+    var botoes = document.querySelectorAll('.btn-detalhes-ia');
+    if (!botoes.length) return;
+    var modalEl = document.getElementById('modalDetalhesIa');
+    var tabela = document.getElementById('detIaTabela'), corpo = tabela.querySelector('tbody');
+    var msg = document.getElementById('detIaMsg'), resumo = document.getElementById('detIaResumo');
+    function txt(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+    function horas(h) { var m = Math.round(h * 60); return m >= 60 ? Math.floor(m / 60) + ' h ' + (m % 60) + ' min' : m + ' min'; }
+    botoes.forEach(function (b) {
+        b.addEventListener('click', function () {
+            document.getElementById('detIaChave').textContent = b.closest('tr').querySelector('strong').textContent;
+            tabela.hidden = true; corpo.innerHTML = ''; resumo.textContent = ''; msg.textContent = 'Carregando…';
+            bootstrap.Modal.getOrCreateInstance(modalEl).show();
+            fetch('ajax_ia_detalhes.php?id=' + encodeURIComponent(b.dataset.id), { credentials: 'same-origin' })
+                .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+                .then(function (d) {
+                    if (!d.ok) throw new Error(d.erro || 'erro');
+                    var r = d.resumo;
+                    resumo.textContent = r.maquinas + ' máquina(s) · ' + r.usuarios + ' usuário(s) · ' + r.departamentos + ' departamento(s) · ' + r.eventos + ' evento(s) · ' + horas(r.horas)
+                        + (d.total_linhas > d.linhas.length ? ' — mostrando as ' + d.linhas.length + ' primeiras de ' + d.total_linhas : '');
+                    if (!d.linhas.length) { msg.textContent = 'Nenhum acesso encontrado nos últimos ' + d.dias + ' dias.'; return; }
+                    msg.textContent = '';
+                    corpo.innerHTML = d.linhas.map(function (l) {
+                        return '<tr><td>' + txt(l.maquina) + '</td><td class="text-nowrap">' + txt(l.ip || '—') + '</td><td>' + txt(l.departamento || '—') + '</td><td>'
+                            + txt(l.usuario || '—') + (l.usuario_origem === 'responsavel' ? ' <span class="text-muted small">(responsável)</span>' : '') + '</td><td class="text-end">' + l.eventos
+                            + '</td><td class="text-end text-nowrap">' + horas(l.horas) + '</td><td class="text-nowrap small">' + txt(l.ultimo) + '</td><td class="small text-muted">'
+                            + l.titulos.map(function (t) { return '<div class="text-truncate" style="max-width:240px" title="' + txt(t).replace(/"/g, '&quot;') + '">“' + txt(t) + '”</div>'; }).join('') + '</td></tr>';
+                    }).join('');
+                    tabela.hidden = false;
+                })
+                .catch(function (e) { msg.textContent = 'Não foi possível carregar os detalhes (' + e.message + ').'; });
+        });
     });
 })();
 </script>

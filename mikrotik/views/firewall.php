@@ -25,9 +25,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['id'], $_POST['action'
     csrfVerify();
     $targetId = $_POST['id'];
 
+    $itemLabel = resolveItemLabels($api, 'firewall', [$targetId])[$targetId];
     $disabled = $_POST['action'] === 'disable' ? 'yes' : 'no';
     $api->comm('/ip/firewall/filter/set', ['.id' => $targetId, 'disabled' => $disabled]);
-    logActivity('firewall', $_POST['action'] === 'disable' ? 'Desabilitou regra de firewall' : 'Habilitou regra de firewall', "{$routerLabel} — regra {$targetId}");
+    logActivity('firewall', $_POST['action'] === 'disable' ? 'Desabilitou regra de firewall' : 'Habilitou regra de firewall', "{$routerLabel} — regra {$itemLabel}");
     header("Location: index.php?page=firewall");
     exit;
 }
@@ -37,6 +38,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['id'], $_POST['permiss
     csrfVerify();
     requireAdmin();
     $targetId = $_POST['id'];
+    $itemLabel = resolveItemLabels($api, 'firewall', [$targetId])[$targetId];
 
     if ($_POST['permission_action'] === 'grant') {
         $stmt = $db->prepare("INSERT IGNORE INTO rule_permissions (router_id, rule_type, rule_id, granted_by) VALUES (:r, 'firewall', :id, :by)");
@@ -44,13 +46,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['id'], $_POST['permiss
         $stmt->bindValue(':id', $targetId);
         $stmt->bindValue(':by', $_SESSION['user_logged_in'] ?? '');
         $stmt->execute();
-        logActivity('firewall', 'Permitiu regra de firewall para Usuário Padrão', "{$routerLabel} — regra {$targetId}");
+        logActivity('firewall', 'Permitiu regra de firewall para Usuário Padrão', "{$routerLabel} — regra {$itemLabel}");
     } else {
         $stmt = $db->prepare("DELETE FROM rule_permissions WHERE router_id = :r AND rule_type = 'firewall' AND rule_id = :id");
         $stmt->bindValue(':r', $routerId, PDO::PARAM_INT);
         $stmt->bindValue(':id', $targetId);
         $stmt->execute();
-        logActivity('firewall', 'Revogou permissão de regra de firewall do Usuário Padrão', "{$routerLabel} — regra {$targetId}");
+        logActivity('firewall', 'Revogou permissão de regra de firewall do Usuário Padrão', "{$routerLabel} — regra {$itemLabel}");
     }
     header("Location: index.php?page=firewall");
     exit;
@@ -64,11 +66,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_action'], $_POST
     if (empty($ids)) {
         $bulkError = 'Nenhuma regra válida selecionada.';
     } else {
+        $itemLabels = resolveItemLabels($api, 'firewall', $ids);
         $disabled = $_POST['bulk_action'] === 'disable' ? 'yes' : 'no';
         foreach ($ids as $targetId) {
             $api->comm('/ip/firewall/filter/set', ['.id' => $targetId, 'disabled' => $disabled]);
         }
-        logActivity('firewall', $_POST['bulk_action'] === 'disable' ? 'Desabilitou regras de firewall em massa' : 'Habilitou regras de firewall em massa', "{$routerLabel} — " . count($ids) . " regra(s): " . implode(', ', $ids));
+        logActivity('firewall', $_POST['bulk_action'] === 'disable' ? 'Desabilitou regras de firewall em massa' : 'Habilitou regras de firewall em massa', "{$routerLabel} — " . count($ids) . " regra(s): " . implode(', ', $itemLabels));
         header("Location: index.php?page=firewall");
         exit;
     }
@@ -88,13 +91,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_permission_actio
             foreach ($ids as $targetId) {
                 $stmt->execute([':r' => $routerId, ':id' => $targetId, ':by' => $_SESSION['user_logged_in'] ?? '']);
             }
-            logActivity('firewall', 'Permitiu regras de firewall em massa para Usuário Padrão', "{$routerLabel} — " . count($ids) . " regra(s): " . implode(', ', $ids));
+            logActivity('firewall', 'Permitiu regras de firewall em massa para Usuário Padrão', "{$routerLabel} — " . count($ids) . " regra(s): " . implode(', ', $itemLabels));
         } else {
             $stmt = $db->prepare("DELETE FROM rule_permissions WHERE router_id = :r AND rule_type = 'firewall' AND rule_id = :id");
             foreach ($ids as $targetId) {
                 $stmt->execute([':r' => $routerId, ':id' => $targetId]);
             }
-            logActivity('firewall', 'Revogou permissão em massa de regras de firewall do Usuário Padrão', "{$routerLabel} — " . count($ids) . " regra(s): " . implode(', ', $ids));
+            logActivity('firewall', 'Revogou permissão em massa de regras de firewall do Usuário Padrão', "{$routerLabel} — " . count($ids) . " regra(s): " . implode(', ', $itemLabels));
         }
         header("Location: index.php?page=firewall");
         exit;

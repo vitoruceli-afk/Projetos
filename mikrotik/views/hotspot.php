@@ -24,11 +24,12 @@ $bulkError = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['id'], $_POST['action']) && in_array($_POST['action'], ['enable', 'disable'])) {
     csrfVerify();
     $targetId = $_POST['id'];
+    $itemLabel = resolveItemLabels($api, 'hotspot', [$targetId])[$targetId];
 
     $disabled = $_POST['action'] === 'disable' ? 'yes' : 'no';
     // Garante o comando correto de alteração mapeando o ID interno (.id)
     $api->comm('/ip/hotspot/set', ['.id' => $targetId, 'disabled' => $disabled]);
-    logActivity('hotspot', $_POST['action'] === 'disable' ? 'Desabilitou hotspot' : 'Habilitou hotspot', "{$routerLabel} — item {$targetId}");
+    logActivity('hotspot', $_POST['action'] === 'disable' ? 'Desabilitou hotspot' : 'Habilitou hotspot', "{$routerLabel} — item {$itemLabel}");
     header("Location: index.php?page=hotspot");
     exit;
 }
@@ -38,6 +39,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['id'], $_POST['permiss
     csrfVerify();
     requireAdmin();
     $targetId = $_POST['id'];
+    $itemLabel = resolveItemLabels($api, 'hotspot', [$targetId])[$targetId];
 
     if ($_POST['permission_action'] === 'grant') {
         $stmt = $db->prepare("INSERT IGNORE INTO rule_permissions (router_id, rule_type, rule_id, granted_by) VALUES (:r, 'hotspot', :id, :by)");
@@ -45,13 +47,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['id'], $_POST['permiss
         $stmt->bindValue(':id', $targetId);
         $stmt->bindValue(':by', $_SESSION['user_logged_in'] ?? '');
         $stmt->execute();
-        logActivity('hotspot', 'Permitiu hotspot para Usuário Padrão', "{$routerLabel} — item {$targetId}");
+        logActivity('hotspot', 'Permitiu hotspot para Usuário Padrão', "{$routerLabel} — item {$itemLabel}");
     } else {
         $stmt = $db->prepare("DELETE FROM rule_permissions WHERE router_id = :r AND rule_type = 'hotspot' AND rule_id = :id");
         $stmt->bindValue(':r', $routerId, PDO::PARAM_INT);
         $stmt->bindValue(':id', $targetId);
         $stmt->execute();
-        logActivity('hotspot', 'Revogou permissão de hotspot do Usuário Padrão', "{$routerLabel} — item {$targetId}");
+        logActivity('hotspot', 'Revogou permissão de hotspot do Usuário Padrão', "{$routerLabel} — item {$itemLabel}");
     }
     header("Location: index.php?page=hotspot");
     exit;
@@ -65,11 +67,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_action'], $_POST
     if (empty($ids)) {
         $bulkError = 'Nenhum item válido selecionado.';
     } else {
+        $itemLabels = resolveItemLabels($api, 'hotspot', $ids);
         $disabled = $_POST['bulk_action'] === 'disable' ? 'yes' : 'no';
         foreach ($ids as $targetId) {
             $api->comm('/ip/hotspot/set', ['.id' => $targetId, 'disabled' => $disabled]);
         }
-        logActivity('hotspot', $_POST['bulk_action'] === 'disable' ? 'Desabilitou hotspots em massa' : 'Habilitou hotspots em massa', "{$routerLabel} — " . count($ids) . " item(ns): " . implode(', ', $ids));
+        logActivity('hotspot', $_POST['bulk_action'] === 'disable' ? 'Desabilitou hotspots em massa' : 'Habilitou hotspots em massa', "{$routerLabel} — " . count($ids) . " item(ns): " . implode(', ', $itemLabels));
         header("Location: index.php?page=hotspot");
         exit;
     }
@@ -84,18 +87,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_permission_actio
     if (empty($ids)) {
         $bulkError = 'Nenhum item válido selecionado.';
     } else {
+        $itemLabels = resolveItemLabels($api, 'hotspot', $ids);
         if ($_POST['bulk_permission_action'] === 'grant') {
             $stmt = $db->prepare("INSERT IGNORE INTO rule_permissions (router_id, rule_type, rule_id, granted_by) VALUES (:r, 'hotspot', :id, :by)");
             foreach ($ids as $targetId) {
                 $stmt->execute([':r' => $routerId, ':id' => $targetId, ':by' => $_SESSION['user_logged_in'] ?? '']);
             }
-            logActivity('hotspot', 'Permitiu hotspots em massa para Usuário Padrão', "{$routerLabel} — " . count($ids) . " item(ns): " . implode(', ', $ids));
+            logActivity('hotspot', 'Permitiu hotspots em massa para Usuário Padrão', "{$routerLabel} — " . count($ids) . " item(ns): " . implode(', ', $itemLabels));
         } else {
             $stmt = $db->prepare("DELETE FROM rule_permissions WHERE router_id = :r AND rule_type = 'hotspot' AND rule_id = :id");
             foreach ($ids as $targetId) {
                 $stmt->execute([':r' => $routerId, ':id' => $targetId]);
             }
-            logActivity('hotspot', 'Revogou permissão em massa de hotspots do Usuário Padrão', "{$routerLabel} — " . count($ids) . " item(ns): " . implode(', ', $ids));
+            logActivity('hotspot', 'Revogou permissão em massa de hotspots do Usuário Padrão', "{$routerLabel} — " . count($ids) . " item(ns): " . implode(', ', $itemLabels));
         }
         header("Location: index.php?page=hotspot");
         exit;

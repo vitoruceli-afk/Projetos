@@ -623,6 +623,40 @@ function logActivity($category, $action, $details = '') {
     }
 }
 
+// Resolve, para o log, o nome legível (laboratório/comentário ou nome da regra) de itens do
+// roteador a partir dos seus IDs internos. Deve ser chamado ANTES de alterar/excluir o item e
+// com a conexão $api ainda aberta. $type: 'firewall', 'hotspot' ou 'binding'.
+// Retorna [id => rótulo]; se não achar o item, o próprio ID é usado como rótulo.
+function resolveItemLabels($api, $type, array $ids) {
+    $labels = [];
+    foreach ($ids as $id) { $labels[$id] = (string)$id; }
+    $paths = [
+        'firewall' => '/ip/firewall/filter/print',
+        'hotspot' => '/ip/hotspot/print',
+        'binding' => '/ip/hotspot/ip-binding/print',
+    ];
+    if (!isset($paths[$type]) || empty($ids)) return $labels;
+    try {
+        $api->write($paths[$type]);
+        $items = $api->read();
+        if (!is_array($items)) return $labels;
+        foreach ($items as $it) {
+            if (!is_array($it)) continue;
+            $key = $it['.id'] ?? $it['name'] ?? null;
+            if ($key === null || !isset($labels[$key])) continue;
+            $comment = trim($it['comment'] ?? '');
+            if ($comment !== '') { $label = $comment; }
+            elseif (trim($it['name'] ?? '') !== '') { $label = $it['name']; }
+            elseif ($type === 'binding') { $label = $it['mac-address'] ?? $it['address'] ?? $key; }
+            else { $label = trim(($it['chain'] ?? '') . ' ' . ($it['action'] ?? '')) ?: $key; }
+            $labels[$key] = $label;
+        }
+    } catch (Throwable $e) {
+        // mantém os IDs como rótulo
+    }
+    return $labels;
+}
+
 // Abre uma conexão LDAP já com protocolo v3, referrals desligados e timeout curto.
 // Centraliza essa configuração para que todo ponto que fala com o AD tenha o mesmo limite de tempo.
 function ldapConnect($server) {

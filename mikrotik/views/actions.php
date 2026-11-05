@@ -40,13 +40,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['id'], $_POST['action'
         die('Você não tem permissão para alterar este item.');
     }
 
+    $logLabel = resolveItemLabels($api, $kind, [$targetId])[$targetId];
     $disabled = $_POST['action'] === 'disable' ? 'yes' : 'no';
     $command = $kind === 'firewall' ? '/ip/firewall/filter/set' : '/ip/hotspot/set';
     $api->comm($command, ['.id' => $targetId, 'disabled' => $disabled]);
 
     $actionLabel = $_POST['action'] === 'disable' ? 'Desabilitou' : 'Habilitou';
     $itemLabel = $kind === 'firewall' ? 'regra de firewall' : 'hotspot';
-    logActivity($kind, "{$actionLabel} {$itemLabel} (Ações)", "{$routerLabel} — item {$targetId}");
+    logActivity($kind, "{$actionLabel} {$itemLabel} (Ações)", "{$routerLabel} — {$logLabel}");
     header("Location: index.php?page=actions");
     exit;
 }
