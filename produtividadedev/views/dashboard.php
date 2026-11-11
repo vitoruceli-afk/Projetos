@@ -1057,16 +1057,25 @@ function detalheDashboardSobDemanda(PDO $db, $tipo, array $params, $filtroMaquin
         return $linhas;
     }
     if ($tipo === 'apptitulos') {
-        // Card "Top 10" ao escolher um aplicativo: seus 10 títulos mais vistos, em minutos.
+        // Card "Top 10" ao escolher um aplicativo: seus 10 títulos mais vistos, em minutos. Cada barra leva a cor da categoria que
+        // predomina NAQUELE título (antes todas as barras usavam a cor do aplicativo — no Chrome, tudo cinza ou tudo verde, e um
+        // "Spotify" improdutivo parecia neutro/produtivo).
         $params[':app'] = (string)($_GET['app'] ?? '');
-        $stmt = $db->prepare("SELECT COALESCE(NULLIF(titulo, ''), '(sem título)') AS item, SUM(duracao) AS total
-            FROM eventos e
-            WHERE tipo = 'window' AND app = :app AND ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
-            GROUP BY item ORDER BY total DESC LIMIT 10");
+        $stmt = $db->prepare("SELECT COALESCE(NULLIF(e.titulo, ''), '(sem título)') AS item, c.cor AS cor, c.nome AS categoria, SUM(e.duracao) AS total
+            FROM eventos e LEFT JOIN categorias c ON c.id = e.categoria_id
+            WHERE e.tipo = 'window' AND e.app = :app AND e.ts BETWEEN :ini AND :fim {$filtroMaquinaSql} {$filtroHorario} {$filtroNaoBloqueado}
+            GROUP BY item, c.id, c.cor, c.nome");
         $stmt->execute($params);
-        $labels = []; $data = [];
-        foreach ($stmt->fetchAll() as $row) { $labels[] = (string)$row['item']; $data[] = round($row['total'] / 60); }
-        return ['labels' => $labels, 'data' => $data];
+        $tot = []; $melhor = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $k = (string)$row['item']; $t = (float)$row['total'];
+            $tot[$k] = ($tot[$k] ?? 0) + $t;
+            if (!isset($melhor[$k]) || $t > $melhor[$k][0]) $melhor[$k] = [$t, $row['cor'] ?: '#c7c5da', $row['categoria'] ?? 'Sem categoria'];
+        }
+        arsort($tot);
+        $labels = []; $data = []; $cores = []; $categorias = [];
+        foreach (array_slice($tot, 0, 10, true) as $k => $t) { $labels[] = (string)$k; $data[] = round($t / 60); $cores[] = $melhor[$k][1]; $categorias[] = $melhor[$k][2]; }
+        return ['labels' => $labels, 'data' => $data, 'cores' => $cores, 'categorias' => $categorias];
     }
     return [];
 }
@@ -1778,7 +1787,7 @@ function renderPainelProdutividade(PDO $db, $inicioUtc, $fimUtc, DateTime $inici
                 if (dados) {
                     chartApps<?= $idSufixo ?>.data.labels = dados.labels;
                     chartApps<?= $idSufixo ?>.data.datasets[0].data = dados.data;
-                    chartApps<?= $idSufixo ?>.data.datasets[0].backgroundColor = dados.labels.map(function () { return corPorApp<?= $idSufixo ?>[app] || '#c7c5da'; });
+                    chartApps<?= $idSufixo ?>.data.datasets[0].backgroundColor = dados.cores || dados.labels.map(function () { return corPorApp<?= $idSufixo ?>[app] || '#c7c5da'; });
                 } else {
                     chartApps<?= $idSufixo ?>.data.labels = topAppsPadrao<?= $idSufixo ?>.labels;
                     chartApps<?= $idSufixo ?>.data.datasets[0].data = topAppsPadrao<?= $idSufixo ?>.data;

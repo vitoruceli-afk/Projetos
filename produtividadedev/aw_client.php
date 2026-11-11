@@ -368,7 +368,7 @@ function herdarCategoriaDasAbas(PDO $db, $maquinaId = null, $desdeUtc = null) {
     // O casamento é feito em MEMÓRIA, por máquina, com busca binária pelo horário. A versão anterior usava uma
     // subconsulta correlacionada por janela: o MariaDB não aproveitava o intervalo de ts dela e relia TODAS as abas
     // da máquina para cada janela (~2,7 milhões de leituras por sincronização, 11 a 19 s por máquina).
-    $stW = $db->prepare("SELECT w.id, w.maquina_id, w.ts, w.duracao, w.titulo, w.categoria_id FROM eventos w
+    $stW = $db->prepare("SELECT w.id, w.maquina_id, w.ts, w.duracao, w.app, w.titulo, w.categoria_id FROM eventos w
         WHERE w.tipo = 'window' AND LOWER(w.app) IN ('chrome.exe', 'msedge.exe', 'firefox.exe', 'brave.exe', 'opera.exe') {$filtroW}");
     $stW->execute($paramsW);
     $janelasPorMaq = [];
@@ -384,6 +384,7 @@ function herdarCategoriaDasAbas(PDO $db, $maquinaId = null, $desdeUtc = null) {
 
     $update = $db->prepare("UPDATE eventos SET categoria_id = :c WHERE id = :id");
     $n = 0;
+    $propria = [];   // cache: (app, título) => categoria pelas regras da própria janela
     foreach ($janelasPorMaq as $mid => $janelas) {
         $abas = $abasPorMaq[$mid] ?? [];
         $na = count($abas);
@@ -394,24 +395,31 @@ function herdarCategoriaDasAbas(PDO $db, $maquinaId = null, $desdeUtc = null) {
             // primeira aba com horário >= lo (busca binária)
             $a = 0; $b = $na;
             while ($a < $b) { $meio = ($a + $b) >> 1; if ($abas[$meio][0] < $lo) $a = $meio + 1; else $b = $meio; }
-            $melhor = null; $melhorTitulo = false; $melhorDif = INF;
+            // Só herda de uma aba cujo título está CONTIDO no título da janela (é a mesma página). Antes, sem aba correspondente, a
+            // janela herdava da aba mais próxima no tempo — mesmo de OUTRO site aberto no mesmo instante —, e "WhatsApp - Google Chrome"
+            // chegava a virar Produtivo (por um MarkChat ao lado) ou um vídeo do YouTube virava Produtivo. Sem aba correspondente (ou se
+            // a aba é neutra/sem categoria), vale o que as regras dão para a própria janela (aplicativo + título) — o que também corrige
+            // heranças erradas feitas antes.
+            $melhor = null; $melhorDif = INF;
             $tituloJanela = (string)$w['titulo'];
             for ($i = $a; $i < $na && $abas[$i][0] <= $hi; $i++) {
-                $tituloOk = $abas[$i][1] !== '' && $tituloJanela !== '' && mb_stripos($tituloJanela, $abas[$i][1]) !== false;
+                if ($abas[$i][1] === '' || $tituloJanela === '' || mb_stripos($tituloJanela, $abas[$i][1]) === false) continue;
                 $dif = abs($abas[$i][0] - $t);
-                // título contido na janela vale primeiro; depois, a de início mais próximo
-                if ($melhor === null || ($tituloOk && !$melhorTitulo) || ($tituloOk === $melhorTitulo && $dif < $melhorDif)) {
-                    $melhor = $i; $melhorTitulo = $tituloOk; $melhorDif = $dif;
-                }
+                if ($dif < $melhorDif) { $melhor = $i; $melhorDif = $dif; }
             }
-            if ($melhor === null) continue;
-            $nova = $abas[$melhor][2];
-            if ($nova === null || isset($reserva[(int)$nova])) continue;   // aba sem categoria ou neutra: a janela fica como está
-            if ($w['categoria_id'] === null || (int)$w['categoria_id'] !== (int)$nova) {
+            $daAba = $melhor !== null ? $abas[$melhor][2] : null;
+            if ($daAba !== null && !isset($reserva[(int)$daAba])) {
+                $nova = (int)$daAba;
+            } else {
+                $chave = $w['app'] . "\n" . $tituloJanela;
+                if (!array_key_exists($chave, $propria)) $propria[$chave] = classificarEvento($db, $w['app'], $tituloJanela, null);
+                $nova = $propria[$chave];
+            }
+            $atual = $w['categoria_id'] === null ? null : (int)$w['categoria_id'];
+            if ($nova !== $atual) {
                 $update->execute([':c' => $nova, ':id' => $w['id']]);
                 $n++;
-            }
-        }
+            }        }
     }
     return $n;
 }
